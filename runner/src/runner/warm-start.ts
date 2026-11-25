@@ -1,4 +1,4 @@
-// Warm start (experiment warmStart): the CLI for a new thread starts while
+// Warm start: the CLI for a new thread starts while
 // Mike is still writing its first message, so the message goes to a CLI
 // that's ready rather than one that still has to boot.
 //
@@ -16,13 +16,11 @@
 // it's stopped when that connection closes (the app quitting leaves nothing
 // behind), when the runner stops, and after SPARE_MS unused.
 import type { Runner, ThreadState } from '../runner.ts';
-import { newRuntime } from '../runner.ts';
+import { newRuntime } from './runtime.ts';
 import type { RunnerPart } from './part.ts';
 import type { AdapterOutput, AgentSession, QuestionAnswer, QuestionRequest, SessionSink, StartSessionOptions, ToolApprovalAnswer, ToolApprovalRequest } from '../adapters/types.ts';
 import type { EffortLevel, PermissionMode, Provider } from '../protocol.ts';
-import { experimentOn } from '../experiments.ts';
 
-export const WARM_START = 'warmStart';
 // Unused this long, a spare is stopped: a page left open over lunch
 // shouldn't hold a CLI.
 export const SPARE_MS = 10 * 60_000;
@@ -100,11 +98,11 @@ export function spareKey(opts: StartSessionOptions): string {
 
 export const warmStartPart = {
   // threads.warm: starts (or keeps) the spare for a new thread with these
-  // settings, and says its id. Nothing when the experiment is off, or the
-  // thread wouldn't start straight away in the folder as it is (a worktree
-  // first, a project's brief, another provider).
+  // settings, and says its id. Nothing when the thread wouldn't start
+  // straight away in the folder as it is (a worktree first, a project's
+  // brief, another provider).
   warm(this: Runner, params: WarmParams, conn?: number): { warmId?: string } {
-    if (!experimentOn(this.cfg.home, WARM_START) || params.projectIds?.length) {
+    if (params.projectIds?.length) {
       this.dropSpare();
       return {};
     }

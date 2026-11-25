@@ -323,9 +323,15 @@ few minutes, until it goes through. `tb logs` and
 instead, do the same: `node runner/scripts/deploy-backend.mjs` does it for
 you, with the admin key in `secrets/convex-self-hosted.env`.
 
-The image tag is pinned because an upgrade can need an export and an import
-(Convex's `self-hosted/advanced/upgrading.md`). Move `CONVEX_IMAGE_TAG` on
-deliberately; setup then makes the containers again on the same volume.
+Both images are pinned by manifest digest (`name@sha256:…`), not a tag:
+a tag, even one that reads like a commit, can be moved by whoever can
+publish to it, and the backend holds your mirror and makes its admin key.
+Setup pulls exactly that digest and stops before making a container if
+what Docker has doesn't carry it. An upgrade can need an export and an
+import (Convex's `self-hosted/advanced/upgrading.md`), so move them on
+deliberately: the comment above `BACKEND_IMAGE` in
+`scripts/self-hosted-plan.mjs` says how. Setup then makes the containers
+again on the same volume.
 
 To take it out: `docker rm -f threadbear-convex threadbear-convex-dashboard`,
 `docker volume rm threadbear-convex-data` (this deletes your threads'

@@ -1,12 +1,13 @@
-// tb land holding a landing while a GitHub workflow it'd set off is red on
-// main (land-gate.ts).
+// Which GitHub workflows tb watches on main and how their last run went, and
+// tb land's line while one it sets off is red (land-gate.ts, red-watch.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpDir } from '../helpers/fakes.ts';
-import { FRESH_MS, filesThatRunIt, holdingWorkflows, landHold, lastVerdict, pushPaths, STALE_MS, type Gh } from '../../src/land-gate.ts';
+import { CANCELLED_LOOKED_AT, FRESH_MS, filesThatRunIt, holdingWorkflows, keptVerdict, lastVerdict, pushPaths, STALE_MS, watchedWorkflows, type Gh } from '../../src/land-gate.ts';
+import { sayRedOnLanding } from '../../src/red-watch.ts';
 import { land } from '../../src/worktrees.ts';
 import { capture, commit, makeBranch, makeRepo, sh } from '../helpers/worktrees-harness.ts';
 
@@ -41,19 +42,22 @@ function workflows(files: Record<string, string>): string {
   return root;
 }
 
-// gh as GitHub would answer: the runs, newest first, and each run's jobs.
-function fakeGh(runs: object[] | 'offline', jobs: Record<number, object[]> = {}): Gh & { calls: string[][] } {
+// gh as GitHub would answer: the runs, newest first, each run's jobs, and
+// each job's annotations.
+function fakeGh(runs: object[] | 'offline', jobs: Record<number, object[]> = {}, notes: Record<number, object[]> = {}): Gh & { calls: string[][] } {
   const calls: string[][] = [];
   const fn = async (args: string[]) => {
     calls.push(args);
     if (runs === 'offline') return { ok: false, stdout: '', stderr: 'error connecting to api.github.com\nmore' };
     if (args[1] === 'list') return { ok: true, stdout: JSON.stringify(runs), stderr: '' };
+    // gh api --paginate --jq '.[].message': each page's messages, a line each.
+    if (args[0] === 'api') return { ok: true, stdout: ((notes[Number(/check-runs\/(\d+)\//.exec(args.join(' '))?.[1])] ?? []) as { message: string }[]).map((n) => `${n.message}\n`).join(''), stderr: '' };
     return { ok: true, stdout: JSON.stringify({ jobs: jobs[Number(args[2])] ?? [] }), stderr: '' };
   };
   return Object.assign(fn, { calls });
 }
 
-const run = (id: number, conclusion: string, at: string, status = 'completed') => ({ databaseId: id, status, conclusion, headSha: `${id}abcdef0123`, url: `https://github.com/o/r/actions/runs/${id}`, createdAt: at, displayTitle: `Commit ${id}` });
+const run = (id: number, conclusion: string, at: string, status = 'completed', updatedAt?: string) => ({ databaseId: id, status, conclusion, headSha: `${id}abcdef0123`, url: `https://github.com/o/r/actions/runs/${id}`, createdAt: at, ...(updatedAt ? { updatedAt } : {}), displayTitle: `Commit ${id}` });
 
 test("a workflow's push paths are read from its trigger, not the pull request's", () => {
   assert.deepEqual(pushPaths(WORKFLOW), ['desktop/**', 'runner/src/protocol.ts', 'features/**', '!features/README.md']);
@@ -76,7 +80,7 @@ test("path filters match as GitHub's do", () => {
   assert.equal(pushPaths(`on:\n  push:\n    paths: ['desktop/a,b.rs']\n`), undefined);
 });
 
-test("this repo's Desktop app workflow holds landings to desktop/ and features/", () => {
+test("this repo's Desktop app workflow is watched for landings to desktop/ and features/", () => {
   const held = holdingWorkflows(repoRoot);
   const desktop = held.find((w) => w.file === 'desktop.yml');
   assert.ok(desktop, 'desktop.yml has the mark');
@@ -85,7 +89,7 @@ test("this repo's Desktop app workflow holds landings to desktop/ and features/"
   assert.deepEqual(filesThatRunIt(desktop.paths, ['desktop/gpui/src/terminal.rs', 'features/terminal.feature', 'runner/src/cli.ts', 'docs/guide.md']), ['desktop/gpui/src/terminal.rs', 'features/terminal.feature']);
 });
 
-test('only marked workflows hold, and their paths say which files', () => {
+test('only marked workflows are watched, and their paths say which files', () => {
   const root = workflows({ 'desktop.yml': WORKFLOW, 'other.yml': WORKFLOW.replace('# tb land: hold while red\n', ''), 'notes.txt': '# tb land: hold while red' });
   assert.deepEqual(holdingWorkflows(root).map((w) => w.file), ['desktop.yml']);
   const paths = holdingWorkflows(root)[0].paths;
@@ -116,31 +120,83 @@ test("the last finished run on main is the verdict, past cancelled ones", async 
   assert.equal((await lastVerdict(root, 'x.yml', fakeGh(cancelled))).state, 'unknown');
 });
 
-test('a landing touching what a red workflow checks is held, with what failed and how to go on', async () => {
-  const root = workflows({ 'desktop.yml': WORKFLOW });
-  const gh = fakeGh([run(7, 'failure', '2026-11-12T01:00:00Z')], { 7: [{ name: 'Linux', conclusion: 'failure', steps: [{ name: 'Behaviour specs', conclusion: 'failure' }] }] });
-  const notes: string[] = [];
-  const held = await landHold(root, ['desktop/gpui/src/a.rs', 'docs/x.md'], (l) => notes.push(l), gh);
-  assert.ok(held);
-  assert.match(held, /^Desktop app \(desktop\.yml\) failed on main's last run, so nothing landed/);
-  assert.match(held, /https:\/\/github\.com\/o\/r\/actions\/runs\/7 \(7abcdef0/);
-  assert.match(held, /Failed: Linux \(Behaviour specs\)/);
-  assert.match(held, /^ {2}desktop\/gpui\/src\/a\.rs$/m);
-  assert.doesNotMatch(held, /docs\/x\.md/);
-  assert.match(held, /gh run view 7 --log-failed/);
-  assert.match(held, /tb land --despite-red/);
-  assert.equal(notes.length, 0);
-  // Files it doesn't check never ask GitHub at all.
-  const quiet = fakeGh([run(7, 'failure', 'a')]);
-  assert.equal(await landHold(root, ['docs/x.md', 'features/README.md'], () => {}, quiet), undefined);
-  assert.deepEqual(quiet.calls, []);
-  // Green goes ahead; GitHub out of reach goes ahead, saying so.
-  assert.equal(await landHold(root, ['desktop/a'], () => {}, fakeGh([run(8, 'success', 'a')])), undefined);
-  assert.equal(await landHold(root, ['desktop/a'], (l) => notes.push(l), fakeGh('offline')), undefined);
-  assert.match(notes.join('\n'), /Couldn't ask GitHub whether Desktop app \(desktop\.yml\) is green on main \(error connecting to api\.github\.com\), so this lands without that check/);
+// From 22 Nov runner.yml's Mac jobs ran into their 30 minutes on every
+// push, and each run came out cancelled, which was passed over as a newer
+// push's doing.
+test('a run cancelled by a job running into its own timeout is red; one cancelled for a newer push or by hand is passed over', async () => {
+  const root = workflows({ 'runner.yml': WORKFLOW });
+  const job = (id: number, name: string, conclusion: string, mins: number) => ({ databaseId: id, name, conclusion, startedAt: '2026-11-23T16:00:00Z', completedAt: new Date(Date.parse('2026-11-23T16:00:00Z') + mins * 60_000).toISOString(), steps: [{ name: 'Set up', conclusion: 'success' }, { name: 'Runner tests', conclusion }] });
+  const gh = fakeGh(
+    [
+      // Waited behind another and was replaced by a newer push: never ran a job.
+      run(5, 'cancelled', '2026-11-23T17:00:00Z', 'completed', '2026-11-23T18:10:00Z'),
+      // Stopped by hand after 40 minutes.
+      run(4, 'cancelled', '2026-11-23T16:20:00Z', 'completed', '2026-11-23T17:00:00Z'),
+      // Its one job stopped by hand within the minute: its annotations aren't asked for.
+      run(3, 'cancelled', '2026-11-23T16:10:00Z', 'completed', '2026-11-23T16:15:00Z'),
+      // Its Mac job ran into 30 minutes.
+      run(2, 'cancelled', '2026-11-23T16:00:00Z', 'completed', '2026-11-23T16:31:00Z'),
+      run(1, 'success', '2026-11-23T15:00:00Z'),
+    ],
+    { 4: [job(41, 'Linux', 'cancelled', 40)], 3: [job(31, 'Linux', 'cancelled', 0.5)], 2: [job(21, 'macos-26', 'cancelled', 30.5), job(22, 'ubuntu', 'success', 12), job(23, 'windows', 'cancelled', 3)] },
+    { 41: [{ message: 'The operation was canceled.' }], 21: [{ message: 'The job has exceeded the maximum execution time of 30m0s' }, { message: 'The operation was canceled.' }], 23: [{ message: 'The operation was canceled.' }] },
+  );
+  const kept = new Map<string, string[] | null>();
+  const memo = { get: (k: string) => kept.get(k), set: (k: string, v: string[] | null) => void kept.set(k, v) };
+  const v = await lastVerdict(root, 'runner.yml', gh, memo);
+  assert.equal(v.state, 'red');
+  assert.ok(v.state === 'red');
+  assert.equal(v.run.databaseId, 2);
+  assert.deepEqual(v.failedJobs, ['macos-26 (timed out after 30m0s in Runner tests)']);
+  const asked = gh.calls.map((c) => c.join(' '));
+  assert.ok(!asked.some((c) => c.includes('check-runs/31/')), 'a job cancelled within its first minute');
+  // However short next to the workflow's timeouts now: one raised by the fix mustn't hide this run.
+  assert.ok(asked.includes("api --paginate repos/o/r/check-runs/23/annotations?per_page=100 --jq .[].message"));
+  assert.ok(asked.includes("api --paginate repos/o/r/check-runs/21/annotations?per_page=100 --jq .[].message"));
+  // What was found about each run is kept, so the next look asks only for the list.
+  const again = gh.calls.length;
+  assert.equal((await lastVerdict(root, 'runner.yml', gh, memo)).state, 'red');
+  assert.equal(gh.calls.length, again + 1);
+  // Cancelled for newer pushes all the way back to a pass: green.
+  const passed = fakeGh([run(9, 'cancelled', '2026-11-23T17:00:00Z', 'completed', '2026-11-23T18:10:00Z'), run(8, 'success', '2026-11-23T16:00:00Z')]);
+  assert.equal((await lastVerdict(root, 'runner.yml', passed)).state, 'green');
+  // GitHub not saying why one was cancelled isn't a pass.
+  const offlineJobs: Gh = async (args) => (args[1] === 'list' ? { ok: true, stdout: JSON.stringify([run(9, 'cancelled', 'a', 'completed', 'b'), run(8, 'success', 'a')]), stderr: '' } : { ok: false, stdout: '', stderr: 'HTTP 403' });
+  assert.equal((await lastVerdict(root, 'runner.yml', offlineJobs)).state, 'unknown');
+  // A long day of cancelled runs is looked through a few at a time.
+  const many = fakeGh(Array.from({ length: CANCELLED_LOOKED_AT + 1 }, (_, i) => run(100 - i, 'cancelled', `2026-11-23T1${i % 10}:00:00Z`)));
+  assert.equal((await lastVerdict(root, 'runner.yml', many)).state, 'unknown');
 });
 
-test("a workflow that only runs in Mike's repo holds only there, not in a fork", async () => {
+test('a landing that sets off a red workflow gets one line saying so, and lands', async () => {
+  const root = workflows({ 'desktop.yml': WORKFLOW });
+  const gh = fakeGh([run(7, 'failure', '2026-11-12T01:00:00Z')], { 7: [{ name: 'Linux', conclusion: 'failure', steps: [{ name: 'Behaviour specs', conclusion: 'failure' }] }, { name: 'Mac', conclusion: 'failure' }, { name: 'Windows', conclusion: 'failure' }] });
+  const notes: string[] = [];
+  const said = new Set<string>();
+  await sayRedOnLanding(root, ['desktop/gpui/src/a.rs', 'docs/x.md'], (l) => notes.push(l), gh, undefined, said);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0], 'Desktop app (desktop.yml) is red on main (https://github.com/o/r/actions/runs/7, failed: Linux (Behaviour specs); Mac and 1 more); this lands anyway, and no fix thread is on it yet.');
+  // Asked again before main moves: not said twice.
+  await sayRedOnLanding(root, ['desktop/gpui/src/a.rs'], (l) => notes.push(l), gh, undefined, said);
+  assert.equal(notes.length, 1);
+  // Files it doesn't check never ask GitHub at all.
+  const quiet = fakeGh([run(7, 'failure', 'a')]);
+  await sayRedOnLanding(root, ['docs/x.md', 'features/README.md'], (l) => notes.push(l), quiet, undefined, new Set());
+  assert.deepEqual(quiet.calls, []);
+  // Green, or GitHub out of reach: nothing to say.
+  await sayRedOnLanding(root, ['desktop/a'], (l) => notes.push(l), fakeGh([run(8, 'success', 'a')]), undefined, new Set());
+  await sayRedOnLanding(root, ['desktop/a'], (l) => notes.push(l), fakeGh('offline'), undefined, new Set());
+  assert.equal(notes.length, 1);
+  // With its fix thread started, the line names it.
+  const dir = path.join(tmpDir(), 'gate');
+  fs.mkdirSync(path.join(dir, 'red-watch'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'red-watch', 'desktop.yml.json'), JSON.stringify({ state: 'red', since: 'x', thread: 'abcdef12-3456', run: 7, told: '2026-11-12T01:00:00Z' }));
+  const named: string[] = [];
+  await sayRedOnLanding(root, ['desktop/a'], (l) => named.push(l), gh, { dir }, new Set());
+  assert.match(named[0], /this lands anyway, and fix thread abcdef12 is on it\.$/);
+});
+
+test("a workflow that only runs in Mike's repo counts only there, not in a fork", async () => {
   const guarded = WORKFLOW.replace('on:\n', "jobs:\n  build:\n    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'\n\non:\n");
   const root = workflows({ 'desktop.yml': guarded });
   assert.equal(holdingWorkflows(root)[0].onlyIn, 'mikecann/threadbear');
@@ -149,40 +205,44 @@ test("a workflow that only runs in Mike's repo holds only there, not in a fork",
   // A fork: its own main, which these jobs never run on (gh would read upstream's runs).
   sh(root, 'git remote add origin git@github.com:someone/threadbear.git && git remote add upstream https://github.com/mikecann/threadbear.git');
   const fork = red();
-  assert.equal(await landHold(root, ['desktop/a'], () => {}, fork), undefined);
+  const said: string[] = [];
+  assert.deepEqual(watchedWorkflows(root), []);
+  await sayRedOnLanding(root, ['desktop/a'], (l) => said.push(l), fork, undefined, new Set());
   assert.deepEqual(fork.calls, []);
+  assert.equal(said.length, 0);
   // Mike's own copy, however origin's URL is written.
   sh(root, 'git remote remove upstream && git remote set-url origin https://github.com/MikeCann/threadbear.git');
-  assert.ok(await landHold(root, ['desktop/a'], () => {}, red()));
-  // One that names no repo holds anywhere, as before.
+  assert.deepEqual(watchedWorkflows(root).map((w) => w.file), ['desktop.yml']);
+  await sayRedOnLanding(root, ['desktop/a'], (l) => said.push(l), red(), undefined, new Set());
+  assert.equal(said.length, 1);
+  // One that names no repo counts anywhere, as before.
   assert.equal(holdingWorkflows(workflows({ 'desktop.yml': WORKFLOW }))[0].onlyIn, undefined);
 });
 
-test("GitHub's answer is shared for a minute, and an old red one still holds when GitHub won't answer", async () => {
+test("GitHub's answer is shared for a minute, and an old one still counts for half an hour when GitHub won't answer", async () => {
   const root = workflows({ 'desktop.yml': WORKFLOW });
   let now = 1_000_000;
   const cache = { dir: path.join(tmpDir(), 'gate'), now: () => now };
   const red = fakeGh([run(7, 'failure', 'a')], { 7: [{ name: 'Linux', conclusion: 'failure' }] });
-  assert.ok(await landHold(root, ['desktop/a'], () => {}, red, cache));
-  // Within the minute another landing doesn't ask again.
+  const state = async (gh: Gh) => (await keptVerdict(root, 'desktop.yml', gh, cache)).verdict.state;
+  assert.equal(await state(red), 'red');
+  // Within the minute another look doesn't ask again.
   now += FRESH_MS - 1;
   const quiet = fakeGh([run(8, 'success', 'b')]);
-  assert.ok(await landHold(root, ['desktop/a'], () => {}, quiet, cache));
+  assert.equal(await state(quiet), 'red');
   assert.deepEqual(quiet.calls, []);
-  // After it, GitHub out of reach (a 403 for the rate limit): still held, saying why.
+  // After it, GitHub out of reach (a 403 for the rate limit): the old answer, saying why.
   now += 2;
-  const notes: string[] = [];
-  assert.ok(await landHold(root, ['desktop/a'], (l) => notes.push(l), fakeGh('offline'), cache));
-  assert.match(notes.join('\n'), /GitHub didn't answer \(error connecting to api\.github\.com\), so this goes by what it said 1 min ago/);
+  const old = await keptVerdict(root, 'desktop.yml', fakeGh('offline'), cache);
+  assert.equal(old.verdict.state, 'red');
+  assert.match(old.note ?? '', /GitHub didn't answer \(error connecting to api\.github\.com\), so this goes by what it said 1 min ago/);
   // A green answer replaces it.
-  assert.equal(await landHold(root, ['desktop/a'], () => {}, fakeGh([run(9, 'success', 'c')]), cache), undefined);
-  // Older than half an hour, it's no answer at all, and the landing goes ahead as before.
+  assert.equal(await state(fakeGh([run(9, 'success', 'c')])), 'green');
+  // Older than half an hour, it's no answer at all.
   now += FRESH_MS;
-  assert.ok(await landHold(root, ['desktop/a'], () => {}, red, cache));
+  assert.equal(await state(red), 'red');
   now += STALE_MS;
-  const late: string[] = [];
-  assert.equal(await landHold(root, ['desktop/a'], (l) => late.push(l), fakeGh('offline'), cache), undefined);
-  assert.match(late.join('\n'), /so this lands without that check/);
+  assert.equal(await state(fakeGh('offline')), 'unknown');
 });
 
 test('tb land asks after the rebase, about what the branch changes, and a hold leaves main as it was before any check', async () => {

@@ -53,5 +53,8 @@ for (const r of rounds) {
   }
 }
 
-const summary = { night: path.basename(night), done: Boolean(done), updated: new Date().toISOString(), busyWaits: Number(busyWaits), ran, findings };
+// Times rounds waited because file making on the check folder was held up by
+// an unanswered macOS prompt on Tinker Desk's screen (nightly-fuzz.sh's volume_held).
+const held = lines(path.join(night, 'held.jsonl')).map((x) => ({ at: new Date(x.at * 1000).toISOString(), prompt: x.prompt }));
+const summary = { night: path.basename(night), done: Boolean(done), updated: new Date().toISOString(), busyWaits: Number(busyWaits), held, ran, findings };
 fs.writeFileSync(path.join(night, 'summary.json'), JSON.stringify(summary, null, 2));

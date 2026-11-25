@@ -55,6 +55,20 @@ Feature: An agent shows Mike a panel
     And I wait a moment
     Then the runner still has the request waiting
 
+  # A panel button's panel can reach the app a summary after the request to
+  # show it. The app spent the request on the first summary, and the
+  # Daily brief's Go through comments never opened (23 Nov 2026).
+  @panel.requests
+  Scenario: A panel that comes after its request still opens
+    When I open the thread "Morning brief"
+    And I'm looking at the app
+    And the agent asks to show the "mock.page" panel
+    And I wait a moment
+    Then the runner still has the request waiting
+    When the thread gets the page panel it asked for
+    Then the dock has the "mock.page" panel
+    And the runner heard the panel was shown
+
   @panel.requests @highlights.pinned
   Scenario: A shown pin retries when I return after a failed fetch
     Given the agent of "Morning brief" pinned a file of its own and showed it

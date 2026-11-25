@@ -7,7 +7,7 @@ import type { RunnerPart } from './part.ts';
 import type { BackgroundTask as ProtocolBackgroundTask } from '../protocol.ts';
 import type { BackgroundTask } from '../adapters/types.ts';
 import type { ThreadState } from '../runner.ts';
-import { CARRY_ON_RESTART, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, stoppedWorkMessage } from '../runner.ts';
+import { CARRY_ON_RESTART, STOPPED_CARRY_ON_MAX_AGE_MS, STOPPED_WORK_WAKES, STOPPED_WORK_WAKE_MAX_AGE_MS, stoppedWorkMessage } from './carry-on.ts';
 import { runningSession } from '../cli-session.ts';
 
 export const stoppedWorkPart = {

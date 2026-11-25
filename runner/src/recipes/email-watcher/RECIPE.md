@@ -6,36 +6,45 @@ by: Mike
 when: Every few minutes
 color: #3f63c4
 experiment: mailWatch
+runsFrom: Email
 ---
 
 ## About
 
-Agents often wait on an email: a reply from someone, an approval, a delivery, a
-code. Without this, a thread waiting on one sits there until you notice the
-email yourself and go and tell it.
+Loads of my threads end up waiting on an email: a reply from someone, an
+approval, a delivery, a code. Before this, I'd have to spot the email myself,
+find the thread and go tell it.
 
-Every few minutes the runner reads your new emails and a small model sorts them
-against your threads. One a hibernating thread was waiting on wakes it with the
-email. One about an open thread's work is kept for that thread's next turn.
-Anything else that looks like it needs you goes on a list that comes twice a
-day. Newsletters, receipts and notifications are left alone.
-
-It's Threadbear's Email watcher experiment, so this switch is that one. It came
-from Mike's own setup in November 2026.
+Now Threadbear looks at my new emails every few minutes and wakes the thread
+that was waiting, or passes the email to the thread it's about. Anything else
+that looks like it needs me goes on a short list twice a day, and newsletters,
+receipts and notifications are left alone.
 
 ## Example
 
-**Your emails, 4 pm**
+Title: Your emails, 4 pm
 
 3 emails that look like they need you:
-- **Sam Lee**, "Contract changes": wants a yes on the new dates by Monday.
-  Suggested: reply that Monday works.
-- **Landlord**, "Inspection": asks which morning next week suits.
-- **GitHub**, "Your token expires in 7 days": renew it, or the release job
-  stops.
 
-Since the last list: woke "Wait for the refund" (the refund came), and kept an
-email for "Book the venue".
+- **Sam Lee**, "Contract changes": wants a yes on the new dates by Monday. *Suggest:* reply that Monday works.
+- **Landlord**, "Inspection": asks which morning next week suits.
+- **GitHub**, "Your token expires in 7 days": renew it, or the release job stops.
+
+Since the last list: woke "Wait for the refund" (the refund came), and kept an email for "Book the venue".
+
+Card: 3 emails to look at
+Options: Reply to Sam | Done
+
+## Example 2
+
+Title: Wait for the refund
+
+The refund email from the airline came in at 11:42, so this thread woke up.
+
+They've refunded $412.50 to the card ending 0042, and say it takes 5 to 7 working days to show. I've noted the date and I'll check the statement next Friday.
+
+Card: Refund confirmed, $412.50
+Options: Thanks | Check sooner
 
 ## Setting it up
 

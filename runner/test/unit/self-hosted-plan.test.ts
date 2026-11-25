@@ -24,6 +24,9 @@ const m = (await import(planModule)) as {
   OWN_ADDRESSES_FILE: string;
   oldAddressStep: (a: { checks: { addr: string; want: Answer; got: Answer }[]; mode: string; again: string }) => { do: string; message: string };
   offTailnetStep: (a: { cli: boolean; handlers?: { Proxy?: string }[]; tailnetPort: number; localPort: number; moving: boolean }) => { do: string; message?: string };
+  BACKEND_IMAGE: string;
+  DASHBOARD_IMAGE: string;
+  pinnedImage: (docker: (args: string[]) => { status: number; stdout?: string }, ref: string) => void;
 };
 
 const LOCAL_URL = 'http://127.0.0.1:13210';
@@ -394,4 +397,89 @@ test('setup checks the old address before anything changes and again before runn
   // The end of setup doesn't call it this Mac only without saying what's left.
   assert.match(src, /on this Mac only\$\{sh\.oldAddress \? ' once your old proxy rules are gone \(below\)' : ''\}/);
   assert.match(src, /if \(sh\?\.oldAddress\) note\(`Your own address from before: \$\{sh\.oldAddress\}/);
+});
+
+// Daybreak 172: the backend owns the mirror's data and makes its admin key,
+// so setup runs exactly the committed image bytes, never whatever a tag
+// points at today.
+test('both Convex images are pinned by a 64-hex manifest digest, not a tag', () => {
+  for (const ref of [m.BACKEND_IMAGE, m.DASHBOARD_IMAGE]) {
+    assert.match(ref, /^ghcr\.io\/convex\/convex-(backend|dashboard)@sha256:[0-9a-f]{64}$/);
+  }
+  assert.notEqual(m.BACKEND_IMAGE.split('@')[1], m.DASHBOARD_IMAGE.split('@')[1]);
+});
+
+test('setup itself refers to the images only through the pinned constants', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const setup = await readFile(new URL('../../../scripts/setup.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(setup, /ghcr\.io\//, 'an image name in setup.mjs would bypass the pin');
+  assert.doesNotMatch(setup, /docker\(\['pull'/, 'setup pulls only through pinnedImage');
+  // Both are checked before either container is made, and each is made from
+  // its pinned constant (the reviews' gap: the order, and what docker run gets).
+  const checked = setup.indexOf('pinnedImage(docker, image)');
+  const loop = setup.lastIndexOf('for (const image of [BACKEND_IMAGE, DASHBOARD_IMAGE])', checked);
+  assert.ok(loop > 0 && checked - loop < 200, 'pinnedImage runs for both images');
+  for (const made of ['ensureContainer(BACKEND_CONTAINER, BACKEND_IMAGE,', 'ensureContainer(DASHBOARD_CONTAINER, DASHBOARD_IMAGE,']) {
+    assert.ok(setup.indexOf(made) > checked, `${made} comes after the check`);
+  }
+  assert.equal((setup.match(/ensureContainer\(/g) ?? []).length, 3, 'its definition and the two containers, nothing else');
+  assert.match(setup, /docker\(\['run', '-d', '--name', name, [^\n]*, image, \.\.\.cmd\]/, 'docker run gets the image ensureContainer was given');
+  // The throwaway container that checks the backend reaches itself runs after the pull too.
+  assert.ok(setup.indexOf("'--rm', '--entrypoint', curl[0], BACKEND_IMAGE") > 0);
+});
+
+// A fake Docker: `images` maps the reference it was asked for to the
+// RepoDigests of what it has under it.
+function fakeDocker(images: Record<string, string[]>, pullable: Record<string, string[]> = {}) {
+  const calls: string[][] = [];
+  const docker = (args: string[]) => {
+    calls.push(args);
+    const ref = args.at(-1)!;
+    if (args[0] === 'pull') {
+      if (!pullable[ref]) return { status: 1 };
+      images[ref] = pullable[ref];
+      return { status: 0, stdout: '' };
+    }
+    if (args[0] === 'image' && args[1] === 'inspect') {
+      if (!images[ref]) return { status: 1, stdout: '' };
+      return { status: 0, stdout: args.includes('--format') ? JSON.stringify(images[ref]) : '[{}]' };
+    }
+    return { status: 1 };
+  };
+  return { docker, calls };
+}
+
+test('a missing image is pulled by exactly its digest and checked after', () => {
+  const ref = m.BACKEND_IMAGE;
+  const { docker, calls } = fakeDocker({}, { [ref]: [ref] });
+  m.pinnedImage(docker, ref);
+  assert.deepEqual(calls.map((c) => c.at(-1)), [ref, ref, ref]);
+  assert.deepEqual(calls[1].slice(0, 1), ['pull']);
+  for (const c of calls) assert.ok(!c.some((a) => /:[0-9a-f]{40}$/.test(a)), 'never the commit-shaped tag');
+});
+
+test('a tag reference is refused before Docker is asked anything', () => {
+  const { docker, calls } = fakeDocker({});
+  for (const ref of ['ghcr.io/convex/convex-backend:d1fcbeaf939502a23a0f4b7e9095a12e84866294', 'ghcr.io/convex/convex-backend:latest', 'ghcr.io/convex/convex-backend@sha256:abc']) {
+    assert.throws(() => m.pinnedImage(docker, ref), /isn't pinned by digest/);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('an image whose RepoDigests lack the pinned digest stops setup before a container is made', () => {
+  const ref = m.BACKEND_IMAGE;
+  const other = `ghcr.io/convex/convex-backend@sha256:${'0'.repeat(64)}`;
+  const { docker } = fakeDocker({ [ref]: [other] });
+  assert.throws(() => m.pinnedImage(docker, ref), /doesn't carry that digest/);
+  const { docker: failing } = fakeDocker({}, { [ref]: [] });
+  assert.throws(() => m.pinnedImage(failing, ref), /doesn't carry that digest/);
+});
+
+test('retagging the commit-shaped tag to other bytes changes nothing setup runs', () => {
+  const ref = m.BACKEND_IMAGE;
+  const tag = 'ghcr.io/convex/convex-backend:d1fcbeaf939502a23a0f4b7e9095a12e84866294';
+  const evil = `ghcr.io/convex/convex-backend@sha256:${'e'.repeat(64)}`;
+  const { docker, calls } = fakeDocker({ [tag]: [evil], [ref]: [ref] });
+  m.pinnedImage(docker, ref);
+  assert.ok(calls.every((c) => c.at(-1) === ref));
 });

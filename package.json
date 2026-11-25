@@ -17,7 +17,7 @@
     "lint:files": "eslint --max-warnings 0 --no-warn-ignored --pass-on-unpruned-suppressions"
   },
   "dependencies": {
-    "@convex-dev/state-machines": "file:vendor/convex-dev-state-machines-0.1.3-paged.tgz",
+    "@convex-dev/state-machines": "file:vendor/convex-dev-state-machines-0.1.3-paged-36339f7.tgz",
     "@convex-dev/static-hosting": "0.2.1",
     "convex": "1.49.0",
     "react": "19.3.1",
@@ -31,7 +31,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "eslint": "10.15.0",
-    "mikecann-lint": "0.2.0",
+    "mikecann-lint": "0.3.0",
     "typescript": "7.0.2",
     "vite": "8.3.5"
   }

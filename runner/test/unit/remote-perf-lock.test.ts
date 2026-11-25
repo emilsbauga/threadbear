@@ -2,10 +2,10 @@
 // paths and real locks, without any build, GUI, network or installed runner.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { closedTmpParent } from '../helpers/closed-tmp.ts';
 
 const root = path.resolve(import.meta.dirname, '../../..');
 // Only there to catch a hang, as in remote-cache.test.ts: a run takes a few
@@ -16,7 +16,7 @@ const STUCK = 240_000;
 for (const mode of ['ordinary', 'perf', 'try', 'try-env', 'busy-copy', 'busy-run']) test(`remote.sh host leases: ${mode}`, async (t) => {
   const perf = mode === 'perf';
   const tryOnly = mode === 'try' || mode.startsWith('busy-');
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-remote-perf-'));
+  const work = fs.mkdtempSync(path.join(closedTmpParent(), '.tb-remote-perf-'));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const home = path.join(work, 'home');
   const bin = path.join(work, 'bin');

@@ -2,6 +2,8 @@
 // file in step with it. Both sides ignore unknown fields, so extra internal
 // fields never leak out: summaries are built explicitly by toSummary().
 
+import type { WaitState } from './wait-state.ts';
+
 export const PROTOCOL_VERSION = 1;
 
 export type CliProvider = 'claude' | 'codex';
@@ -238,6 +240,11 @@ export type ArchivedBy = 'mike' | 'agent' | 'threadbear';
 // whether he needed to see the thread at all, from the Archive menu.
 export type ArchiveVerdict = 'worked' | 'didntWork' | 'notNeeded' | 'didntNeedToSee' | 'gladISaw' | 'notSure';
 export const ARCHIVE_VERDICTS: readonly ArchiveVerdict[] = ['worked', 'didntWork', 'notNeeded', 'didntNeedToSee', 'gladISaw', 'notSure'];
+// Mike's word as he brings a thread back out of the archive: the
+// quietInboxMine experiment archived it and he should have been shown it
+// (runner/inbox-guess.ts, docs/protocol/threads.md "Inbox guess").
+export type UnarchiveVerdict = 'shouldHaveShown';
+export const UNARCHIVE_VERDICTS: readonly UnarchiveVerdict[] = ['shouldHaveShown'];
 
 export type BacklogDraft = { text: string; images: ImageRef[]; attachments?: AttachmentRef[]; revision: number; context?: string };
 // What fills a thread's context, in Claude's own words (threads.contextUsage,
@@ -283,6 +290,9 @@ export type ThreadSummary = {
   needs?: NeedsWho;
   asks?: OpenAsk[];
   asksSeq?: number;
+  // The agent said those asks wait until its own shell jobs end (end_turn's
+  // askWhen "jobsEnd"): while one runs the thread isn't waiting on Mike.
+  asksAfterJobs?: true;
   pendingReviews?: number;
   createdAt: string;
   updatedAt: string;
@@ -298,11 +308,19 @@ export type ThreadSummary = {
   awaitingApp?: { commit?: string; short?: string }; // waiting to hear the app restarted onto this commit (wait_for_app_restart), for the Updates panel
   woke?: { at: string; since?: string }; // woke from hibernating by itself, not looked at yet
   onOldRunner?: boolean; // finishing a turn on a runner that handed over (Handovers)
+  // What it's waiting on, worked out by the runner for every app to draw
+  // (docs/protocol/needs-you.md, "Wait state"; runner/src/wait-state.ts).
+  // Absent from runners before 23 Nov: apps fall back to their own rule.
+  waitState?: WaitState;
   archivedAt?: string;
   // Who archived it and, from the done card's Archive menu, the user's word
   // on how it went; only while archivedAt is set (Who archived a thread).
   archivedBy?: ArchivedBy;
   archiveVerdict?: ArchiveVerdict;
+  // Archived by the quietInboxMine experiment, as a model guessed Mike
+  // didn't need to see it: when, and the model's one-line why. Only while
+  // it's still archived by Threadbear (docs/protocol/threads.md, "Inbox guess").
+  quietlyArchived?: { at: string; why: string };
   starredAt?: string; // in the Starred section above the Inbox, unless archived
   preview: string;
   lastSeq: number;
@@ -714,8 +732,10 @@ export type BackgroundTask = {
 // card it left open isn't his to answer yet (docs/protocol/needs-you.md, "Needs you";
 // Mike, 2 Nov). Shells and monitors don't count: one is often a watcher
 // waiting for Mike to do what he was asked, as with the SD card on 1 Nov.
-export function agentsStillWorking(tasks: BackgroundTask[] | undefined): boolean {
-  return Boolean(tasks?.some((t) => t.kind === 'agent' || t.kind === 'other'));
+// A shell counts only when the agent said its asks wait for its jobs
+// (`afterJobs`: end_turn's askWhen "jobsEnd", the summary's asksAfterJobs).
+export function agentsStillWorking(tasks: BackgroundTask[] | undefined, afterJobs = false): boolean {
+  return Boolean(tasks?.some((t) => t.kind === 'agent' || t.kind === 'other' || (afterJobs && t.kind === 'shell')));
 }
 
 // "2 sub-agents, 1 shell job in the background" for tb list's flags; '' with none.
@@ -823,12 +843,28 @@ export type CodexTurnUsage = {
 // images: pictures pasted into the reply, each placed by a [Picture N] marker
 // in reply, as a message's are (Mike, 17 Nov: a picture pasted in the review
 // window went in as its file path).
-export type ReviewDraft = { pickedId?: string; pickedIds?: string[]; notes: Record<string, string>; reply?: string; images?: ImageRef[]; none?: true };
+// marks: Mike's own marks on the pictures (the reviewCanvas experiment),
+// each placed by a [Mark N] marker in reply.
+export type ReviewDraft = { pickedId?: string; pickedIds?: string[]; notes: Record<string, string>; reply?: string; images?: ImageRef[]; none?: true; marks?: ReviewUserMark[] };
+
+// Marks on a picture (the reviewCanvas experiment, docs/protocol/events.md
+// "Marks: the canvas"). box: x0, y0, x1, y1 as fractions of the picture
+// from its top left. An agent's mark rides on its shot; Mike's on the draft,
+// naming its option and shot (0-based), with the stroke he drew and a
+// cut-out of the picture there (image), kept as reply pictures are.
+export type MarkBox = [number, number, number, number];
+export type ReviewMarkKind = 'circle' | 'underline' | 'highlight' | 'arrow';
+export type ReviewMarkInk = 'yellow' | 'green' | 'rose';
+export type AgentMark = { kind: ReviewMarkKind; box: MarkBox; note?: string; ink?: ReviewMarkInk };
+export type ReviewUserMarkKind = 'circle' | 'highlight' | 'pin';
+export type ReviewUserMark = { n: number; kind: ReviewUserMarkKind; optionId: string; shot: number; box: MarkBox; path?: [number, number][]; image?: ImageRef };
 
 // One picture of an option: its first, or another screen or state of it.
-// media: a video (video/mp4, video/quicktime) or page (text/html) the
-// window plays or shows in place of image, which is then its still.
-export type ReviewShot = { title?: string; image: ImageRef; media?: ImageRef };
+// media: a video (video/mp4, video/quicktime), sound (audio/mpeg, audio/mp4,
+// audio/aac, audio/wav) or page (text/html) the window plays or shows in
+// place of image, which is then its still (a sound's waveform).
+// marks: the agent's marks on it (the reviewCanvas experiment).
+export type ReviewShot = { title?: string; image: ImageRef; media?: ImageRef; marks?: AgentMark[] };
 
 export type DesignReview = {
   id: string;
@@ -887,7 +923,7 @@ export type EventBody =
   | { type: 'button.updated'; button: ReplyButton }
   // origin is set only on messages the runner sent by itself (the resume
   // after a restart).
-  | { type: 'user.message'; text: string; images: ImageRef[]; attachments?: AttachmentRef[]; origin?: MessageOrigin; wakeReason?: string; scheduleId?: string; reviewId?: string; reviewResponse?: ReviewDraft; answers?: AskAnswer[]; editOf?: number }
+  | { type: 'user.message'; text: string; images: ImageRef[]; attachments?: AttachmentRef[]; origin?: MessageOrigin; wakeReason?: string; scheduleId?: string; reviewId?: string; reviewResponse?: ReviewDraft; answers?: AskAnswer[]; editOf?: number; sentAs?: string }
   // summary: the turn's summary, written by the runner from end_turn
   // givesWay: the turn's summary, with bullet replies off: any message of
   // the turn is the reply over it, however short

@@ -16,7 +16,7 @@ const DAYS = 14;
 
 async function world() {
   const b = memoryBackend();
-  const serviceId = await b.ctx.db.insert('runnerServices', { name: 'Cloud', provider: 'fly', box: { cpus: 1, memoryMb: 1024 }, image: 'img', limits: { maxBoxes: 5, idleSleepMinutes: 10, maxAwakeHoursPerDay: 8, deleteAfterDays: DAYS }, createdAt: 1 });
+  const serviceId = await b.ctx.db.insert('runnerServices', { name: 'Cloud', provider: 'fly', box: { cpus: 1, memoryMb: 1024 }, image: 'registry.fly.io/img@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', limits: { maxBoxes: 5, idleSleepMinutes: 10, maxAwakeHoursPerDay: 8, deleteAfterDays: DAYS }, createdAt: 1 });
   // The main Mac, which stays whatever happens.
   await b.ctx.db.insert('runners', { runnerId: 'mac000000001', name: 'Laptop', version: '1', lastSeenAt: Date.now(), startedAt: 'x', draining: false, threadCount: 1, byOwner: true });
   const box = async (n: number, state: Record<string, unknown>, extra: Record<string, unknown> = {}) => {

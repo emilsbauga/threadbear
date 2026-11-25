@@ -20,12 +20,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { followOptions } from './patch-trust.ts';
+import { followOptions } from './module-scan.ts';
 import type { PermissionMode } from './protocol.ts';
 import { untrustedGitSync } from './safe-git.ts';
-import { looksRunnable, reachOf, reachOfCommand, Reads } from './script-trust.ts';
+import { dirKey, looksRunnable, reachOf, reachOfCommand, Reads, trustedProgramDirs } from './script-trust.ts';
 import { allowCommand } from './shell-allowlist.ts';
-import { realPath } from './platform.ts';
+import { IS_WINDOWS, realPath } from './platform.ts';
 
 // The id the folder's entry has in a thread's `patches`.
 export const CLAUDE_PATCH_ID = 'claude-settings';
@@ -590,7 +590,7 @@ function reachedFiles(parts: Record<string, unknown>, dir: string, sources: stri
   // Node or Bun loads.
   const resolveImport = (from: string, spec: string) => {
     const want = path.resolve(from, spec.replace(/[?#].*$/, ''));
-    if (/^\.{0,2}\//.test(spec) && !isFile(want)) {
+    if (/^\.{1,2}(\/|$)|^\//.test(spec) && !isFile(want)) {
       const could = [...['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs', '.tsx', '.jsx', '.json', '.node'].map((e) => want + e), ...['.ts', '.js', '.mjs', '.cjs', '.json', '.node'].map((e) => path.join(want, `index${e}`)), path.join(want, 'package.json')].filter(isFile);
       if (could.length > 1 || could.some((f) => path.basename(f) === 'package.json')) problem ??= `${path.relative(base.folder, from) || '.'} imports ${spec}, which ${could.length} files could answer (${could.map((f) => path.basename(f)).join(', ')}), so Threadbear can't tell which one runs. Import it with its extension.`;
     }
@@ -665,6 +665,16 @@ function reachedFiles(parts: Record<string, unknown>, dir: string, sources: stri
     for (const raw of text.split(/[\s'"`;&|()<>=,:[\]{}]+/)) word(raw, inEnv);
   };
 
+  // A PATH an env block sets: hooks and servers run their programs from
+  // it, so only from folders programs are installed in, as a hook's own
+  // PATH (script-trust.ts, trustedProgramDirs). On Windows the name is
+  // any case (Path) and the list is split by `;`.
+  const envPath = (name: string | undefined, value: string, rel: string) => {
+    if (name === undefined || (IS_WINDOWS ? name.toUpperCase() : name) !== 'PATH') return;
+    const dirs = trustedProgramDirs(os.homedir(), opts.top);
+    const odd = value.split(path.delimiter).find((e) => !path.isAbsolute(e) || !dirs.has(dirKey(e)));
+    if (odd !== undefined) problem ??= `${rel} puts \`${odd || 'the current folder'}\` on PATH, which isn't a folder programs are installed in (the system's, Homebrew's, ~/.local/bin and the like), so a hook's program could be slipped in there.`;
+  };
   for (const [rel, part] of Object.entries(parts)) {
     if (!isObject(part)) continue;
     // Every string, for the files it names.
@@ -673,6 +683,7 @@ function reachedFiles(parts: Record<string, unknown>, dir: string, sources: stri
       // A shell's startup file, read relative to wherever the shell starts.
       const name = keys[keys.length - 1];
       if (keys.includes('env') && STARTUP_VARS.has(name) && !path.isAbsolute(s.replace(/\$\{?CLAUDE_PROJECT_DIR\}?/g, real))) problem ??= `${rel} sets ${name} to \`${s}\`, a file a shell reads from wherever it starts, so Threadbear can't tell which one it is.`;
+      if (keys.includes('env')) envPath(name, s, rel);
     });
     // Commands Claude runs by themselves, followed through what they run.
     walkStrings(part, (s, keys) => {
@@ -706,6 +717,7 @@ function reachedFiles(parts: Record<string, unknown>, dir: string, sources: stri
         if (name === 'mcpservers') {
           for (const [k, v] of yamlEnvBlocks(block)) {
             words(v, true);
+            envPath(k, v, rel);
             if (STARTUP_VARS.has(k) && !path.isAbsolute(v.replace(/\$\{?CLAUDE_PROJECT_DIR\}?/g, real))) problem ??= `${rel} sets ${k} to \`${v}\`, a file a shell reads from wherever it starts, so Threadbear can't tell which one it is.`;
           }
         }

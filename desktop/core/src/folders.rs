@@ -829,6 +829,27 @@ mod tests {
         assert!(base64_decode("not*valid").is_none());
     }
 
+    // Daybreak 170, round 11 (Gemini's): a picture's answer was decoded
+    // whole before its size was checked, however much more than it was
+    // asked for the runner sent.
+    #[test]
+    fn an_answer_bigger_than_asked_for_isnt_decoded() {
+        let answer =
+            |data: &str| json!({ "path": "/w/a.png", "size": 9, "modifiedAt": "x", "data": data });
+        // "Hello" is 5 bytes: asked for 5, it's read.
+        let read = FileRead::decode_at_most(&answer("SGVsbG8="), 5).unwrap();
+        assert_eq!(read.data, b"Hello");
+        assert!(!read.truncated);
+        // Asked for 1 byte, 3,000 bytes' worth isn't decoded.
+        let big = "QUFB".repeat(1000);
+        let read = FileRead::decode_at_most(&answer(&big), 1).unwrap();
+        assert!(read.truncated);
+        assert!(read.data.is_empty());
+        assert_eq!(read.path, "/w/a.png");
+        // Line breaks in the base64 are skipped as before.
+        assert_eq!(base64_decode("SGVs\nbG8=").unwrap(), b"Hello");
+    }
+
     #[test]
     fn a_file_read_answer_decodes() {
         let read = FileRead::decode(&json!({ "path": "/w/a.md", "size": 5, "modifiedAt": "2026-11-09T00:00:00.000Z", "mediaType": "text/markdown", "data": "SGVsbG8=", "truncated": true })).unwrap();
@@ -1082,6 +1103,33 @@ impl FileRead {
     }
 }
 
+impl FileRead {
+    /// As `decode`, but bytes over `most` aren't decoded: an answer whose
+    /// data is longer than `most` bytes' base64 is `truncated`, with none.
+    /// A runner's answer can be bigger than what it was asked for, and a
+    /// picture's bytes were decoded whole before their size was checked
+    /// (Gemini, Daybreak 170 round 11).
+    pub fn decode_at_most(value: &Value, most: u64) -> Option<FileRead> {
+        let text = value
+            .get("data")
+            .and_then(Value::as_str)
+            .map_or(0, str::len) as u64;
+        if text <= most.div_ceil(3).saturating_mul(4).saturating_add(4) {
+            return FileRead::decode(value);
+        }
+        let mut head = serde_json::Map::new();
+        for (key, field) in value.as_object()? {
+            if key != "data" {
+                head.insert(key.clone(), field.clone());
+            }
+        }
+        head.insert("data".into(), Value::String(String::new()));
+        let mut read = FileRead::decode(&Value::Object(head))?;
+        read.truncated = true;
+        Some(read)
+    }
+}
+
 /// Plain base64, as the runner sends a file's bytes; `None` if it isn't.
 /// Written out rather than a crate for the one place that reads it.
 pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
@@ -1095,11 +1143,12 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
             _ => None,
         }
     }
-    let bytes: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    // Read as it goes, not copied first without its line breaks.
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let mut buffer = 0u32;
     let mut bits = 0;
-    for &b in bytes.iter().take_while(|&&b| b != b'=') {
+    let digits = text.bytes().filter(|b| !b.is_ascii_whitespace());
+    for b in digits.take_while(|&b| b != b'=') {
         buffer = (buffer << 6) | value(b)?;
         bits += 6;
         if bits >= 8 {

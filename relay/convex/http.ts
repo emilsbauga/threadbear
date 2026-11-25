@@ -155,7 +155,10 @@ http.route({
     );
     const ok = r.status === 200;
     if (!ok) console.warn(`[clear] failed: ${reasonKey(r.status, r.reason)}`);
-    await ctx.runMutation(internal.relay.counted, { ok, status: r.status, ...(r.reason ? { reason: r.reason } : {}) });
+    // Its install and hour too, as /send's: without them a clear that went
+    // through kept admit's bad-token charge, so 20 clears stopped every push
+    // for the hour (Daybreak 169).
+    await ctx.runMutation(internal.relay.counted, { ok, status: r.status, installId: auth[1]!, hour: admitted.hour, ...(r.reason ? { reason: r.reason } : {}) });
     const gone = android ? fcmGone(r.status, r.reason) : r.status === 410 || r.reason === 'BadDeviceToken' || r.reason === 'Unregistered';
     return json({ ok, status: r.status, ...(r.reason ? { reason: r.reason } : {}), ...(gone ? { gone: true } : {}) });
   }),

@@ -101,9 +101,9 @@ test("on Windows a parent that started after its child isn't its parent", async 
         { pid: 300, ppid: 1, created: cliStarted }, // a thread's CLI, or a process that took a dead one's id
       ],
     });
-  assert.equal(await look(1000n), 'th1', 'started first: its parent');
-  assert.equal(await look(1600n), undefined, 'started after the shell: only has a dead parent\'s id');
-  assert.equal(await look(0n), 'th1', "Windows wouldn't say when: the id stands, as on a Mac");
+  assert.deepEqual(await look(1000n), { kind: 'thread', threadId: 'th1' }, 'started first: its parent');
+  assert.deepEqual(await look(1600n), { kind: 'owner' }, 'started after the shell: only has a dead parent\'s id');
+  assert.deepEqual(await look(0n), { kind: 'thread', threadId: 'th1' }, "Windows wouldn't say when: the id stands, as on a Mac");
 });
 
 test('on Windows a real connection is found through the helper', onlyOnWindows('The helper is PowerShell, which only Windows has'), async () => {
@@ -120,11 +120,11 @@ test('on Windows a real connection is found through the helper', onlyOnWindows('
     const sock = { remoteAddress: s.remoteAddress!, remotePort: s.remotePort!, localAddress: s.localAddress!, localPort: s.localPort! };
     // The first question starts PowerShell, which takes a second or more on a loaded machine.
     const lookupMs = PATIENCE_MS;
-    assert.equal(await threadOfSocket(sock, { registry: { threadOfPid: (p) => (p === child.pid ? 'th9' : undefined) }, known: () => true, log: nullLogger, lookupMs }), 'th9');
+    assert.deepEqual(await threadOfSocket(sock, { registry: { threadOfPid: (p) => (p === child.pid ? 'th9' : undefined) }, known: () => true, log: nullLogger, lookupMs }), { kind: 'thread', threadId: 'th9' });
     // Under another process: its parent (this test) is the CLI.
-    assert.equal(await threadOfSocket(sock, { registry: { threadOfPid: (p) => (p === process.pid ? 'th8' : undefined) }, known: () => true, log: nullLogger, lookupMs }), 'th8');
-    // Nobody's: the credential decides.
-    assert.equal(await threadOfSocket(sock, { registry: { threadOfPid: () => undefined }, known: () => true, log: nullLogger, lookupMs }), undefined);
+    assert.deepEqual(await threadOfSocket(sock, { registry: { threadOfPid: (p) => (p === process.pid ? 'th8' : undefined) }, known: () => true, log: nullLogger, lookupMs }), { kind: 'thread', threadId: 'th8' });
+    // Under no thread: the owner.
+    assert.deepEqual(await threadOfSocket(sock, { registry: { threadOfPid: () => undefined }, known: () => true, log: nullLogger, lookupMs }), { kind: 'owner' });
   } finally {
     child.kill();
     s?.destroy();
@@ -171,8 +171,8 @@ test('on Windows a lookup that fails or runs out of time closes the connection i
   await assert.rejects(threadOfSocket(sock, { ...deps, snapshot: () => new Promise(() => {}) }), /could not tell/);
   // A snapshot without this (open) connection hasn't seen what it should.
   await assert.rejects(threadOfSocket(sock, { ...deps, snapshot: async () => parseSnapshot('p 4242 1 9') }), /could not tell/);
-  // Found, and nobody's: the credential decides, as on a Mac.
-  assert.equal(await threadOfSocket(sock, { ...deps, snapshot: async () => parseSnapshot('c 127.0.0.1 1234 127.0.0.1 8797 4242\np 4242 1 9') }), undefined);
+  // Found, and under no thread: the owner, as on a Mac.
+  assert.deepEqual(await threadOfSocket(sock, { ...deps, snapshot: async () => parseSnapshot('c 127.0.0.1 1234 127.0.0.1 8797 4242\np 4242 1 9') }), { kind: 'owner' });
 });
 
 test("the helper's script is passed whole and PowerShell is run by its full path", () => {

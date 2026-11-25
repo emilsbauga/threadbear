@@ -54,7 +54,7 @@ export const quietInboxPart = {
     }
     if (!this.helperNobodyTouched(st)) return;
     this.emit(st, { type: 'system.note', text: HELPER_ARCHIVED_NOTE });
-    this.update({ threadId: rec.id, archived: true, archivedBy: 'threadbear' });
+    this.update({ threadId: rec.id, archived: true, archivedBy: 'threadbear', noted: true });
     this.log.info('quiet inbox: archived a finished helper thread', { threadId: rec.id, startedBy: rec.startedBy?.threadId });
   },
 

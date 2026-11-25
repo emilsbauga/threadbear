@@ -209,6 +209,7 @@ export async function restoreSave(o: { home: string; claudeDir: string; threadId
     fs.rmSync(scratch, { recursive: true, force: true });
   }
   rec.cwd = cwd;
+  rec.cwdAt = new Date().toISOString();
   const dir = paths.thread(o.home, o.threadId);
   writeTree(entries, 'thread', dir);
   fs.writeFileSync(path.join(dir, 'thread.json'), JSON.stringify(rec, null, 2));

@@ -51,3 +51,12 @@ function walk(node: Node): void {
 export function remarkPictureChips() {
   return (tree: unknown) => walk(tree as Node);
 }
+
+// A Notion card Mike mentioned in his message ([title](https://…notion.so/…)),
+// drawn as a chip as the Mac and the phones draw it (CardMentions.swift,
+// CardMentions.kt): an https address on Notion's own domains, whose host
+// ends where its path starts, so notion.so.example.com is no card.
+export function isNotionCard(href: string): boolean {
+  const m = /^https:\/\/([A-Za-z0-9.-]+)\//.exec(href);
+  return !!m && /^(?:[A-Za-z0-9-]+\.)*notion\.(?:so|site|com)$/.test(m[1]!) && !/[\s)]/.test(href);
+}

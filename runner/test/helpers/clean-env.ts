@@ -31,3 +31,9 @@ process.env.THREADBEAR_JOB_PRIORITY = 'normal';
 // Claude trust tests check what the follow lets run by itself, which is
 // what runs once the rule goes. clicks-only.test.ts turns it on.
 process.env.THREADBEAR_CLICKS_ONLY = '0';
+
+// check.sh's pass records (scripts/check-cache.mjs): a test's run of
+// check.sh never reads or writes the real ones, whatever folder the run
+// that started the tests named, nor runs fresh because that run did.
+delete process.env.THREADBEAR_CHECK_PASSES;
+delete process.env.THREADBEAR_CHECK_FRESH;

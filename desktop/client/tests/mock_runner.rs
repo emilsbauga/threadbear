@@ -47,15 +47,20 @@ fn start_mock() -> (Mock, RunnerConfig) {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("node on PATH");
-    let mock = Mock {
+    let mut mock = Mock {
         child,
         home: home.clone(),
     };
     let start = Instant::now();
     while !ready.exists() {
+        // Usually about a second, but a busy Windows CI runner once took over
+        // 20 s to start node (24 Nov 2026), so wait longer and say if it died.
+        if let Some(status) = mock.child.try_wait().unwrap() {
+            panic!("the mock runner exited before it was ready: {status}");
+        }
         assert!(
-            start.elapsed() < Duration::from_secs(20),
-            "the mock runner didn't start"
+            start.elapsed() < Duration::from_secs(60),
+            "the mock runner didn't start in 60 s"
         );
         std::thread::sleep(Duration::from_millis(50));
     }

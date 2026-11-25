@@ -37,7 +37,7 @@ export const FILES = [
   { file: 'connection', title: 'Connection, auth and requests', sections: ['Auth', 'Requests (app to runner)', 'Warm start', 'Models and effort across providers', 'Notifications (runner to app)'] },
   { file: 'types', title: 'Types', sections: ['Types'] },
   { file: 'events', title: 'Events, design reviews and reply buttons', sections: ['Events', 'Design reviews', 'Reviews on the phone', 'Reply buttons'] },
-  { file: 'needs-you', title: 'Needs you: the card a turn ends with', sections: ['Needs you'] },
+  { file: 'needs-you', title: 'Needs you: the card a turn ends with', sections: ['Needs you', 'Wait state'] },
   {
     file: 'updates',
     title: 'Updates and restarts',

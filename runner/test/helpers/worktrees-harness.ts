@@ -151,9 +151,12 @@ export function startTb(args: string[], cwd: string, env: Record<string, string 
   return { child: p, done, output: () => out };
 }
 
-// A copy of the repo's borrow-worktree.sh in `main`, with a setup that does nothing.
+// A copy of the repo's borrow-worktree.sh in `main`, with a setup that does
+// nothing, and the runner file it asks which slots threads work in.
 export function addBorrowScript(main: string): void {
   fs.copyFileSync(path.join(import.meta.dirname, '..', '..', '..', 'borrow-worktree.sh'), path.join(main, 'borrow-worktree.sh'));
+  fs.mkdirSync(path.join(main, 'runner', 'src'), { recursive: true });
+  for (const f of ['lived-in.ts', 'platform.ts']) fs.copyFileSync(path.join(import.meta.dirname, '..', '..', 'src', f), path.join(main, 'runner', 'src', f));
   write(main, { 'worktree-setup.sh': '#!/bin/sh\n' });
   sh(main, 'chmod +x borrow-worktree.sh worktree-setup.sh && git add -A && git commit -qm scripts');
 }

@@ -4,7 +4,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from '../helpers/fakes.ts';
-import { buildCheckup, checkupOff, countErrors, failingPatches, formatCheckup, parseLogLine, postDraft, readState, releasesOnMain, saveDraft, scrubForPosting, skipped, type Checkup } from '../../src/checkup.ts';
+import { key } from '../helpers/upstream-harness.ts';
+import { signersPath } from '../../src/upstream.ts';
+import { buildCheckup, checkupOff, countErrors, landingChecks, failingPatches, formatCheckup, parseLogLine, postDraft, readState, releasesOnMain, saveDraft, scrubForPosting, skipped, type Checkup } from '../../src/checkup.ts';
 
 const DAY = 86_400_000;
 const NOW = Date.parse('2026-11-19T12:00:00Z');
@@ -94,11 +96,134 @@ function repo(origin = 'https://github.com/someone/threadbear.git'): string {
   return dir;
 }
 
-test("the release main had before comes from main's reflog", () => {
+test("the release main had before comes from main's reflog", async () => {
   const dir = repo();
-  const r = releasesOnMain(dir);
+  const r = await releasesOnMain(dir);
   assert.equal(r.release?.tag, 'release/2026-11-19');
   assert.equal(r.previous?.tag, 'release/2026-11-05');
+});
+
+test("without a pinned key, refs under refs/threadbear/upstream aren't believed: the release check is off then, so it kept none", async () => {
+  // A fork whose releases after 16 Nov were only there was told it had
+  // brought in 16 Nov's when it had 21 Nov's (discussions/85).
+  const dir = repo();
+  const g = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+  g('commit', '-q', '--allow-empty', '-m', 'three');
+  g('update-ref', 'refs/threadbear/upstream/2026-11-20', 'HEAD');
+  g('commit', '-q', '--allow-empty', '-m', 'their own');
+  g('commit', '-q', '--allow-empty', '-m', 'four');
+  g('tag', '-a', '-m', 'r', 'kept', 'HEAD');
+  g('update-ref', 'refs/threadbear/upstream/2026-11-21', 'refs/tags/kept');
+  g('tag', '-d', 'kept');
+  // A tag of the fork's own with the same name, off main, doesn't hide it.
+  g('tag', 'release/2026-11-21', g('commit-tree', '-m', 'theirs', 'HEAD^{tree}').trim());
+  const r = await releasesOnMain(dir);
+  assert.equal(r.release?.tag, 'release/2026-11-19');
+  assert.equal((await releasesOnMain(dir, tmpDir('tb-checkup-nokey-'))).release?.tag, 'release/2026-11-19');
+});
+
+// A fork's copy as the release check leaves it (upstream.ts): the releases
+// it fetched tags for long ago under refs/tags, and the ones since only
+// under refs/threadbear/upstream/<date>, as signed tag objects. Main moves
+// from 20 Nov's release to 21 Nov's.
+function forkWithKeptReleases(): { dir: string; home: string; dates: Record<string, string> } {
+  const dir = repo();
+  const home = tmpDir('tb-checkup-home-');
+  const { priv, signers } = key(tmpDir('tb-checkup-key-'), 'mike-key');
+  fs.copyFileSync(signers, signersPath(home));
+  const env = (date: string) => ({ ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'Mike', GIT_COMMITTER_EMAIL: 'mike@example.com', GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date });
+  const g = (date: string, ...a: string[]) => execFileSync('git', ['-C', dir, '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8', env: env(date) }).trim();
+  const dates: Record<string, string> = {};
+  // Signed by the pinned key as release/<name>, then moved under the kept namespace.
+  const keep = (name: string, date: string, signedAs = name, by = priv) => {
+    g(date, '-c', 'gpg.format=ssh', '-c', `user.signingkey=${by}`, 'tag', '-s', '-m', `Threadbear ${signedAs}`, `release/${signedAs}`, 'HEAD');
+    g(date, 'update-ref', `refs/threadbear/upstream/${name}`, g(date, 'rev-parse', `refs/tags/release/${signedAs}`));
+    g(date, 'tag', '-d', `release/${signedAs}`);
+    dates[name] = new Date(date).toISOString();
+  };
+  const step = (file: string, date: string) => {
+    fs.writeFileSync(path.join(dir, file), file);
+    g(date, 'add', '.');
+    g(date, 'commit', '-q', '-m', file);
+  };
+  step('c.txt', '2026-11-20T02:00:00Z');
+  keep('2026-11-20', '2026-11-20T02:00:00Z');
+  fs.writeFileSync(path.join(dir, 'runner', 'src', 'a.ts'), "log.error('could not build a release of main');\nlog.error('a message new in 21 Nov');\n");
+  step('d.txt', '2026-11-21T02:00:00Z');
+  keep('2026-11-21', '2026-11-21T02:00:00Z');
+  // Not to be believed: an unsigned tag, one signed by another key, and a
+  // real signed tag kept under a newer name than it was signed as.
+  step('e.txt', '2026-11-22T02:00:00Z');
+  g('2026-11-22T02:00:00Z', 'tag', '-a', '-m', 'unsigned', 'release/2026-11-22', 'HEAD');
+  g('2026-11-22T02:00:00Z', 'update-ref', 'refs/threadbear/upstream/2026-11-22', g('2026-11-22T02:00:00Z', 'rev-parse', 'refs/tags/release/2026-11-22'));
+  g('2026-11-22T02:00:00Z', 'tag', '-d', 'release/2026-11-22');
+  keep('2026-11-23', '2026-11-22T02:00:00Z', '2026-11-23', key(tmpDir('tb-checkup-key-'), 'other-key').priv);
+  keep('2026-11-24', '2026-11-22T02:00:00Z', '2026-11-21b');
+  // Tags of the fork's own, with a key pinned (the reviews): a lightweight
+  // one with a later name, and an unsigned one under 21 Nov's name, both on
+  // main's tip, whose code isn't Mike's.
+  g('2026-11-22T02:00:00Z', 'tag', 'release/2026-11-30', 'HEAD');
+  g('2026-11-22T02:00:00Z', 'tag', '-a', '-m', 'ours', 'release/2026-11-21', 'HEAD');
+  return { dir, home, dates };
+}
+
+test('a fork whose newer releases are only under refs/threadbear/upstream/ names those, with their dates (Crispaul, 21 Nov)', async () => {
+  const { dir, home, dates } = forkWithKeptReleases();
+  const r = await releasesOnMain(dir, home);
+  const g = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
+  assert.deepEqual(r.release, { tag: 'release/2026-11-21', rev: g('rev-parse', 'refs/threadbear/upstream/2026-11-21^{commit}'), date: dates['2026-11-21'] });
+  assert.deepEqual(r.previous, { tag: 'release/2026-11-20', rev: g('rev-parse', 'refs/threadbear/upstream/2026-11-20^{commit}'), date: dates['2026-11-20'] });
+  // Without a pinned key the release check is off and nothing kept is
+  // believed: tags count as they did, the fork's own included.
+  const bare = await releasesOnMain(dir, tmpDir('tb-checkup-nokey-'));
+  assert.equal(bare.release?.tag, 'release/2026-11-30');
+  // The report reads Mike's messages from that release's code, which has no tag to name it by.
+  const c = await buildCheckup({ home, checkout: dir, logLines: [logLine(NOW - DAY, 'ERROR', 'a message new in 21 Nov')], patches: [], updateFailing: false, now: NOW });
+  assert.equal(c.release?.tag, 'release/2026-11-21');
+  assert.deepEqual(c.errors, [{ message: 'a message new in 21 Nov', count: 1 }]);
+  assert.match(formatCheckup(c), /^Brought in `release\/2026-11-21` from `release\/2026-11-20` \(1 day behind\)/);
+});
+
+test("a replacement ref can't make a fork's own code read as a release's (Codex's review)", async () => {
+  const { dir, home } = forkWithKeptReleases();
+  const g = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim();
+  // A side commit whose code has a private message, put in place of 21 Nov's release commit.
+  const release = g('rev-parse', 'refs/threadbear/upstream/2026-11-21^{commit}');
+  const put = (args: string[], input: string) => execFileSync('git', ['-C', dir, ...args], { input, encoding: 'utf8' }).trim();
+  const blob = put(['hash-object', '-w', '--stdin'], "log.error('acme provisioning failed');\n");
+  const src = put(['mktree'], `100644 blob ${blob}\ta.ts\n`);
+  const runner = put(['mktree'], `040000 tree ${src}\tsrc\n`);
+  const tree = put(['mktree'], `040000 tree ${runner}\trunner\n`);
+  const side = g('commit-tree', tree, '-p', g('rev-list', '--max-parents=0', 'HEAD'), '-m', 'ours');
+  g('replace', release, side);
+  const c = await buildCheckup({ home, checkout: dir, logLines: [logLine(NOW - DAY, 'ERROR', 'acme provisioning failed')], patches: [], updateFailing: false, now: NOW });
+  assert.equal(c.release?.tag, 'release/2026-11-21');
+  assert.deepEqual(c.errors, []);
+  assert.equal(c.otherErrors, 1);
+});
+
+
+test("landing checks: counts, typical and slowest times, Mike's step names only, no host names", () => {
+  const at = (d: number) => new Date(NOW - d * DAY).toISOString();
+  const lines = [
+    JSON.stringify({ at: at(20), ok: true, seconds: 9999 }),
+    JSON.stringify({ at: at(3), ok: true, seconds: 1200, waitedSeconds: 60, steps: [{ name: 'runner unit tests', status: 'ok', seconds: 700 }, { name: 'their secret step', status: 'ok', seconds: 900 }, { name: 'desktop lint', status: 'skip' }] }),
+    JSON.stringify({ at: at(2), ok: false, seconds: 1440, waitedSeconds: 120, steps: [{ name: 'runner unit tests', status: 'FAIL', seconds: 800 }, { name: 'desktop core tests', status: 'ok', seconds: 90 }] }),
+    JSON.stringify({ at: at(1), ok: true, seconds: 300, host: 'olli-mini', steps: [{ name: 'runner unit tests', status: 'ok', seconds: 200 }] }),
+    JSON.stringify({ at: at(1), dryRun: true, seconds: 5 }),
+    '{"cut sho',
+    JSON.stringify({ at: at(1), ok: true, seconds: 10, steps: [null, { name: 'private-client\nrunner unit tests', status: 'ok', seconds: 5 }] }),
+    JSON.stringify({ at: at(1), ok: true, seconds: 10, steps: {} }),
+    'null',
+  ];
+  const k = landingChecks(lines, NOW - 14 * DAY, (name) => name !== 'their secret step')!;
+  assert.deepEqual(k, { count: 5, failed: 1, medianSeconds: 300, slowestSeconds: 1440, medianWaitSeconds: 120, onCheckHost: 1, steps: [{ name: 'runner unit tests', medianSeconds: 700 }, { name: 'desktop core tests', medianSeconds: 90 }] });
+  const c: Checkup = { sinceDays: 14, errors: [], otherErrors: 0, updateFailing: false, patches: [], otherPatchesFailing: 0, checks: k };
+  const out = formatCheckup(c);
+  assert.match(out, /Landing checks in the last 14 days: 5 \(1 failed\), 1 on a check host, 4 on their Mac\. Typical 5 min, slowest 24 min, typical wait for the lock 2 min\./);
+  assert.match(out, /Slowest steps \(typical\): runner unit tests 12 min, desktop core tests 2 min\./);
+  assert.doesNotMatch(out, /olli-mini|secret|private/);
+  assert.equal(landingChecks([], 0, () => true), undefined);
 });
 
 test("off with releases.checkup false, and in Mike's own copy", () => {
@@ -107,10 +232,10 @@ test("off with releases.checkup false, and in Mike's own copy", () => {
   assert.match(checkupOff(repo('git@github.com:mikecann/threadbear.git'), {})!, /Mike's own copy/);
 });
 
-test('a check-up drafts from the log, then posts that draft once per release', () => {
+test('a check-up drafts from the log, then posts that draft once per release', async () => {
   const dir = repo();
   const home = tmpDir('tb-checkup-home-');
-  const c = buildCheckup({
+  const c = await buildCheckup({
     home,
     checkout: dir,
     logLines: [logLine(NOW - DAY, 'ERROR', 'could not build a release of main', { error: 'x' }), logLine(NOW - DAY, 'ERROR', 'their own thing')],

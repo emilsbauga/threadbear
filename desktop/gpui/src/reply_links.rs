@@ -458,12 +458,10 @@ impl ThreadPane {
                     cx,
                 );
             }
-            // A PR opens as a tab in the pane with the inlinePrs experiment;
-            // ⌘-click still takes it to the browser.
+            // A PR opens as a tab in the pane; ⌘-click still takes it to
+            // the browser.
             Some(LinkTarget::Web(web))
-                if !command
-                    && crate::pr_view::pr_url(&web).is_some()
-                    && self.opens_prs_here(cx) =>
+                if !command && crate::pr_view::pr_url(&web).is_some() && self.owns_pane(cx) =>
             {
                 self.open_pr_link(&web, cx)
             }
@@ -525,16 +523,6 @@ impl ThreadPane {
             // project page's link goes to its app.
             _ => open_gate::open_file(&path, Origin::ThisMac, cx),
         }
-    }
-
-    fn opens_prs_here(&self, cx: &App) -> bool {
-        self.owns_pane(cx)
-            && self
-                .composer
-                .read(cx)
-                .app
-                .upgrade()
-                .is_some_and(|app| crate::pr_view::on(app.read(cx)))
     }
 
     /// A PR's tab in the pane beside this thread, opening the pane if it's shut.
@@ -603,7 +591,7 @@ impl ThreadPane {
 fn show_pane(app: &Entity<crate::app::Threadbear>, section: &str, cx: &mut App) {
     let section = section.to_owned();
     app.update(cx, |t, cx| {
-        if !t.dock.read(cx).controller.is_showing(&section) {
+        if !t.dock.read(cx).is_showing(&section) {
             t.show_pane(&section, cx);
         }
     });
@@ -1133,8 +1121,7 @@ fn rested(
         .detach();
 }
 
-/// A rest on a PR link that opens in a tab (the inlinePrs experiment) starts
-/// reading the PR, ahead of the click (pr_view.rs `preload_pr`).
+/// A rest on a PR link starts reading the PR, ahead of the click (pr_view.rs `preload_pr`).
 fn preload_pr(pane: &WeakEntity<ThreadPane>, url: &str, cx: &mut App) {
     if crate::pr_view::pr_url(url).is_none() {
         return;
@@ -1142,9 +1129,6 @@ fn preload_pr(pane: &WeakEntity<ThreadPane>, url: &str, cx: &mut App) {
     let Some(app) = pane.upgrade().and_then(|p| p.read(cx).app.upgrade()) else {
         return;
     };
-    if !crate::pr_view::on(app.read(cx)) {
-        return;
-    }
     let side = app.read(cx).side.clone();
     side.update(cx, |side, cx| side.preload_pr(url, cx));
 }
@@ -1242,13 +1226,14 @@ struct MediaThumbnail;
 
 impl Asset for MediaThumbnail {
     type Source = (String, Option<threadbear_core::open_policy::MediaVersion>);
-    type Output = Result<std::sync::Arc<RenderImage>, ImageCacheError>;
+    /// The system's thumbnail as a PNG, drawn through the picture budget
+    /// (fit_picture.rs), so its pixels go when it's out of sight.
+    type Output = Result<std::sync::Arc<Image>, ImageCacheError>;
 
     fn load(
         (path, expected): Self::Source,
         cx: &mut App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
-        let renderer = cx.svg_renderer();
         let background = cx.background_executor().clone();
         static DECODER: futures::lock::Mutex<()> = futures::lock::Mutex::new(());
         async move {
@@ -1257,9 +1242,10 @@ impl Asset for MediaThumbnail {
                 .spawn(async move { open_gate::media_thumbnail(&path, Origin::ThisMac, expected) })
                 .await
                 .ok_or_else(|| std::io::Error::other("No media thumbnail"))?;
-            Image::from_bytes(ImageFormat::Png, bytes)
-                .to_image_data(renderer)
-                .map_err(Into::into)
+            Ok(std::sync::Arc::new(Image::from_bytes(
+                ImageFormat::Png,
+                bytes,
+            )))
         }
     }
 }
@@ -1268,7 +1254,32 @@ fn media_picture(path: &str, meta: Option<&std::fs::Metadata>) -> ImageSource {
     let version = meta.and_then(policy::media_version);
     let key = (path.to_owned(), version);
     ImageSource::Custom(std::sync::Arc::new(move |window, cx| {
-        window.use_asset::<MediaThumbnail>(&key, cx)
+        // At most MEDIA_KEPT kept, the longest kept going first: each card
+        // hovered over is one, so hovering over many can't pile them up.
+        type Kept = (
+            std::collections::VecDeque<<MediaThumbnail as Asset>::Source>,
+            std::collections::HashSet<<MediaThumbnail as Asset>::Source>,
+        );
+        static KEPT: std::sync::LazyLock<std::sync::Mutex<Kept>> =
+            std::sync::LazyLock::new(Default::default);
+        const MEDIA_KEPT: usize = 200;
+        {
+            let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+            let (order, known) = &mut *kept;
+            if known.insert(key.clone()) {
+                order.push_back(key.clone());
+                while order.len() > MEDIA_KEPT {
+                    if let Some(old) = order.pop_front() {
+                        known.remove(&old);
+                        cx.remove_asset::<MediaThumbnail>(&old);
+                    }
+                }
+            }
+        }
+        match window.use_asset::<MediaThumbnail>(&key, cx)? {
+            Ok(png) => crate::fit_picture::draw_bytes(&png, cx),
+            Err(e) => Some(Err(e)),
+        }
     }))
 }
 
@@ -1765,8 +1776,9 @@ pub(crate) fn peek_command(
     window.render_frame(cx);
     let picture = picture_key.map(|key| match window.get_asset::<MediaThumbnail>(&key, cx) {
         Some(Ok(image)) => {
-            let size = image.size(0);
-            format!("ok thumbnail {}x{}", size.width.0, size.height.0)
+            // A PNG now, drawn through the picture budget: its own size.
+            let (width, height) = crate::fit_picture::size_of(image.bytes()).unwrap_or((0, 0));
+            format!("ok thumbnail {width}x{height}")
         }
         Some(Err(_)) => "ok thumbnail failed".to_owned(),
         None => "ok thumbnail loading".to_owned(),

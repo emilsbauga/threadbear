@@ -6,7 +6,7 @@
 // run it on Tinker Desk's desktop, never Mike's (AGENTS.md, "Tests that need
 // the real screen"). Build with `swiftc -O -o post-gesture post-gesture.swift`.
 //
-// usage: post-gesture <x> <y> <hold ms at end> <token>...
+// usage: [PG_FLAGS=cmd] post-gesture <x> <y> <hold ms at end> <token>...
 //   dx,dy  a movement (fingers' way; right and down positive)
 //   M      after the lift, 10 momentum events down the same way
 import CoreGraphics
@@ -97,6 +97,8 @@ func post(_ dx: Double, _ dy: Double, phase: Int64, momentum: Int64 = 0) {
     cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: x)
     cg.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: y)
     cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: y)
+    // PG_FLAGS=cmd: with ⌘ held, as a zoom on a board (thread-canvas).
+    if env["PG_FLAGS"] == "cmd" { cg.flags = .maskCommand }
     cg.location = p
     cg.post(tap: .cghidEventTap)
 }

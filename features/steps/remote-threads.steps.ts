@@ -17,6 +17,17 @@ When('its runner lets the thread go to mac-mini while the old Mac still lists it
   await this.app.do({ cmd: 'mock', method: 'moveAway', params: { threadId: d.selection.id, staleIndex: true } });
 });
 
+// That runner's row again in the other runners' table, as any change there
+// sends it (the table never says whether a thread is shared).
+When('mac-mini lists {string} again', async function (this: ThreadbearWorld, title: string) {
+  const d = await this.app.dump();
+  const id = this.thread(d, title)?.id;
+  assert.ok(id, `no row "${title}"`);
+  await this.app.do({ cmd: 'mock', method: 'relist', params: { threadId: id } });
+  // Nothing on screen changes as it lands, so it is given time to.
+  await sleep(500);
+});
+
 Then('the row {string} is on the runner {string}', async function (this: ThreadbearWorld, title: string, runner: string) {
   await this.until(`"${title}" on ${runner}`, (d) => this.thread(d, title)?.runner === runner);
 });

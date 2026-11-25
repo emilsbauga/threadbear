@@ -15,15 +15,23 @@ under Running, and the phone's thread document leaves `needs` out until
 they're done. `needs` and `asks` stay on the summary, so the card shows if
 he opens the thread and he can answer early. A question or approval the
 agent is stuck on (`status` "waiting") still counts straight away, and shell
-jobs and monitors don't hold anything back: one is often watching for Mike
-to do what he was asked. The stuck-job check (Stuck background jobs) wakes
+jobs and monitors don't hold anything back by themselves: one is often
+watching for Mike to do what he was asked. The stuck-job check (Stuck background jobs) wakes
 the thread if a sub-agent stalls, so an ask can't stay hidden for good.
+
+A shell job the thread itself waits on (a landing) holds the asks back when
+the agent says so (24 Nov 2026; `JOBS_NUDGE` in needs.ts has the why): needs
+"you" with a shell job running, on a CLI that wakes when jobs end (not
+Codex), is refused once a turn without `askWhen` "jobsEnd" or "now". With
+"jobsEnd" the `needs` record keeps `afterJobs`, the shells' ids; while all
+run the summary has `asksAfterJobs: true` and the thread is as with
+sub-agents above. `HELD_NUDGE` keeps the next turn from dropping the asks.
 
 - **The tool.** Every thread's own agent (not its sub-agents) has
   `end_turn` in the `threadbear` tools: `{ needs?: "you" | "nothing",
   summary?: string[], asks?: { action, reply?, why?, options?,
   suggested?, links? }[], next?: string[], archive?: boolean,
-  byline?: string }`. `byline` is under "Who started a thread".
+  byline?: string, askWhen? }`. `byline` is under "Who started a thread".
   The asks are the agent's "What I need from you" list, written there
   instead of in its message: each is one paragraph, `action` its first
   sentence (one concrete thing to do, or a question) and `why` the rest
@@ -193,7 +201,9 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   isn't in the thread's events (a Codex sub-agent's, which runs through the
   same handler, is capped at one note a turn in memory). Turns an edit cut
   out don't count towards the ten. A project it can't read within 2 seconds
-  is left out. Called again, it's taken as it is. Since 20 Nov
+  is left out. Since 23 Nov 2026 it's also left alone while something will
+  run the thread again: a background job or sub-agent of its own still
+  going, or a schedule sending to it that isn't paused or finished. Called again, it's taken as it is. Since 20 Nov
   2026: the calendar site's thread said Done twice with its project's state
   saying "Next is Peter's review of the live site" and three follow-ups
   never answered, and Mike nearly archived it. He didn't want old questions
@@ -420,6 +430,12 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   it's over, with a `system.note` saying why; the thread can't archive
   itself mid-turn, as that stops the CLI. It's ignored with `needs: "you"`,
   on an interrupted or failed turn, and when a message is already queued.
+  A turn the CLI opened by itself (a background job or sub-agent ended)
+  can archive too, as that's where an agent waiting on the job reports
+  it's done; until 23 Nov 2026 those dropped it silently, and a thread
+  that said it was archiving itself stayed in Mike's inbox. None of them
+  applies while a message of Mike's that an interrupt left unread is saved
+  for later (`interruptedMessages`), as that turn never shows it.
   A message sent into the turn after that call cancels it, until an `end_turn`
   asks again, so a thread doesn't go while Mike is still talking to it.
   The description tells agents to use it only when Mike asks, so a thread
@@ -668,8 +684,14 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   out, a day. A named thread is done once it has finished a turn (its own
   or one its CLI opened after a job ended) with `needs: "nothing"`,
   nothing queued, no sub-agent or background job running and no `snooze`
-  or `waitFor` of its own, nor a job that ended mid-turn whose result
-  turn is still to come, with no new work since; or has been archived
+  or `waitFor` of its own, with no new work since. A job that ended
+  during the turn (or just before it) holds the finish for the wake grace
+  (15 s from the turn's end): the CLI may open a turn to read its result,
+  and that turn's end decides; with none (it mostly folds the result into
+  the turn it's in), or once the CLI exits or the runner stops, the held
+  card finishes the thread after all, quiet-inbox and the inbox guess
+  included. Not if Mike went back to an earlier message meanwhile, and one
+  he snoozed meanwhile starts no lab review. Or it has been archived
   or deleted. The runner keeps each thread's last finish and its reply on
   the thread (`finished` in thread.json) and drops it at any new work (a
   message, a review's answer, going back to an earlier message, any turn
@@ -695,7 +717,27 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
   from the least access, below even Ask). Otherwise it wakes with a `system.note` saying
   which had less access and that what they said wasn't passed on, and no
   turn starts: Mike reads them and says what next (Daybreak, 12 Nov
-  2026). A message, a wake or
+  2026). The same rule holds every other word held for later (a nested
+  thread's held report, a reply from another runner, a schedule another
+  thread set up, and another thread's `send_message`, `tb send` or
+  `move_thread` `then` waiting in the queue behind a running turn, whose
+  ceiling is the receiver's access as it was accepted, or as the card
+  showed it; a review's or a panel member's answer too, each merged answer
+  checked again; and an agent's own words that come back to it later,
+  `wait_for_app_restart`'s text and an end_turn snooze in words, at its
+  saved mode as it wrote them (`wakeCeiling`; ones from before are bound
+  at the thread's mode as the runner starts):
+  `runner/src/runner/ceiling.ts`). The wake's message is checked again
+  as it leaves the queue (one queued again after an interrupted delivery
+  keeps its ceiling; one queued by an older release goes by its
+  schedule's, its sender's, or Ask for the runner's own), and a last time
+  just before it goes to the CLI, after any wait for a CLI to close or a
+  worktree, or after a cold compaction. Held then, the turn ends with
+  nothing sent, and its row, though in the transcript, is left out of
+  what an agent is told the thread said (`withheldSeqs`: a handoff's
+  history, the card reviewer). A thread's `tb send`
+  can't start like another thread's message (`[Sent by the agent in the
+  thread`), as the runner reads that line to know who a report is from. A message, a wake or
   another snooze first clears `waitingOn`, so a thread that sends its
   report wakes it as before and its finishing later does nothing. An
   entry can be `{ thread, until }` instead of an id: `until` (up to 200
@@ -790,6 +832,20 @@ the thread if a sub-agent stalls, so an ask can't stay hidden for good.
 - **What decides `needsYou`**, in order: an approval or question waiting;
   a thread marked unread; then a finished turn after `lastSeenSeq`,
   unless that turn said `nothing`.
+- **Put away.** A thread Mike archived or hibernated isn't waiting on him,
+  by his own say, so the phone's row for it (`sync:upsertThreads`, the
+  row's `needsYou`) says false while it's archived or its `snoozedUntil`
+  is still to come, whatever the summary says, a waiting approval
+  included. So no push goes for it, one held while he was at the Mac
+  isn't sent when he leaves, and one already on his phone comes down
+  (`push:clear`), as for a thread he'd seen. A hibernated thread waking
+  (its time, a message, Wake) writes its row again, so it pushes then if
+  it still needs him; unarchiving one does the same. The summary's own
+  `needsYou` is unchanged, as the Mac's lists sort put-away threads by
+  `archivedAt` and `snoozedUntil` themselves (and `list_threads` says
+  "needs the user" only for one that isn't put away). Until 23 Nov 2026
+  an archived or hibernated unread thread's held push still reached the
+  phone when he left, and a delivered one stayed.
 - **Only completed turns.** An interrupted or failed turn says nothing.
   A sub-agent's `end_turn` (Claude's are never in the thread's events;
   Codex's carry the child's prefix, `<child>/<id>`) is ignored.
@@ -891,3 +947,52 @@ stateDiagram-v2
   reopened --> [*]: turn ends
   open --> [*]: turn ends
 ```
+
+## Wait state
+
+`runner/src/wait-state.ts`. What a thread is waiting on, worked out by the
+runner and sent on every summary as `waitState`, so the Mac, the iPhone,
+Android and the website draw the same section, badge and card. Until 23 Nov
+2026 each app had its own copy of the rule, and each new thing a thread
+could wait on (a job, other threads, landing, an app restart) reached only
+the Mac (the 22 Nov weekly step back).
+
+The states, each with its section (Starred instead, for a starred thread
+that isn't archived):
+
+| `waitState` | Section | What it means |
+|---|---|---|
+| `working` | Running | A turn is running or starting. |
+| `job` | Running | No turn, a background job still going, and nothing asked of Mike that it isn't still working on. |
+| `onThreads` | Running | Its agent put it away to hear back from other threads (`waitingOn`). |
+| `landing` | Running | Its agent put it away until something it watches for, with commits not on main. |
+| `appRestart` | Running | Its agent put it away until the app restarts onto what it landed (`awaitingAppRestart`). |
+| `sending` | Running | Only an app's own guess while a message is on its way; never sent. |
+| `card` | Inbox | Stuck on a card only Mike can answer. First in every order. |
+| `review` | Inbox | A design review waits on his pick, the turn over. |
+| `needsYou` | Inbox | The last turn asked him for something he hasn't done, read or not, or ended without saying and he hasn't read it, or it's marked unread. |
+| `limit` | Inbox | Out of usage (`waitingForRoom`); carries on at the reset, but counts as wanting him. |
+| `done` | Inbox | Finished with nothing for him. |
+| `scheduled` | Hibernating | Idle, nothing for him, and a schedule will message it. |
+| `hibernating` | Hibernating | Snoozed, and not waiting on its own work. |
+| `archived` | Archived | Archived. |
+
+The moves between them are listed once, in `WAIT_MOVES`; a move it doesn't
+list is logged by the runner, not refused, as the state is worked out from
+the record rather than stored. A schedule booked, paused or deleted sends
+`thread.updated` for each thread whose state it moved.
+
+`urgencyOf` and `countsForMike` give the Inbox's Needs you order and the
+badge from the state and `status` alone: `card` and `review` 0, `needsYou` 1
+after a failed or stopped turn else 2, `limit` 2, `done` 3 after a failed or
+stopped turn else 4; 2 or less counts.
+
+Apps draw `waitState` and keep their own rule only for a summary without
+one (a runner from before 23 Nov) and for their optimistic guesses
+(`sending` while a message is on its way, archived at once on Archive).
+An unknown value is drawn as `done`. `shared/cases/wait-states.json` holds
+the cases every app and the runner run. The fields the rule reads stay on
+the summary for older apps.
+
+The inbox guess archives through the quiet inbox (docs/protocol/threads.md,
+"A quiet inbox" and "Inbox guess"); a thread it archives is then `archived` like any other.

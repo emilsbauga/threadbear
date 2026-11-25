@@ -67,6 +67,14 @@ class ModelsTest {
         assertEquals(Instant.ofEpochMilli(8_640_000_000_000_000), far.snoozedUntil)
     }
 
+    @Test fun aWaitStateIsReadAndOptional() {
+        assertNull(PhoneThread.read(obj(row)).waitState)
+        val withState = { v: String -> PhoneThread.read(obj(row.replace("\"view\":\"inbox\"", "\"view\":\"inbox\",\"waitState\":$v"))).waitState }
+        assertEquals(WaitState.ON_THREADS, withState("\"onThreads\""))
+        assertEquals(WaitState.DONE, withState("\"somethingNew\""))
+        assertNull(withState("3"))
+    }
+
     @Test fun identityAndRunners() {
         val me = PhoneIdentity.read(obj("""{"name":"android","expiresAt":null,"apiVersion":71}"""))
         assertEquals(71, me.apiVersion)

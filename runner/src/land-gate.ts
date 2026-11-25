@@ -1,28 +1,31 @@
-// `tb land` holding a landing while a GitHub workflow it would set off is red
-// on main (docs/thread-worktrees.md, "Red on GitHub").
+// Which GitHub workflows on main tb watches, and how their last run there
+// went (docs/thread-worktrees.md, "Red on GitHub").
 //
 // The Desktop app workflow failed on every push of main for two days (10 to 12
 // Nov) while threads went on landing GPUI changes, each adding to what was
 // red: the Windows build stopped linking, and specs failed only on GitHub's
 // Macs (their bash) and Linux (its words for Finder and ⌘Q). None of it showed
 // in tb land's quick check, and couldn't have: those specs pass on Tinker
-// Desk, and running them all takes 15 to 30 minutes a system. So a workflow
-// that says so in a comment of its own holds the landings it would run for
-// while its last run on main failed, and the red gets fixed before more goes
-// on top of it.
+// Desk, and running them all takes 15 to 30 minutes a system.
 //
-// A workflow opts in with a line of its own anywhere in its file:
+// Until 24 Nov a red workflow held every landing that changed what it
+// checks. It held 31% of threads in the days before, 40% of those just used
+// --despite-red, and desktop.yml's runs take 40 to 80 minutes and failed in
+// about a third of them, so mostly it was a detour. Now a red one holds
+// nothing: tb land says so in a line, and `tb red-watch` (red-watch.ts)
+// starts one thread to fix it.
+//
+// A workflow opts in with a line of its own anywhere in its file (the words
+// are from when it held landings; forks' workflows have them too):
 //
 //   # tb land: hold while red
 //
-// Its `on: push: paths:` say which landings it holds (all of them, with no
-// paths). Its own runs are asked of GitHub with gh. When gh isn't there, or
-// can't say, the landing goes ahead, saying so: being offline shouldn't stop
-// work. `tb land --despite-red` lands anyway, for the landing that's the fix.
+// Its `on: push: paths:` say which landings it's named in (all of them,
+// with no paths). Its own runs are asked of GitHub with gh.
 //
 // A workflow whose jobs only run in one repo (`github.repository ==
-// 'owner/name'` in its `if:`, as Mike's all do since 19 Nov 2026) holds only
-// in a checkout whose origin is that repo. In a fork, gh reads the
+// 'owner/name'` in its `if:`, as Mike's all do since 19 Nov 2026) counts
+// only in a checkout whose origin is that repo. In a fork, gh reads the
 // `upstream` remote's runs before origin's, so Mike's red Windows build held
 // a fork's landing that only had to work on its owner's Mac.
 import { execFile, execFileSync } from 'node:child_process';
@@ -161,25 +164,83 @@ export const gh: Gh = (args, cwd) =>
     });
   });
 
-type Run = { databaseId: number; status: string; conclusion: string; headSha: string; url: string; createdAt: string; displayTitle?: string };
+export type Run = { databaseId: number; status: string; conclusion: string; headSha: string; url: string; createdAt: string; updatedAt?: string; displayTitle?: string };
+type Job = { databaseId?: number; name: string; conclusion: string; startedAt?: string; completedAt?: string; steps?: { name: string; conclusion: string }[] };
 
 // How many of a workflow's latest runs on main are looked through for one
-// that finished: every push cancels the run before it (concurrency), so a
+// that finished: a newer push takes the place of a run still waiting, so a
 // busy day has runs of cancelled ones.
 export const RUNS_LOOKED_AT = 100;
 
-// A run that says nothing about main: stopped for a newer push, or skipped.
-const NO_VERDICT = new Set(['cancelled', 'skipped', 'neutral', 'stale', '']);
+// A run that says nothing about main. Most cancelled ones don't either
+// (stopped for a newer push, or by hand), but some do: timedOutJobs.
+const NO_VERDICT = new Set(['skipped', 'neutral', 'stale', '']);
 const RED = new Set(['failure', 'timed_out', 'startup_failure', 'action_required']);
 
 export type Verdict =
-  | { state: 'green' | 'none' }
+  | { state: 'none' }
+  | { state: 'green'; run?: Run }
   | { state: 'red'; run: Run; failedJobs: string[]; newer?: Run }
   | { state: 'unknown'; why: string };
 
-// The workflow's last finished run on main, from pushes.
-export async function lastVerdict(root: string, file: string, run: Gh = gh): Promise<Verdict> {
-  const r = await run(['run', 'list', '--workflow', file, '--branch', 'main', '--event', 'push', '--limit', String(RUNS_LOOKED_AT), '--json', 'databaseId,status,conclusion,headSha,url,createdAt,displayTitle'], root);
+// A job stopped by its own timeout-minutes is cancelled, and so is its run,
+// the same as one stopped for a newer push or by hand: only the job's
+// annotation tells them apart. From 22 Nov runner.yml's Mac jobs ran into
+// their 30 minutes on every push of main and nobody noticed, as every
+// cancelled run was passed over.
+export const TIMED_OUT = /exceeded the maximum execution time of ([\w.]+)/;
+// Cancelled runs not seen before that one look reads the jobs of: one call
+// each, and one more for each cancelled job that ran.
+export const CANCELLED_LOOKED_AT = 10;
+
+const minutesBetween = (from?: string, to?: string): number => {
+  const ms = Date.parse(to ?? '') - Date.parse(from ?? '');
+  return Number.isFinite(ms) ? ms / 60_000 : Infinity;
+};
+
+// What a cancelled run's timed-out jobs were, kept by run (and attempt), as
+// a finished run doesn't change: null for none.
+export type CancelledMemo = { get(key: string): string[] | null | undefined; set(key: string, timedOut: string[] | null): void };
+const memoKey = (r: Run): string => `${r.databaseId}@${r.updatedAt ?? ''}`;
+
+// The jobs of a cancelled run that ran into their own timeout, as "macos-26
+// (timed out after 30m0s in Runner tests)": none when it was stopped for a
+// newer push or by hand, undefined when GitHub couldn't say. Every
+// cancelled job that ran a minute or more is asked about, not only those as
+// long as the workflow's timeouts are now: a fix that raises one would
+// otherwise pass over the run it timed out in, and the older green run
+// behind it would count (Codex's review).
+async function timedOutJobs(root: string, r: Run, run: Gh): Promise<string[] | undefined> {
+  const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\//.exec(r.url)?.[1];
+  if (!repo) return undefined;
+  const jobs = await run(['run', 'view', String(r.databaseId), '--json', 'jobs'], root);
+  if (!jobs.ok) return undefined;
+  let parsed: { jobs?: Job[] };
+  try {
+    parsed = JSON.parse(jobs.stdout) as { jobs?: Job[] };
+  } catch {
+    return undefined;
+  }
+  const out: string[] = [];
+  for (const j of parsed.jobs ?? []) {
+    if (j.conclusion !== 'cancelled' || !j.databaseId) continue;
+    if (minutesBetween(j.startedAt, j.completedAt) < 1) continue;
+    // Every page, one message a line: a job's warnings can push the
+    // timeout's past the first.
+    const a = await run(['api', '--paginate', `repos/${repo}/check-runs/${j.databaseId}/annotations?per_page=100`, '--jq', '.[].message'], root);
+    if (!a.ok) return undefined;
+    const hit = a.stdout.split('\n').map((m) => TIMED_OUT.exec(m)).find(Boolean);
+    if (!hit) continue;
+    const step = j.steps?.find((s) => s.conclusion === 'cancelled')?.name;
+    out.push(`${j.name} (timed out after ${hit[1]}${step ? ` in ${step}` : ''})`);
+  }
+  return out;
+}
+
+// The workflow's last finished run on main, from pushes: one that failed,
+// or was cancelled by a job's own timeout, is red.
+export async function lastVerdict(root: string, file: string, run: Gh = gh, memo?: CancelledMemo): Promise<Verdict> {
+  const r = await run(['run', 'list', '--workflow', file, '--branch', 'main', '--event', 'push', '--limit', String(RUNS_LOOKED_AT), '--json', 'databaseId,status,conclusion,headSha,url,createdAt,updatedAt,displayTitle'], root);
   if (!r.ok) return { state: 'unknown', why: firstLine(r.stderr) || 'gh failed' };
   let runs: Run[];
   try {
@@ -187,28 +248,46 @@ export async function lastVerdict(root: string, file: string, run: Gh = gh): Pro
   } catch {
     return { state: 'unknown', why: "gh's answer wasn't JSON" };
   }
-  const finished = runs.find((x) => x.status === 'completed' && !NO_VERDICT.has(x.conclusion ?? ''));
-  // A whole page of cancelled runs says nothing about the one before them.
-  if (!finished) return runs.length >= RUNS_LOOKED_AT ? { state: 'unknown', why: `none of its last ${RUNS_LOOKED_AT} runs on main finished` } : { state: 'none' };
-  if (!RED.has(finished.conclusion)) return { state: 'green' };
   // One still going, for a newer push: it may be the fix.
-  const newer = runs.find((x) => x.status !== 'completed' && x.createdAt > finished.createdAt);
-  let failedJobs: string[] = [];
-  const jobs = await run(['run', 'view', String(finished.databaseId), '--json', 'jobs'], root);
-  if (jobs.ok) {
-    try {
-      const parsed = JSON.parse(jobs.stdout) as { jobs?: { name: string; conclusion: string; steps?: { name: string; conclusion: string }[] }[] };
-      failedJobs = (parsed.jobs ?? [])
-        .filter((j) => RED.has(j.conclusion))
-        .map((j) => {
-          const step = j.steps?.find((s) => RED.has(s.conclusion))?.name;
-          return step ? `${j.name} (${step})` : j.name;
-        });
-    } catch {
-      // Only the detail goes.
+  const newer = (than: Run) => {
+    const n = runs.find((x) => x.status !== 'completed' && x.createdAt > than.createdAt);
+    return n ? { newer: n } : {};
+  };
+  let looked = 0;
+  for (const x of runs) {
+    if (x.status !== 'completed' || NO_VERDICT.has(x.conclusion ?? '')) continue;
+    if (x.conclusion === 'cancelled') {
+      let timedOut = memo?.get(memoKey(x));
+      if (timedOut === undefined) {
+        if (++looked > CANCELLED_LOOKED_AT) return { state: 'unknown', why: `more than ${CANCELLED_LOOKED_AT} cancelled runs to look through` };
+        const found = await timedOutJobs(root, x, run);
+        if (!found) return { state: 'unknown', why: `couldn't read why run ${x.databaseId} was cancelled` };
+        timedOut = found.length ? found : null;
+        memo?.set(memoKey(x), timedOut);
+      }
+      if (!timedOut) continue;
+      return { state: 'red', run: x, failedJobs: timedOut, ...newer(x) };
     }
+    if (!RED.has(x.conclusion)) return { state: 'green', run: x };
+    let failedJobs: string[] = [];
+    const jobs = await run(['run', 'view', String(x.databaseId), '--json', 'jobs'], root);
+    if (jobs.ok) {
+      try {
+        const parsed = JSON.parse(jobs.stdout) as { jobs?: Job[] };
+        failedJobs = (parsed.jobs ?? [])
+          .filter((j) => RED.has(j.conclusion))
+          .map((j) => {
+            const step = j.steps?.find((s) => RED.has(s.conclusion))?.name;
+            return step ? `${j.name} (${step})` : j.name;
+          });
+      } catch {
+        // Only the detail goes.
+      }
+    }
+    return { state: 'red', run: x, failedJobs, ...newer(x) };
   }
-  return { state: 'red', run: finished, failedJobs, ...(newer ? { newer } : {}) };
+  // A whole page of cancelled runs says nothing about the one before them.
+  return runs.length >= RUNS_LOOKED_AT ? { state: 'unknown', why: `none of its last ${RUNS_LOOKED_AT} runs on main finished` } : { state: 'none' };
 }
 
 // origin's github.com/owner/name, or undefined with no origin.
@@ -223,16 +302,15 @@ function originRepo(root: string): string | undefined {
 
 const firstLine = (s: string): string => s.trim().split('\n')[0] ?? '';
 
-// Every landing asks GitHub before its check and again before main moves,
-// and a dozen threads landing at once (each with gh run watch of its own)
-// ran the shared API allowance out on 13 Nov: gh answered 403, and a gate
-// that can't ask lets the landing through. So the answer is kept in the
-// repo's git folder, shared by every worktree: one from the last minute is
-// used as it is, and when GitHub won't answer, one from the last half hour
-// still holds a landing on red.
+// Every landing asks GitHub, and a dozen threads landing at once (each with
+// gh run watch of its own) ran the shared API allowance out on 13 Nov: gh
+// answered 403. So the answer is kept in the repo's git folder, shared by
+// every worktree and `tb red-watch`: one from the last minute is used as it
+// is, and when GitHub won't answer, one from the last half hour still counts.
 export type GateCache = { dir: string; now?: () => number };
 export const FRESH_MS = 60_000;
 export const STALE_MS = 30 * 60_000;
+const MEMO_KEPT = 500;
 
 type Kept = { at: number; verdict: Verdict };
 
@@ -244,6 +322,42 @@ export function gateCacheDir(root: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+// The cancelled runs looked into, in the cache's folder, newest kept.
+function memoIn(dir: string): CancelledMemo {
+  const at = path.join(dir, 'cancelled-runs.json');
+  let seen: Record<string, string[] | null> | undefined;
+  const read = (): Record<string, string[] | null> => {
+    if (seen) return seen;
+    try {
+      const v = JSON.parse(fs.readFileSync(at, 'utf8')) as unknown;
+      seen = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, string[] | null>) : {};
+    } catch {
+      seen = {};
+    }
+    return seen;
+  };
+  return {
+    get: (key) => {
+      const v = read()[key];
+      return v === null || (Array.isArray(v) && v.every((x) => typeof x === 'string')) ? v : undefined;
+    },
+    set: (key, timedOut) => {
+      const all = read();
+      delete all[key];
+      all[key] = timedOut;
+      const keys = Object.keys(all);
+      for (const k of keys.slice(0, Math.max(0, keys.length - MEMO_KEPT))) delete all[k];
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(`${at}.${process.pid}.tmp`, JSON.stringify(all));
+        fs.renameSync(`${at}.${process.pid}.tmp`, at);
+      } catch {
+        // Only the sharing goes: it's asked again next time.
+      }
+    },
+  };
 }
 
 // lastVerdict through the kept answer, and a line to say when it's an old one.
@@ -259,12 +373,12 @@ export async function keptVerdict(root: string, file: string, run: Gh, cache: Ga
   }
   const age = kept ? now - kept.at : Infinity;
   if (kept && age >= 0 && age < FRESH_MS) return { verdict: kept.verdict };
-  const verdict = await lastVerdict(root, file, run);
+  const verdict = await lastVerdict(root, file, run, memoIn(cache.dir));
   if (verdict.state !== 'unknown') {
     try {
       fs.mkdirSync(cache.dir, { recursive: true });
-      fs.writeFileSync(`${at}.tmp`, JSON.stringify({ at: now, verdict }));
-      fs.renameSync(`${at}.tmp`, at);
+      fs.writeFileSync(`${at}.${process.pid}.tmp`, JSON.stringify({ at: now, verdict }));
+      fs.renameSync(`${at}.${process.pid}.tmp`, at);
     } catch {
       // Only the sharing goes.
     }
@@ -277,37 +391,13 @@ export async function keptVerdict(root: string, file: string, run: Gh, cache: Ga
   return { verdict };
 }
 
-// Why `files` can't land on main now, or undefined when they can. `note`
-// gets a line for a workflow GitHub couldn't be asked about.
-export async function landHold(root: string, files: string[], note: (line: string) => void, run: Gh = gh, cache?: GateCache): Promise<string | undefined> {
+// The marked workflows that count in this checkout: all of them, less those
+// whose jobs only run in another repo than origin's.
+export function watchedWorkflows(root: string): HeldWorkflow[] {
   let origin: string | undefined | null = null;
-  for (const w of holdingWorkflows(root)) {
-    if (w.onlyIn) {
-      if (origin === null) origin = originRepo(root);
-      if (origin?.toLowerCase() !== `github.com/${w.onlyIn}`.toLowerCase()) continue;
-    }
-    const hits = filesThatRunIt(w.paths, files);
-    if (!hits.length) continue;
-    const kept = await keptVerdict(root, w.file, run, cache);
-    const v = kept.verdict;
-    if (kept.note) note(kept.note);
-    if (v.state === 'unknown') {
-      note(`Couldn't ask GitHub whether ${w.name} (${w.file}) is green on main (${v.why}), so this lands without that check.`);
-      continue;
-    }
-    if (v.state !== 'red') continue;
-    const shown = hits.slice(0, 5).map((f) => `  ${f}`);
-    if (hits.length > shown.length) shown.push(`  and ${hits.length - shown.length} more`);
-    return [
-      `${w.name} (${w.file}) failed on main's last run, so nothing landed: this changes files it checks, and it holds landings while it's red so they don't pile onto what's broken.`,
-      `  ${v.run.url} (${v.run.headSha.slice(0, 8)}, ${v.run.createdAt}${v.run.displayTitle ? `: ${v.run.displayTitle}` : ''})`,
-      ...(v.failedJobs.length ? [`  Failed: ${v.failedJobs.join('; ')}`] : []),
-      ...(v.newer ? [`  A newer run is still going (${v.newer.url}); if it passes, this can land.`] : []),
-      'The files of yours it checks:',
-      ...shown,
-      `See what failed with gh run view ${v.run.databaseId} --log-failed, and fix that first.`,
-      'If this landing is that fix, or main already has one GitHub hasn\'t run yet, run tb land --despite-red.',
-    ].join('\n');
-  }
-  return undefined;
+  return holdingWorkflows(root).filter((w) => {
+    if (!w.onlyIn) return true;
+    if (origin === null) origin = originRepo(root);
+    return origin?.toLowerCase() === `github.com/${w.onlyIn}`.toLowerCase();
+  });
 }

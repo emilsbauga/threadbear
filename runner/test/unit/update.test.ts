@@ -1068,21 +1068,29 @@ test("landChecked: someone's copy that pulled Mike's main skips what his landing
   const mikes = path.join(tmpDir(), 'mikes.git');
   assert.equal(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', mikes]).status, 0);
   const his = commit('his change', 'runner/src/main.ts', 'console.log(3)\n');
-  // The remote says Mike's URL; insteadOf sends its fetches to the stand-in.
+  // The remote says Mike's URL; insteadOf sends its fetches to the stand-in,
+  // a folder, which only a test lets the fetch reach (files).
   git('config', `url.${mikes}.insteadOf`, 'https://github.com/mikecann/threadbear.git');
   git('remote', 'add', 'upstream', 'https://github.com/mikecann/threadbear.git');
   git('push', '-q', 'upstream', 'main');
-  assert.match((await landChecked(repo, 'runner/', his)) ?? '', /upstream\/main has this commit/);
+  assert.match((await landChecked(repo, 'runner/', his, { files: true })) ?? '', /upstream\/main has this commit/);
   // A commit of this copy's own, even with a stale ref saying his main has it.
   const own = commit('mine', 'runner/src/main.ts', 'console.log(4)\n');
   git('update-ref', 'refs/remotes/upstream/main', own);
-  assert.equal(await landChecked(repo, 'runner/', own), undefined);
+  assert.equal(await landChecked(repo, 'runner/', own, { files: true }), undefined);
   // A fetch that fails checks.
   fs.rmSync(mikes, { recursive: true, force: true });
+  assert.equal(await landChecked(repo, 'runner/', his, { files: true }), undefined);
+  // Nor without files: a real runner never fetches Mike's main from a folder.
+  const mikesAgain = path.join(tmpDir(), 'mikes.git');
+  git('config', '--unset-all', `url.${mikes}.insteadOf`);
+  git('config', `url.${mikesAgain}.insteadOf`, 'https://github.com/mikecann/threadbear.git');
+  assert.equal(spawnSync('git', ['clone', '-q', '--bare', repo, mikesAgain]).status, 0);
   assert.equal(await landChecked(repo, 'runner/', his), undefined);
+  assert.match((await landChecked(repo, 'runner/', his, { files: true })) ?? '', /upstream\/main has this commit/);
   // A remote that isn't Mike's counts for nothing.
   git('remote', 'set-url', 'upstream', 'https://github.com/someone/threadbear.git');
-  assert.equal(await landChecked(repo, 'runner/', his), undefined);
+  assert.equal(await landChecked(repo, 'runner/', his, { files: true }), undefined);
 });
 
 // landChecked rests on a landing's check running everything a build's own
@@ -1110,6 +1118,13 @@ test("a build's own checks are no more than tb land's: the same steps, command a
   assert.ok(run, "check.sh's test run");
   const words = (cmd: string) => cmd.replace(/"/g, '').split(/\s+/).filter(Boolean).sort();
   assert.deepEqual(words(`${run} test/unit/**/*.test.ts`), words(pkg.scripts.test), "check.sh's run and package.json's test script");
+  // And in each, nothing for node itself before the script that runs the
+  // files: --import there loads clean-env.ts in the driver too, and every
+  // file's temp folder then nests in its, which hung the Codex adapter's
+  // socket tests (24 Nov 2026). Sorted words alone can't tell (Codex's review).
+  const head = (cmd: string) => cmd.replace(/"/g, '').split(/\s+/).filter(Boolean).slice(0, 2);
+  assert.deepEqual(head(run), ['node', './test/helpers/run-test-files.mjs'], "check.sh's run");
+  assert.deepEqual(head(pkg.scripts.test), ['node', './test/helpers/run-test-files.mjs'], "package.json's test script");
   const deploySteps = fs.readFileSync(new URL('../../scripts/deploy-steps.mjs', import.meta.url), 'utf8');
   const deploy = fs.readFileSync(new URL('../../scripts/deploy.mjs', import.meta.url), 'utf8');
   assert.match(deploySteps, /step\(name, checkSh, \['--runner'\]/);

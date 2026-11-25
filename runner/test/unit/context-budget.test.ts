@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildThreadbearTools, guidePath, serverInstructions, type ThreadControl } from '../../src/threadbear-mcp.ts';
+import { LIVE_PAGES_LINE, buildThreadbearTools, guidePath, serverInstructions, type ThreadControl } from '../../src/threadbear-mcp.ts';
 import { z } from 'zod';
 import { NAMESPACE_DESCRIPTION, toolGuidance, type ToolDefinition } from '../../src/adapters/codex/tools.ts';
 import { jsonSchema } from '../../src/agent-tools.ts';
@@ -110,4 +110,14 @@ test('the context budget: what agents are handed every turn matches context-budg
   };
   walk(now, saved, '');
   assert.deepEqual(changes, [], `What every agent is handed changed size:\n  ${changes.join('\n  ')}\nIf that's meant, run \`npm run context-budget\` in runner/ and commit context-budget.json with the change.`);
+});
+
+// The livePages experiment's line (experiments/livePages.md) is only for
+// threads on a runner with it on, so it's outside the budget above; kept
+// short all the same.
+test('the live pages line goes to agents only with the experiment on', () => {
+  const o = { one: true, bulletReplies: true, pocket: true, projects: true };
+  assert.ok(!serverInstructions(SELF, o).includes(LIVE_PAGES_LINE));
+  assert.ok(serverInstructions(SELF, { ...o, livePages: true }).includes(LIVE_PAGES_LINE));
+  assert.ok(bytes(LIVE_PAGES_LINE) < 400);
 });

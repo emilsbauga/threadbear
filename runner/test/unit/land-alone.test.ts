@@ -219,7 +219,9 @@ test('a run alone that goes on past its time is stopped, with everything it star
   const [a, b, c, d] = branches(main, ['a', 'b', 'c', 'd']);
   commit(c.path, { 'bad.txt': 'bad\n' }, 'Break it');
   const before = { ...landLimits };
-  Object.assign(landLimits, { aloneMs: 0, aloneMinMs: 300, aloneGraceMs: 100 });
+  // aloneMinMs gives the stuck run time to start and write its pids on a
+  // busy Mac: at 300 ms a load of 25 stopped it before its first echo.
+  Object.assign(landLimits, { aloneMs: 0, aloneMinMs: 5000, aloneGraceMs: 100 });
   try {
     // Asked for only what failed, it never ends (a host's line that doesn't
     // move), and one thing it started doesn't stop when asked nicely either.

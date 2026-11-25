@@ -34,6 +34,7 @@ import { sha256 } from './lib';
 import { deleteIfUnused, purgeRunnerRows } from './sync';
 import { FLY_SUSPEND_MAX_MB, flyFromEnv } from './boxProviders/fly';
 import { notFound, transient } from './boxProviders/types';
+import { bootImage } from './boxImage';
 import type { BoxProvider, ListedBox } from './boxProviders/types';
 
 export const RETRY_MS = [300, 1500];
@@ -491,7 +492,7 @@ async function reconcile(op: Op, p: BoxProvider, id: string): Promise<void> {
  */
 export const claimAttempt = internalMutation({
   args: { boxId: v.id('boxes'), bootHash: v.string(), op: v.optional(v.string()) },
-  returns: v.union(v.null(), v.object({ attempt: v.number(), image: v.string(), cpus: v.number(), memoryMb: v.number(), region: v.optional(v.string()) })),
+  returns: v.union(v.null(), v.object({ attempt: v.number(), image: v.string(), cpus: v.number(), memoryMb: v.number(), region: v.optional(v.string()) }), v.object({ attempt: v.number(), refused: v.string() })),
   handler: async (ctx, { boxId, bootHash, op }) => {
     const row = await ctx.db.get(boxId);
     if (!row || (row.boxState.kind !== 'creating' && row.boxState.kind !== 'waking')) return null;
@@ -500,9 +501,13 @@ export const claimAttempt = internalMutation({
     if (row.bootTokenHash && row.bootAttempt === newestAttempt(row) && (row.bootExpiresAt ?? 0) > Date.now()) return null;
     const service = await ctx.db.get(row.serviceId);
     if (!service) return null;
+    // Only an image pinned by digest, worked out now, in the same
+    // transaction as the attempt: never a tag Fly resolves later (boxImage.ts).
+    const boots = await bootImage(ctx, service.image);
     const { attempt } = await newAttempt(ctx, row, bootHash);
+    if ('why' in boots) return { attempt, refused: boots.why };
     await ctx.db.patch(boxId, { size: { attempt, cpus: service.box.cpus, memoryMb: service.box.memoryMb } });
-    return { attempt, image: service.image, cpus: service.box.cpus, memoryMb: service.box.memoryMb, ...(service.region !== undefined ? { region: service.region } : {}) };
+    return { attempt, image: boots.image, cpus: service.box.cpus, memoryMb: service.box.memoryMb, ...(service.region !== undefined ? { region: service.region } : {}) };
   },
 });
 
@@ -640,6 +645,10 @@ async function bringBack(op: Op): Promise<void> {
   const claim = await ctx.runMutation(internal.boxService.claimAttempt, { boxId, bootHash: await sha256(bootToken), op: op.id });
   if (!claim) return;
   const { attempt } = claim;
+  if ('refused' in claim) {
+    await report(ctx, seen.threadId, { type: 'FAILED', error: claim.refused ?? 'no image to boot', attempt }, op.id);
+    return;
+  }
   const made = provider(seen.provider, claim.memoryMb)!;
   const p = fenced(op, made);
   let providerBoxId: string;

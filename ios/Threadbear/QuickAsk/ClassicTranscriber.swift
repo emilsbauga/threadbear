@@ -78,7 +78,7 @@ final class ClassicTranscriber: Transcriber {
                 startTask(recognizer, target: target, generation: current, onText: onText, onError: onError)
                 return
             }
-            Log.speech.error("Recognition error \(error.domain, privacy: .public) \(error.code): \(error.localizedDescription, privacy: .public)")
+            Log.speech.error("Recognition error \(error.domain, privacy: .public) \(error.code)")
             onError(.failed(error.localizedDescription))
         }
     }

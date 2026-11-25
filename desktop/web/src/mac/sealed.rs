@@ -18,7 +18,7 @@
 //   windows.
 // - The page's own policy (threadbear_core::rich_pages::POLICY) and, for an
 //   html block, JavaScript off altogether are set where the page is made.
-use super::host::{set_status, Status};
+use super::status::{set_status, Status};
 use cef::*;
 use std::cell::RefCell;
 use std::os::raw::c_int;

@@ -12,8 +12,8 @@ Run these and fix what's missing before going on:
 - `sw_vers -productVersion` and `uname -m`: macOS on `arm64` (Apple silicon).
 - `xcode-select -p`: Xcode's command line tools. If it fails, run
   `xcode-select --install` and **Ask** them to click Install in the window
-  it opens, then carry on. Full Xcode isn't needed, and setup installs Rust
-  for the app if it isn't there.
+  it opens, then carry on. Full Xcode isn't needed, and the app's build
+  fetches the exact Rust it needs itself (no rustup).
 - `node -v`: 24 or newer. If not, install it with nvm
   (`nvm install 24 && nvm use 24`) or Homebrew (`brew install node@24`), and
   use that `node` for the rest.
@@ -130,7 +130,7 @@ They can change it in the app's Settings, and pick a folder for each
 thread as they start it.
 
 The first run takes 30 to 45 minutes, most of it building the Mac app
-(installing Rust first if there's no `rustup`), and needs about 5 GB free.
+(fetching the exact Rust the repo pins the first time), and needs about 5 GB free.
 Tell them, so they can leave it running. Along the way:
 
 - If they aren't logged in to Convex, it opens a Convex page in the browser

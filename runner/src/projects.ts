@@ -23,7 +23,7 @@ import type { PatchThread } from './patches.ts';
 import type { ProjectFolder } from './patches.ts';
 import { atomicWriteFileSync, isDirectory, readJsonSync } from './fsutil.ts';
 import { expandHome } from './config.ts';
-import { fileHash, removeIcons, storeIcon } from './project-icons.ts';
+import { fileHash, removeIcons, storeIcon, storedIconOkSync } from './project-icons.ts';
 import { trimEndOf, trimStartOf } from './linear-text.ts';
 import type { TaskBoards } from './notion-tasks.ts';
 
@@ -149,11 +149,26 @@ export class Projects {
       if (p && typeof p.id === 'string' && typeof p.title === 'string') this.items.set(p.id, { ...p, folders: p.folders ?? [], goals: p.goals ?? '', state: p.state ?? '', notes: p.notes ?? '', links: p.links ?? [] });
     }
     this.checkParents();
+    this.dropUncheckedIcons();
     // A deleted thread changes its projects' counts.
     this.unlisten = host.onNotification((n) => {
       if (n.method === 'thread.deleted') this.publish();
     });
     this.log.info('projects loaded', { count: this.items.size });
+  }
+
+  // A picture copy an older runner kept as the repo had it (any size, or an
+  // SVG) is dropped before any app is sent its path, so the desktop app never
+  // decodes one (Daybreak, 24 Nov). The project goes back to automatic and
+  // the librarian finds it a checked one, or a symbol, within seconds.
+  private dropUncheckedIcons(): void {
+    for (const rec of this.items.values()) {
+      const image = rec.icon?.image;
+      if (!image || storedIconOkSync(image)) continue;
+      this.log.warn('project icon copy not taken; back to automatic', { id: rec.id, by: rec.icon?.by, image: image.path });
+      removeIcons(this.iconDir, rec.id);
+      delete rec.icon;
+    }
   }
 
   stop(): void {
@@ -623,7 +638,7 @@ export class Projects {
     if (choice.path !== undefined && choice.symbol !== undefined) throw bad('Give a picture or a symbol, not both.');
     if (choice.path !== undefined) {
       const src = path.resolve(expandHome(choice.path.trim()));
-      if (!/\.(png|jpe?g|webp|svg|icns|ico|gif|heic|tiff?)$/i.test(src)) throw bad('An icon is a picture: PNG, JPEG, WebP, SVG, ICNS or ICO.');
+      if (!/\.(png|icns|ico)$/i.test(src)) throw bad('An icon is a picture: PNG, ICNS or ICO (no SVG, JPEG or WebP since 24 Nov 2026, as what a renderer makes of one can\'t be checked before it draws it).');
       const hash = await fileHash(src);
       if (!hash) throw bad(`Picture not found (or over 10 MB): ${src}`);
       const image = await storeIcon(src, this.iconDir, rec.id, hash);

@@ -1,0 +1,71 @@
+{
+  "release": "2026-11-22",
+  "highlights": [
+    {
+      "kind": "changed",
+      "title": "Pictures first in the review window",
+      "text": "The review window gives each option's picture its full width. The option's name and reasons sit underneath at reading size, with a tab per option and your notes beside them.",
+      "media": {
+        "type": "clip",
+        "src": "review-window.mp4",
+        "poster": "review-window.webp",
+        "width": 1920,
+        "height": 1200,
+        "alt": "The review window on a Pantry home screen review. Each option's picture fills the window's width, with tabs for the three options underneath and the option's name and reasons below them. It steps to Search and grid, back to Tonight, ticks it so Send says Send A, then shows all three side by side."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "Options on the review's card",
+      "text": "A review's card in the thread shows each option's small picture and name, with the agent's pick starred. Click one to open the review window on it.",
+      "media": {
+        "type": "image",
+        "src": "review-card.webp",
+        "width": 990,
+        "height": 830,
+        "alt": "A Pantry home screen review card waiting for your review, with the agent's note and three small pictures named Tonight (starred), One big idea and Search and grid, and a Compare 3 images button."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Updates says which build has your fix",
+      "text": "Threads waiting for the app to update are listed in the Updates panel, each saying whether its fix is in the build on its way or the one after.",
+      "media": {
+        "type": "image",
+        "src": "updates-waiting.webp",
+        "width": 580,
+        "height": 460,
+        "alt": "The Updates panel building the app's next version, with Threads waiting on this version: Make uploads resume after a crash, In this build, and Ship the beta, Landed after it, in the next one."
+      }
+    }
+  ],
+  "added": [
+    {
+      "text": "Phone notifications go away once their thread no longer needs you, and opening a thread clears its own.",
+      "credit": "Ian Macartney"
+    }
+  ],
+  "changed": [
+    "iPhone dictation types out in about a second, and gets going sooner after you tap the mic.",
+    "The Android app draws login notes, Coming back, another lab's review and edited draft chips.",
+    "The website draws a Plan first plan as a card, and an edited draft's chip has Show."
+  ],
+  "fixed": [
+    "Replies starting \"Nothing needed from you\" no longer show up blank.",
+    {
+      "text": "Turning a trial feature on or off in Settings no longer jumps the page back to the top.",
+      "credit": "Wayne Sutton"
+    },
+    "Picking the thread that's already open in Open Anything leaves the keyboard working.",
+    "An ask that links a review opens it from your phone too.",
+    "A command card from a handed-over thread can be allowed from your phone again.",
+    {
+      "text": "Cursor, OpenCode, Grok and Antigravity agents can send Threadbear's tools nested answers, like an ask's options, without them going missing.",
+      "credit": "Wayne Sutton"
+    },
+    "New threads get a worktree again after a worktree folder was deleted by hand, and a spare worktree with your edits in it is left alone.",
+    "The Mac app's updates build with a Homebrew Rust when rustup isn't installed.",
+    "Crash reports send only an error's kind and where it happened, never its words.",
+    "Security: a trusted patch, hook or approved schedule check can't run a file changed since without asking again, tb land won't run a command a branch slips in, and a retired share link stays retired."
+  ]
+}

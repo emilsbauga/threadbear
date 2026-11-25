@@ -169,6 +169,7 @@ class TurnsTest {
                     wokeBy = m.arr("wokeBy")?.map { w -> (w as JsonObject).let { WokeTask(it.str("kind")!!, it.str("description")!!) } },
                     at = T0.plusMillis((m.num("at")!! * 1000).toLong()),
                     plan = m.bool("plan") ?: false,
+                    wakeReason = m.str("wakeReason"),
                 )
             }
             assertEquals(o.strings("expect"), Turns.fold(rows, input.bool("busy")!!).map { shown(it) }, o.str("name"))

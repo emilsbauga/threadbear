@@ -223,7 +223,6 @@ Scenarios passing: Swift: 207 of 225, Mac: 214 of 225, Windows: 192 of 225, Linu
 
 | Feature | Swift | Mac | Windows | Linux |
 |---|---|---|---|---|
-| `projects.decisions` Decisions on the Projects page | pass | pending | pending | pending |
 | `librarian.page` Librarian page | pass | pass | pending | pass |
 | `librarian.log` Librarian log | pass | pass | pending | pass |
 | `schedule.page` Scheduled page | pass | pass | pending | pass |

@@ -1,7 +1,7 @@
 // node --test web/src/picture-chips.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pastedOf, pictureNumber, remarkPictureChips, splitMarkers } from './picture-chips.ts';
+import { isNotionCard, pastedOf, pictureNumber, remarkPictureChips, splitMarkers } from './picture-chips.ts';
 
 test('markers become links, the words around them stay', () => {
   const pieces = splitMarkers('[Picture 1] like [Picture 12], ok');
@@ -62,4 +62,12 @@ test('a message gets its own pasted pictures, and those it does not place go und
   const { byNumber, unplaced } = pastedOf(pics, 5, 'this [Picture 1] please');
   assert.deepEqual([...byNumber], [[1, 'a'], [2, 'b']]);
   assert.deepEqual(unplaced.map((p) => p.url), ['b']);
+});
+
+test("a Notion card's address is one on Notion's own domains, as the phones read it", () => {
+  assert.equal(isNotionCard('https://www.notion.so/1a2b3c4d5e6f40718293a4b5c6d7e8f9'), true);
+  assert.equal(isNotionCard('https://mike.notion.site/Board-1a2b'), true);
+  assert.equal(isNotionCard('https://notion.so.example.com/x'), false);
+  assert.equal(isNotionCard('http://www.notion.so/x'), false);
+  assert.equal(isNotionCard('https://example.com/notion.so/x'), false);
 });

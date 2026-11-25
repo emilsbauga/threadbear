@@ -36,8 +36,20 @@ impl ReviewWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // Of the window, not zoomed, as its frame isn't.
-        let answer =
-            (f32::from(window.viewport_size().width) * 0.3).clamp(ANSWER_WIDTH.0, ANSWER_WIDTH.1);
+        let width = f32::from(window.viewport_size().width);
+        let on_canvas = self.on_canvas();
+        // On the board the words are on the canvas, so the reply has room
+        // for the chips of Mike's marks.
+        let answer = if on_canvas {
+            (width * 0.5).clamp(ANSWER_WIDTH.1, 720.)
+        } else {
+            (width * 0.3).clamp(ANSWER_WIDTH.0, ANSWER_WIDTH.1)
+        };
+        let words = if on_canvas {
+            self.render_tour(cx)
+        } else {
+            self.render_words(cx)
+        };
         v_flex()
             .id("review-band")
             .flex_none()
@@ -52,7 +64,7 @@ impl ReviewWindow {
                     .px(px(PAD))
                     .pt(px(12.))
                     .pb(px(18.))
-                    .child(self.render_words(cx))
+                    .child(words)
                     .child(
                         div()
                             .flex_none()
@@ -129,7 +141,11 @@ impl ReviewWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let picked = self.session.draft().picked_ids.contains(&option.id);
-        let current = self.session.mode == ReviewMode::Single && self.session.focused() == index;
+        let current = if self.on_canvas() {
+            self.canvas_option() == Some(index)
+        } else {
+            self.session.mode == ReviewMode::Single && self.session.focused() == index
+        };
         let recommended = self.session.review().recommended.as_deref() == Some(option.id.as_str());
         let primary = style::label_text(cx);
         let show = crate::highlights::tipped(
@@ -151,7 +167,7 @@ impl ReviewWindow {
                 .relative()
                 .flex_none()
                 .child(
-                    super::stage::thumb(&option.image, TAB_THUMB.0, TAB_THUMB.1, 4., cx)
+                    super::parts::thumb(&option.image, TAB_THUMB.0, TAB_THUMB.1, 4., cx)
                         .opacity(if current { 1. } else { 0.7 }),
                 )
                 .when(current, |s| {
@@ -255,7 +271,7 @@ impl ReviewWindow {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(option.label()),
                     )
-                    .when(recommended, |s| s.child(recommended_mark(cx)))
+                    .when(recommended, |s| s.child(super::parts::recommended_mark(cx)))
                     .when(!place.is_empty(), |s| {
                         s.child(
                             div()
@@ -331,11 +347,14 @@ impl ReviewWindow {
                     tip,
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.pick(&id, cx)))
-                .child(checkbox(picked, accent, cx))
+                .child(super::parts::checkbox(picked, accent, cx))
                 .into_any_element(),
             );
         }
-        picked.then(|| slot.child(checkbox(true, accent, cx)).into_any_element())
+        picked.then(|| {
+            slot.child(super::parts::checkbox(true, accent, cx))
+                .into_any_element()
+        })
     }
 
     // The answer.
@@ -365,8 +384,10 @@ impl ReviewWindow {
             cx.entity().downgrade(),
         );
         let token_state = self.reply.clone();
+        let reply_bounds = self.reply_box.clone();
         let reply_box = div()
             .id("review-reply")
+            .relative()
             .w_full()
             .min_h(px(68.))
             .p(px(5.))
@@ -379,6 +400,10 @@ impl ReviewWindow {
                 let handle = reply.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
                 crate::web_panels::keyboard_to_app(window);
+                // Or the window's own focus, after this, took the keys back:
+                // a click under the first line, past the text box's frame,
+                // left no cursor and no blue edge (Mike, 23 Nov).
+                window.prevent_default();
             })
             // A picture dropped on it goes in as a chip, as one pasted does.
             .on_drop(move |paths: &ExternalPaths, window, cx| {
@@ -400,6 +425,14 @@ impl ReviewWindow {
                     }
                 }
             }))
+            .child(
+                canvas(
+                    move |bounds, _, _| reply_bounds.set(Some(bounds)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .child(
                 crate::composer::bare_textarea(Textarea::new(&self.reply))
                     .token(move |ctx, _, cx| match token_owner.upgrade() {
@@ -423,7 +456,11 @@ impl ReviewWindow {
                     .on_token_click(move |event, window, cx| {
                         if let Some(this) = click_owner.upgrade() {
                             this.update(cx, |this, cx| {
-                                this.open_reply_picture(event.token().id(), window, cx)
+                                let id = event.token().id();
+                                match this.reply_chip_mark(id) {
+                                    Some(n) => this.canvas_show_mark(n, cx),
+                                    None => this.open_reply_picture(id, window, cx),
+                                }
                             });
                         }
                     })
@@ -625,53 +662,5 @@ pub(crate) fn inline_note(
         .on_click(ranges, move |ix, _, cx| {
             crate::open_gate::open_link(&urls[ix], Origin::ThisMac, &cwd, cx)
         })
-        .into_any_element()
-}
-
-/// A tick box: an outline, or filled with the accent and a white tick.
-fn checkbox(on: bool, accent: Hsla, cx: &App) -> AnyElement {
-    if on {
-        return div()
-            .size(px(14.))
-            .rounded(px(3.5))
-            .bg(accent)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                Icon::new(IconName::Check)
-                    .with_size(px(11.))
-                    .text_color(gpui_kit::white()),
-            )
-            .into_any_element();
-    }
-    div()
-        .size(px(14.))
-        .rounded(px(3.5))
-        .border(px(1.2))
-        .border_color(style::secondary_text(cx))
-        .into_any_element()
-}
-
-/// The agent's pick: a small gold star and "Recommended" in grey, as on an
-/// asks card (after Ghostex's, Mike, 9 Nov).
-pub(super) fn recommended_mark(cx: &App) -> AnyElement {
-    // On the name's line, as the Swift mark is text run on from the name.
-    h_flex()
-        .flex_none()
-        .gap(px(3.))
-        .items_center()
-        .child(
-            crate::icons::symbol("star.fill")
-                .with_size(px(11.))
-                .text_color(style::recommended_star(cx)),
-        )
-        .child(
-            div()
-                .text_size(px(style::size::DETAIL))
-                .line_height(px(style::natural_line(style::size::WORK)))
-                .text_color(style::secondary_text(cx))
-                .child("Recommended"),
-        )
         .into_any_element()
 }

@@ -643,6 +643,24 @@ test("the sidebar's list keeps an archive made here until the backend's row show
   assert.equal(h.relay.overlay(h.remote).threads[0]!.archivedAt, undefined);
 });
 
+test("a change made here drops the row's wait state until the row shows the change", async () => {
+  // Hibernated here while that runner's row still said done: the state
+  // would have put it back in the inbox (Codex's review, 23 Nov).
+  const h = harness();
+  (h.remote.threads[0] as { waitState?: string }).waitState = 'done';
+  const snooze = h.relay.call(T, 'threads.update', { threadId: T, snoozedUntil: at(9_000_000) });
+  await new Promise((r) => setImmediate(r));
+  h.subs.get('relay:commandState')![0]!.onUpdate({ state: 'done' });
+  await snooze;
+  const listed = h.relay.overlay(h.remote).threads[0] as { snoozedUntil?: string; waitState?: string };
+  assert.equal(typeof listed.snoozedUntil, 'string');
+  assert.equal(listed.waitState, undefined);
+  // The row catches up with its own state.
+  h.remote.threads[0]!.snoozedUntil = listed.snoozedUntil;
+  (h.remote.threads[0] as { waitState?: string }).waitState = 'hibernating';
+  assert.equal((h.relay.overlay(h.remote).threads[0] as { waitState?: string }).waitState, 'hibernating');
+});
+
 test("sharing answers with the link, read from that runner's row once it shows it", async () => {
   let share: { access: string; slug: string } | undefined;
   const h = harness({ row: () => ({ ...idle, ...(share ? { share } : {}) }) });
@@ -1455,16 +1473,4 @@ test("an open thread's summary carries its row's mode, or unknown", async () => 
   h.remote.threads[0]!.permissionMode = 'auto';
   await h.relay.call(T, 'threads.subscribe', { threadId: T, afterSeq: 0 });
   assert.deepEqual(said(), ['unknown', 'auto']);
-});
-
-// docs/protocol/threads.md, "What Mike first asked": another Mac's Feed heads the
-// card with it, from the row (API 96), next to his last message.
-test("an open thread's summary carries what Mike first and last asked, from its row", async () => {
-  const h = harness({ row: () => ({ ...idle, share: { access: 'link', slug: 'abc' } }) });
-  h.remote.threads[0]!.asked = 'And the lint too';
-  h.remote.threads[0]!.request = 'Fix the tests';
-  await h.relay.call(T, 'threads.subscribe', { threadId: T, afterSeq: 0 });
-  const thread = (h.published.filter((n) => (n as { method: string }).method === 'thread.updated').at(-1) as { params: { thread: { asked?: string; request?: string } } }).params.thread;
-  assert.equal(thread.asked, 'And the lint too');
-  assert.equal(thread.request, 'Fix the tests');
 });

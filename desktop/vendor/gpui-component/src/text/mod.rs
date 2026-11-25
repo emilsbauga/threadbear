@@ -145,7 +145,7 @@ pub(crate) fn component_code_block_highlighter(
 
 /// The type [`shared_code_block_highlighter`] returns.
 #[cfg(any(feature = "tree-sitter", feature = "syntect"))]
-pub(crate) type SharedCodeBlockHighlighter = dyn Fn(&gpui_base::text::CodeBlock) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>
+pub type SharedCodeBlockHighlighter = dyn Fn(&gpui_base::text::CodeBlock) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>
     + Send
     + Sync;
 
@@ -161,8 +161,11 @@ pub(crate) type SharedCodeBlockHighlighter = dyn Fn(&gpui_base::text::CodeBlock)
 /// Entries are also keyed on the [`LanguageRegistry`] generation: registering
 /// a language drops them, so the next frame gets a new highlighter and code
 /// blocks painted before the language existed are highlighted again.
+///
+/// Public for Threadbear: its transcript colours code fences with this, the
+/// same `Arc` every frame, so a selection made while the pane redraws holds.
 #[cfg(any(feature = "tree-sitter", feature = "syntect"))]
-pub(crate) fn shared_code_block_highlighter(
+pub fn shared_code_block_highlighter(
     highlight_theme: &std::sync::Arc<crate::highlighter::HighlightTheme>,
 ) -> std::sync::Arc<SharedCodeBlockHighlighter> {
     // Syntect's languages are fixed at build time, so its entries never go stale.

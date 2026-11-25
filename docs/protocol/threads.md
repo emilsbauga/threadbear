@@ -54,7 +54,8 @@ second after Allow, which looked like the same card coming back (Mike,
   commands, web fetches and other servers' tools; in Auto mode only
   edits of files that run as code; in Full only tools that always ask.
   The threadbear tools that never ask, questions and plans are never
-  queued, nor is a call too long for a card. `approval.queued` carries
+  queued, nor is a call too long for a card or with an argument named
+  `__proto__` (refused, as a card can't hold it). `approval.queued` carries
   the list, and again whenever a call joins it (they stream in while the
   card waits). Claude only: Codex asks about its own calls one at a time.
 - **Answering.** `approvals.respond` with `queued` answers them in the
@@ -442,6 +443,67 @@ A message the user types at a thread that hasn't had a turn for 12 hours
 reaches the agent after a line asking it to open with what the thread is for
 (`user.message`, above). When the box was up and said what the thread is
 for, the runner leaves that line off, so the recap isn't said twice.
+## Searching Agent Archive
+
+With the `archive` experiment on (docs/experiments.md) and Agent Archive
+installed on the runner's machine, the Mac's sidebar search also searches
+the archive: every word said anywhere in a session, sessions run outside
+Threadbear (the terminal, Codex, T3 Code), everything from before
+Threadbear, and every machine that syncs to it. The runner never holds
+an archive credential: it runs the archive's own command, `agent-archive
+search --json` and `read --json`, which uses the read-only key the
+archive's MCP server uses, and passes the answer on. Nothing goes to the
+backend, so the phone and the website don't search the archive.
+
+```ts
+type ArchiveHit = {
+  threadId: string            // the archive's thread id (31 to 37 lowercase letters and digits)
+  title: string               // its Threadbear thread's title when it has one, else the archive's
+  agent: string               // "claude" | "codex" | "grok" | "muse"; tolerate others
+  folder?: string             // the session's working folder
+  machine?: string            // the archive's name for the computer it came from
+  updatedAt: number           // ms
+  sequence: number            // the matching message's place in the session, for archive.read's around
+  snippet: string             // up to about 240 characters around the first match, one line
+  threadbear?: { threadId: string, title: string }  // the Threadbear thread it belongs to, if any
+}
+type ArchiveThread = {
+  threadId: string, title: string, agent: string, folder?: string, machine?: string,
+  createdAt?: number, updatedAt: number,
+  messages: number            // how many messages the session has (user and assistant)
+  url?: string                // the archive reader's page for it
+  threadbear?: { threadId: string, title: string }
+}
+type ArchiveItem = {
+  sequence: number,
+  role: "user" | "assistant",
+  text: string                // at most 8 KB, clipped with "…"
+}
+```
+
+One hit per archived session, best first. The app sends a search once
+typing pauses (about 400 ms) with three or more characters, and shows its
+own threads first, so the archive can't slow them down; a late answer for
+older words is dropped. A hit whose Threadbear thread is in the app's
+lists opens that thread, and is left out when that thread is already among
+the search's own results. Any other hit opens read-only in the thread's
+place: the messages from `archive.read`, the matching one in view, with
+Open in the archive (the reader's `url`) and New thread from this, which
+starts a new thread's message naming the archived session, so its agent
+reads it with the archive's tools.
+
+A runner without the experiment answers `{ hits: [], off: "experiment" }`,
+and one where the archive's command isn't there `off: "not_installed"`;
+the app then shows nothing for the archive. A runner from before answers
+`-32601`, the same. A search that fails (the archive's server can't be
+reached) is an error whose message says why, which the app shows under
+the Agent Archive heading. The command gets 20 seconds.
+
+With the same experiment on, every thread's agent gets the archive's tools:
+the runner adds the archive's MCP server, `agent-archive`, to each Claude
+and Codex session it starts, the same command Mike's own config names,
+so threads on a login whose config doesn't have it (the cloud box's)
+have it too.
 
 ## What Mike last asked
 
@@ -460,20 +522,15 @@ went back to the project on 4 Nov. A thread's row in the backend carries
 a Mac's tooltip has it for another runner's threads. The phone doesn't
 show it.
 
-## What Mike first asked
+## What Mike first asked (taken out)
 
-A thread's summary carries `request` too: the first message Mike wrote to
-it, as one line of at most 200 characters, by the same rules as `asked`
-(not the runner's own messages, a schedule's or another agent's; a design
-review's reply as his words). Once set it stays, so it says what the thread
-is for while `asked` follows the conversation. It's absent until he's sent
-something. A thread from a runner before it learns it from the first 300
-events of its log when the runner starts, unless it's archived; a thread
-whose first message of his is past those has none, and a reader shows its
-title instead. The Mac app's Feed (experiment `feed`) heads each thread's
-card with it. A `threadIndex` row carries it from backend API 96, so the
-Feed has it for another runner's threads; the phone's thread rows don't
-(the phone has no Feed).
+A thread's summary carried `request` from 20 to 23 Nov 2026: Mike's first
+message to it as one line, for the Mac app's Feed (experiment `feed`),
+which was taken out with it. Runners don't send it now, and clients ignore
+it from an older one. A thread's record from then keeps it, unread. A
+`threadIndex` row from a runner of backend API 96 or 97 may still carry it,
+so the backend still takes it (and still cuts it to 400 bytes), but
+nothing reads it.
 
 ## Loose ends
 
@@ -621,7 +678,15 @@ sub-agents, with no "coordinator" mark (mockups in
   (`waitingOn`) and they're all done, the reports go with that wake rather
   than as a second one. A message from Mike to the starter takes the held
   reports in first. Held reports are kept on the starter's record
-  (`heldReports`), so a restart doesn't lose them.
+  (`heldReports`), so a restart doesn't lose them. Each keeps a `ceiling`,
+  the starter's access as it was held (`send_message` let it reach the
+  starter then). When they go, a report
+  whose ceiling the starter has since been raised above (and whose sender
+  hasn't been raised to match) isn't passed to its agent: the starter
+  gets a `system.note` naming the sender and goes to Needs you instead,
+  with no turn for those reports (`runner/src/runner/ceiling.ts`; Daybreak
+  finding 164, 22 Nov 2026). One held before ceilings counts only the
+  sender's access now.
 
 Mac (GPUI) app only for now; the phone, the website and the Swift app show
 threads as before.
@@ -668,6 +733,10 @@ way. The starter hears nothing new from this: it's woken only if it was
 waiting on the helper, and the helper shows as archived under "Threads it
 started" in its Highlights.
 
+Mike's own threads join in with the experiment `quietInboxMine` (23 Nov
+2026), on top of `inboxGuess`: the strong model's guess decides, and the
+app counts and lists what it hid. See "Inbox guess", "Acting on it".
+
 ## Inbox guess
 
 `runner/src/runner/inbox-guess.ts`, the experiment `inboxGuess` (18 Nov
@@ -677,7 +746,9 @@ reply is a receipt he has to load back into his head to put away. A
 helper thread like that archives itself (A quiet inbox); his own don't, as
 a reply is often the thing he asked for and hiding one of those is the
 expensive mistake. This collects what's needed to tell the two apart
-before anything acts on it. It archives nothing and shows nowhere.
+before anything acts on it. On its own it archives nothing and shows
+nowhere; with `quietInboxMine` on as well, the strong model's guess
+archives the thread (Acting on it, below).
 
 **The guess.** When a turn finishes for good as in A quiet inbox, the
 runner makes a guess for its done card (`seq`, the turn's `needs` event,
@@ -714,7 +785,8 @@ sure" (`"notSure"`, for the in-between ones); each archives as ever, with the ve
 archive with no verdict.
 
 **The file.** `<home>/inbox-guess.jsonl`, a line each:
-`{ at, kind: "guess", threadId, seq, guesses }` when a guess is made, and
+`{ at, kind: "guess", threadId, seq, prompt?, guesses }` when a guess is made
+(`prompt`: which `GUESS_SYSTEM` asked, from 2 on 22 Nov 2026; none is the first), and
 `{ at, kind: "archive", threadId, seq, label?: "skip" | "show" | "unsure", guesses? }`
 when Mike (`archivedBy: "mike"`) archives a thread whose last turn left a
 done card, `guesses` being that card's if there were any. An `unsure` label is left out of
@@ -722,6 +794,43 @@ scoring: it's neither a thread to hide nor one a guess got wrong. Agents' and
 Threadbear's archives aren't written. How long he had a thread open
 before a plain archive is in the app's activity log, as a second, rougher
 signal.
+
+**Acting on it.** The experiment `quietInboxMine` ("Quiet inbox for your
+threads", 23 Nov 2026, part of A quiet inbox; it needs `inboxGuess` on, as
+the guess comes from there). After the guess line is written, the thread
+is archived when the strong model's guess (`strong: true` on it) is a skip
+and no rule's guess is among them. Opus itself: when only Haiku answered,
+or a pool with no Claude login had another agent answer on its own default
+(its `by` then says `<provider> default on <login>`), nothing happens. Nor
+for a thread that's starred, `keptOut` (brought back out of the archive by
+hand once), another lab's review, has a design review waiting on Mike, or
+whose done card he has already seen (`lastSeenSeq >= seq`: he had it open
+as it finished). The checks `settleQuietly` makes are made again, as the
+models took a moment: no turn, edit or queued message, still `finished`,
+the done card still the last, the thread still in the inbox, and no thread
+it started gone back to work. Then a `system.note` ("Archived quietly: it finished with nothing
+for you, and a model judged you didn't need to see it." and the model's
+`why`), an archive with `archivedBy: "threadbear"`, and
+`quietlyArchived: { at, why, seq }` on the record, which the summary
+carries as `quietlyArchived: { at, why }` while the thread is archived by
+Threadbear. Any move that brings it out of the archive (a message, an
+unarchive, a review answered) or leaves it archived by someone else (Mike
+archiving it again) clears the mark (`parkRecord`). The file gets
+`{ at, kind: "quiet", threadId, seq, why }`.
+
+**Should have shown me.** `threads.update` with `archived: false,
+verdict: "shouldHaveShown"` brings a thread back as any unarchive does
+(so it's `keptOut` and never quietly archived again), with a
+`system.note` ("Brought back by you: you should have been shown this.")
+and the line `{ at, kind: "wrongHide", threadId, seq?, quiet, guesses? }`:
+`seq` the card it was quietly archived for (else its last done card),
+`quiet` whether it had the mark, `guesses` that card's. The GPUI app
+sends it from an archived row's menu, and `tb unarchive <id>
+--wrong-hide` sends it for the daily thread that asks Mike about the day's
+quiet archives (`quiet` lines in the file). The Convex relay drops the verdict, so a thread on another runner
+comes back unlabelled, and `phone:update` takes only a plain
+`{ unarchive: true }` (a verdict there is refused); they never carry the mark
+anyway.
 
 ## Secrets
 

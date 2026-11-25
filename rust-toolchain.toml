@@ -3,8 +3,11 @@
 # same everywhere. rustup reads it and fetches it the first time. Moving it
 # can change what rustfmt writes: run `cd desktop && cargo fmt --all` with
 # the new one and commit that with it, and fix what the new clippy finds.
-# The installed app's own build (desktop/scripts/stage-update.sh) still asks
-# for rustup's stable, as forks' Macs have that already.
+# The app a Mac runs (stage-update.sh, install-app.sh) is built with exactly
+# this version too, but not through rustup: desktop/scripts/pinned-cargo.sh
+# fetches its parts and checks each against desktop/scripts/rust-toolchain.pins.
+# So keep it an exact version (1.x.y), and move the pins with it in the same
+# commit (that file says how); a test fails while the two disagree.
 [toolchain]
 channel = "1.99.1"
 components = ["rustfmt", "clippy"]

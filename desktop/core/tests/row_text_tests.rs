@@ -1486,6 +1486,34 @@ fn testReviewReplyLeavesOutWhatHePassedOver() {
 }
 
 #[test]
+fn testReviewReplyWithMarksSaysHowManyHeMarked() {
+    // The runner's lines for each of his marks (reviewReply's markLine) sit
+    // between his reply and any notes; the bubble counts them.
+    let words = "Review: Picker (r1)\n\nPicked A. Auto account.\n\n[Mark 1] make this bigger\n\n[Mark 1] circle on A. Auto account, picture 1 (Menu open), across 36-50% and down 83-92% of it.\n[Mark 2] pin on A. Auto account, picture 2, across 60% and down 42% of it.";
+    let mark = |n: u32, kind: &str| json!({"n": n, "kind": kind, "optionId": "A", "shot": n - 1, "box": [0.36, 0.83, 0.5, 0.92]});
+    let e = event(
+        4,
+        "user.message",
+        json!({"text": words, "images": [], "reviewId": "r1", "reviewResponse": {"pickedIds": ["A"], "notes": {}, "reply": "[Mark 1] make this bigger", "marks": [mark(1, "circle"), mark(2, "pin")]}}),
+    );
+    let model = from_events(vec![e]);
+    let Some(RowContent::User(message)) = model.rows().first().map(|r| &r.content) else {
+        panic!("no bubble")
+    };
+    assert_eq!(
+        message
+            .review
+            .as_ref()
+            .map(|r| r.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>()),
+        Some(vec![
+            "Picked A: Auto account".to_owned(),
+            "[Mark 1] make this bigger".to_owned(),
+            "Marked 2 parts".to_owned()
+        ])
+    );
+}
+
+#[test]
 fn testActionRunEventBecomesAToolRow() {
     let value = json!({"seq": 7, "ts": "2026-10-27T02:00:00Z", "threadId": "th1", "type": "action.run", "actionId": "tools.typecheck", "patch": "tools", "title": "Typecheck", "command": "npx tsc --noEmit", "ok": false, "exitCode": 2, "text": "src/a.ts(1,1): error TS1\n", "truncated": false, "durationMs": 1234});
     let e = Event::decode(&value).expect("an event");

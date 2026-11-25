@@ -131,12 +131,71 @@ stop_opencode() { pkill -f "$oc_home/bin/opencode" 2>/dev/null || true; }
 # A round runs in its own process group (see the cap below), so the night
 # ending early has to stop it itself.
 pid=""
-trap 'stop_opencode; [ -z "$pid" ] || kill -TERM -- "-$pid" 2>/dev/null' EXIT
+trap 'stop_opencode; [ -z "$pid" ] || kill -TERM -- "-$pid" 2>/dev/null; [ -z "${probe_pid:-}" ] || { pkill -KILL -P "$probe_pid"; kill -KILL "$probe_pid"; } 2>/dev/null' EXIT
+
+# Whether making a folder on the build volume is held up. The check folder
+# (~/.cache/threadbear-check/gpui) is a volume on Tinker Desk's USB SSD, so
+# macOS checks Removable Volumes access on every file made there by a process
+# without Full Disk Access, and Desk Runner's children are such processes (ssh
+# sessions aren't: sshd has it). sandboxd asks the user's tccd one request at a
+# time, so while any program's Removable Volumes prompt waits unanswered on
+# Tinker Desk's screen, every such file made by a Desk Runner child sleeps
+# behind it, though Desk Runner's own access was granted long ago. On 22 Nov a
+# headless Chromium's prompt from 13:16 sat there until 07:33 the next
+# morning, and each of the night's 5 rounds hung 47 minutes in remote.sh's
+# first mkdir. Run first, so a held night waits with the reason in night.log
+# and summary.json instead. The probe is left behind if it's held: it finishes
+# when the prompt is answered, and the next check takes it away.
+probe="$HOME/.cache/threadbear-check/gpui/.nightly-probe"
+probe_pid=""
+volume_held() {
+  [ -d "${probe%/*}" ] || return 1
+  # A probe still held from the last check: no second one queued behind it.
+  if [ -n "$probe_pid" ] && kill -0 "$probe_pid" 2>/dev/null; then return 0; fi
+  # All of it in the background, the rmdirs too, as any of them can be held.
+  ( rmdir "$probe" 2>/dev/null; mkdir "$probe" && rmdir "$probe" ) </dev/null >/dev/null 2>&1 &
+  probe_pid=$!
+  local i=0 rc=0
+  while kill -0 "$probe_pid" 2>/dev/null; do
+    [ "$i" -lt 30 ] || return 0
+    sleep 1; i=$((i + 1))
+  done
+  wait "$probe_pid" || rc=$?
+  probe_pid=""
+  # Failing outright isn't a prompt: the round finds out, and three rounds
+  # failing at once end the night.
+  [ "$rc" = 0 ] || say "couldn't make a folder in the check folder (mkdir exit $rc)"
+  return 1
+}
+# The prompt waiting, from tccd's log: the newest one tccd showed that it
+# hasn't had an answer for, with the program asking and for what.
+waiting_prompt() {
+  local lines line id
+  lines="$(/usr/bin/log show --last 2d --style compact --predicate 'process == "tccd" AND (eventMessage CONTAINS "AUTHREQ_PROMPTING" OR eventMessage CONTAINS "AUTHREQ_RESULT")' 2>/dev/null)"
+  printf '%s\n' "$lines" | grep AUTHREQ_PROMPTING | tail -r | while IFS= read -r line; do
+    id="$(printf '%s\n' "$line" | sed -nE 's/.*msgID=([0-9.]+),.*/\1/p')"
+    [ -n "$id" ] || continue
+    printf '%s\n' "$lines" | grep -q "AUTHREQ_RESULT: msgID=$id," && continue
+    printf '%s\n' "$line" | sed -nE 's/^([0-9-]+ [0-9:]+).*service=kTCCService([A-Za-z]+).*subject=Sub:\{([^}]*)\}.*/\2 for \3, asked \1/p'
+    break
+  done
+}
+held_since=0
 
 # NIGHTLY_FUZZ_START=3 starts the rotation at the monkey, for a try.
 n=${NIGHTLY_FUZZ_START:-0}; stress_n=0; agent_n=0; busy_waits=0; fast_fails=0
 while [ "$(now)" -lt "$stop" ]; do
   if poddle_busy; then say "Poddle's tests are on: waiting"; sleep 300; continue; fi
+  if volume_held; then
+    if [ "$held_since" = 0 ]; then
+      held_since=$(now)
+      prompt="$(waiting_prompt | LC_ALL=C tr -d '\000-\037"\\')"
+      say "making a folder in the check folder is held up: a macOS privacy prompt is waiting on Tinker Desk's screen (${prompt:-none found in the tccd log}). Rounds wait until it's answered."
+      printf '{"at":%d,"prompt":"%s"}\n' "$held_since" "$prompt" >>"$out/held.jsonl"
+    fi
+    sleep 300; continue
+  fi
+  if [ "$held_since" != 0 ]; then say "the check folder is free again after $(( ($(now) - held_since) / 60 )) min"; held_since=0; fi
   left=$(( (stop - $(now)) / 60 ))
   [ "$left" -ge 4 ] || break
   # About 7 minutes of work, so with the build and setup a round is about 10.

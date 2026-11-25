@@ -289,6 +289,7 @@ import Testing
             var plan: Bool?
             var turn: String?
             var wokeBy: [WokeTask]?
+            var wakeReason: String?
         }
         struct Input: Decodable {
             var busy: Bool
@@ -324,7 +325,7 @@ import Testing
         for c in cases where c.differs?["ios"] == nil {
             let rows = c.input.messages.map { r in
                 PhoneMessage(seq: r.seq, role: r.role, text: r.text, origin: r.origin, toolKind: r.role == .tool ? "command" : nil,
-                             summary: r.summary ?? false, plan: r.plan ?? false, turn: r.turn, wokeBy: r.wokeBy, at: t0.addingTimeInterval(r.at))
+                             summary: r.summary ?? false, plan: r.plan ?? false, turn: r.turn, wokeBy: r.wokeBy, wakeReason: r.wakeReason, at: t0.addingTimeInterval(r.at))
             }
             #expect(Turns.fold(rows, busy: c.input.busy).map(shown) == c.expect, "\(c.name)")
         }

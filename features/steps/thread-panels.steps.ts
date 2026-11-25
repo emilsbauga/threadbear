@@ -27,6 +27,31 @@ When('I open {string} in a new panel', async function (this: ThreadbearWorld, ti
   await this.app.do({ cmd: 'open-panel', id: await threadId(this, title) });
 });
 
+// The box in the thread's own panel, reached by its thread
+// (`composer-menu` and `ask` take `thread`).
+When('I pick {string} from the {string} menu in the panel of {string}', async function (this: ThreadbearWorld, item: string, menu: string, title: string) {
+  const id = await threadId(this, title);
+  await this.until(`${title} in a panel of its own`, (d) => panelOf(d, id)?.transcript?.state === 'loaded');
+  await this.app.do({ cmd: 'composer-menu', menu, click: item, thread: id });
+});
+
+When('I press {string} on the card in the panel of {string}', async function (this: ThreadbearWorld, action: string, title: string) {
+  const id = await threadId(this, title);
+  await this.until(`${title}'s card in its own panel`, (d) => panelOf(d, id)?.transcript?.rows.some((r) => r.kind === 'asks'));
+  await this.app.do({ cmd: 'ask', action, thread: id });
+});
+
+When('I put the cursor in the box in the panel of {string}', async function (this: ThreadbearWorld, title: string) {
+  const id = await threadId(this, title);
+  await this.until(`${title} in a panel of its own`, (d) => panelOf(d, id)?.transcript?.state === 'loaded');
+  await this.app.do({ cmd: 'type', text: '', thread: id });
+});
+
+Then('the panel of {string} says its permission mode is {string}', async function (this: ThreadbearWorld, title: string, mode: string) {
+  const id = await threadId(this, title);
+  await this.until(`${title}'s own panel in ${mode}`, (d) => panelOf(d, id)?.mode === mode);
+});
+
 When('I move {string} to the main panel', async function (this: ThreadbearWorld, title: string) {
   await this.app.do({ cmd: 'move-to-main', id: await threadId(this, title) });
 });

@@ -591,10 +591,27 @@ impl Pace {
                 }
             }
         }
+        let elapsed = hours(now - start);
+        if week && per_hour.is_none() && elapsed < 12. {
+            // Under half a day into the week, a busy first hour run on around
+            // the clock says it runs out in two days. Go by the week before
+            // instead: what had gone by its last reading, over the time since
+            // it began (each week starts full). No week before: too early to
+            // say.
+            let prev_start = start - span;
+            let last = samples
+                .iter()
+                .filter(|s| s.at >= prev_start && s.at < start)
+                .max_by_key(|s| s.at)?;
+            let prev_elapsed = hours(last.at - prev_start);
+            if prev_elapsed < 12. {
+                return None;
+            }
+            per_hour = Some((100. - last.remaining).max(0.) / prev_elapsed);
+        }
         let per_hour = match per_hour {
             Some(p) => p,
             None => {
-                let elapsed = hours(now - start);
                 // Too early in the window to say anything.
                 if elapsed < if week { 2. } else { 0.25 } {
                     return None;
@@ -1682,15 +1699,22 @@ pub struct Unknown {
 }
 
 /// Why there's no reading, by provider. Claude and Codex report theirs on
-/// every turn, so one with none hasn't run a turn here. Grok's CLI shows its
-/// plan's limit only through its background service (`grok usage`), which
-/// Threadbear doesn't run; OpenCode's own models bill a balance.
+/// every turn, so one with none hasn't run a turn here. The runner reads a
+/// Grok login's plan from Grok a minute after it starts (`_x.ai/billing`,
+/// since 24 Nov 2026), and a Gemini login's from its own `/usage` every 10
+/// minutes and after each of its turns (since 23 Nov 2026), so one with none
+/// hasn't been read yet (or its answer didn't read); OpenCode's own models
+/// bill a balance.
 pub fn unknown_reason(provider: &str, provider_name: &str) -> Unknown {
     let (text, tip) = match provider {
         "claude" | "codex" | "" => ("No turn has run on it yet".to_owned(), "Its limit shows after its first turn here".to_owned()),
+        "antigravity" => (
+            "No reading from Gemini yet".to_owned(),
+            "Threadbear asks Gemini how much of your Google plan is left every 10 minutes and after each Gemini turn".to_owned(),
+        ),
         "grok" => (
-            "Grok reports its limit only from its background service".to_owned(),
-            "Threadbear reads each login's limit from what its turns report. Grok's turns don't carry it, and its CLI shows it only through Grok's background service".to_owned(),
+            "Not read yet".to_owned(),
+            "Threadbear asks Grok how much of its plan is left a minute after the runner starts, and after Grok turns".to_owned(),
         ),
         "opencode" => ("Pay as you go, no weekly limit".to_owned(), "OpenCode's own models spend a balance rather than a weekly limit, and its turns don't report either".to_owned()),
         _ => (format!("{provider_name} doesn't report its limit"), "Threadbear reads each login's limit from what its turns report".to_owned()),
@@ -2513,6 +2537,39 @@ mod tests {
             remaining: 45.,
         }];
         assert!((Pace::of(&w, &recent, now).unwrap().rate - 15.).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_week_just_reset_goes_by_the_week_before() {
+        // Two hours after the reset with 5% gone: run on around the clock
+        // that's 60% a day, out on day two. The week before used 70% in its
+        // seven days: 10% a day.
+        let now = at(12, 0);
+        let start = now - 2 * HOUR;
+        let w = weekly(95., start + 7 * DAY);
+        let samples = [
+            Sample {
+                at: start - 3 * DAY,
+                remaining: 60.,
+            },
+            Sample {
+                at: start - 60_000,
+                remaining: 30.,
+            },
+            Sample {
+                at: start + HOUR,
+                remaining: 97.,
+            },
+        ];
+        let pace = Pace::of(&w, &samples, now).unwrap();
+        assert!((pace.rate - 10.).abs() < 0.01);
+        assert!(pace.runs_out_at.is_none());
+        // No week before: too early to say.
+        assert!(Pace::of(&w, &[], now).is_none());
+        // Half a day in, the week's own readings take over again: 97% to
+        // 95% over 12 hours.
+        let later = start + 13 * HOUR;
+        assert!((Pace::of(&w, &samples, later).unwrap().rate - 4.).abs() < 0.01);
     }
 
     #[test]
@@ -3375,7 +3432,7 @@ mod tests {
         assert_eq!(grok.headline, None);
         assert_eq!(
             grok.unknown.as_ref().map(|u| u.text.as_str()),
-            Some("Grok reports its limit only from its background service")
+            Some("Not read yet")
         );
         assert_eq!(
             row_for(bare("oc", "opencode"), now).unknown.map(|u| u.text),

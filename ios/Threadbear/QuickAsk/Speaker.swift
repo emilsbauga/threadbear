@@ -178,14 +178,14 @@ final class Speaker {
         utterance.postUtteranceDelay = 0
         utterances[ObjectIdentifier(utterance)] = id
         spokenCount += 1
-        Log.speech.info("Queued sentence \(self.spokenCount): \(text, privacy: .public)")
+        Log.speech.info("Queued sentence \(self.spokenCount) (\(text.count) characters)")
         synthesizer.speak(utterance)
     }
 
     /// For tuning from a phone's logs: how far into the filler the answer was ready, and how long
     /// the stop took to land.
     private func logCut(_ cut: FillerCut.Cut) {
-        let word = currentWord.map { "its word (\"\($0)\")" } ?? "its first word"
+        let word = currentWord == nil ? "its first word" : "its current word"
         let when = cut.spokenFor.map { "\(Int($0 * 1000)) ms into it" } ?? "before it started"
         Log.speech.info("Cutting the filler at the end of \(word, privacy: .public): the answer's ready \(when, privacy: .public)")
     }

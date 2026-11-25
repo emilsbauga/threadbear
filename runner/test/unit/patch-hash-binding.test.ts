@@ -777,12 +777,5 @@ test('F28: a file redirected into a shell is hashed whatever it looks like, so c
   assert.ok(!reachOfCommand('node ./x.js < ./data.json', 'the command', follow(folder)).files.some((f) => f.endsWith('data.json')));
 });
 
-// A Windows path has no /, so a command named by one was not taken for a path
-// and the script it names was never hashed: a trusted patch could run it changed.
-test('Windows: a single-quoted drive path to a script in the repo is followed, as ./x.sh is', { skip: IS_WINDOWS ? false : 'a Windows path' }, () => {
-  const folder = fs.realpathSync(tmpDir());
-  const evil = path.join(folder, 'tools', 'evil.sh');
-  write(folder, { 'tools/evil.sh': '#!/bin/sh\necho hi\n', 'run.sh': `#!/bin/sh\n'${evil}'\n` });
-  const reach = reachOf(path.join(folder, 'run.sh'), follow(folder));
-  assert.ok(reach.files.some((f) => f.split(path.sep).join('/').endsWith('tools/evil.sh')), `evil.sh should be hashed: ${JSON.stringify(reach)}`);
-});
+// A single-quoted drive path to a script (Windows only) is in
+// trust-windows-paths.test.ts, which the Windows CI job must pass.

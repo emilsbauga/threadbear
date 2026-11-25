@@ -254,10 +254,12 @@ test('windowsSpelling: the drive and temp spellings become Windows paths, local 
 
 // ---------------------------------------------------- Windows program names
 
-test('programName: on Windows case and the .exe, .cmd, .bat or .com go; elsewhere a name is a name', () => {
+test('programName: on Windows case and the .exe, .cmd, .bat or .com go; on a Mac case goes; elsewhere a name is a name', () => {
   for (const [given, want] of [['node.exe', 'node'], ['NODE.EXE', 'node'], ['npm.cmd', 'npm'], ['Yarn.CMD', 'yarn'], ['setup.bat', 'setup'], ['x.com', 'x'], ['python3.exe', 'python3'], ['bash', 'bash'], ['Rscript.exe', 'rscript'], ['node.exe.exe', 'node.exe'], ['tool.sh', 'tool.sh']]) {
     assert.equal(programName(given!, true), want, given);
-    assert.equal(programName(given!, false), given, `${given} is itself off Windows`);
+    assert.equal(programName(given!, false, false), given, `${given} is itself off Windows and the Mac`);
+    // A Mac's disk finds `Env` as env (Grok's review of Daybreak 165).
+    assert.equal(programName(given!, false, true), given!.toLowerCase(), `${given} on a Mac`);
   }
 });
 

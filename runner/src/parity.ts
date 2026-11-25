@@ -12,7 +12,11 @@
 // its reason written down.
 //
 // The relay half is what another runner's thread can do from the Mac, which
-// opens it through its own runner and Convex. `android` is where the Android
+// opens it through its own runner and Convex. `ios` is where the iPhone app
+// (ios/) lags the website, which the phone column is checked against: a
+// phone `via` the iPhone doesn't call says why there, and parity.test.ts
+// checks it calls every other one (the phone had no sharing at all
+// while this said "Yes", Ville's report of 22 Nov). `android` is where the Android
 // app (android-native/, a port of the iPhone's kit) lags the phone column: a
 // phone `via` it doesn't call says why here, and parity.test.ts checks every
 // other `via` is called by its kit, so a port that lands flips the test. The
@@ -24,19 +28,19 @@ import { drawParityDoc } from './draw-parity.ts';
 
 export type Where = 'yes' | { no: string };
 export type PhoneWhere = { via: string } | { no: string };
-export type Row = { what: string; relay: Where; phone: PhoneWhere; android?: { no: string } };
+export type Row = { what: string; relay: Where; phone: PhoneWhere; ios?: { no: string }; android?: { no: string } };
 
 export const THREAD_REQUESTS: Record<string, Row> = {
   'threads.saveDraft': { what: 'Saving a Backlog prompt', relay: { no: 'Draft files are saved on their own Mac.' }, phone: { no: 'The phone starts a saved prompt but does not edit it.' } },
   'threads.events': { what: 'Reading the transcript', relay: 'yes', phone: { via: 'messages' } },
   'threads.subscribe': { what: 'Following it live (relaySeen skips relay events this reader has)', relay: 'yes', phone: { via: 'messages' } },
-  'threads.heldBody': { what: "Opening a tool's output", relay: 'yes', phone: { via: 'eventBody' }, android: { no: 'Android shows a tool line, not its output.' } },
+  'threads.heldBody': { what: "Opening a tool's output", relay: 'yes', phone: { via: 'eventBody' }, ios: { no: 'The iPhone shows a tool line, not its output.' }, android: { no: 'Android shows a tool line, not its output.' } },
   'threads.send': { what: 'Sending a message, pictures too', relay: 'yes', phone: { via: 'send' } },
   'threads.interrupt': { what: 'Stop', relay: 'yes', phone: { via: 'interrupt' } },
   'threads.update': { what: 'Rename, archive, star, hibernate, and from the Mac its login or model', relay: 'yes', phone: { via: 'update' } },
   'threads.markSeen': { what: 'Marking it read', relay: 'yes', phone: { via: 'update' } },
   'threads.hibernateWhen': { what: 'Hibernate until something happens', relay: 'yes', phone: { no: 'The phone hibernates until a time only.' } },
-  'threads.share': { what: 'Sharing by link', relay: 'yes', phone: { via: 'share' }, android: { no: 'Not on Android yet.' } },
+  'threads.share': { what: 'Sharing by link', relay: 'yes', phone: { via: 'share' } },
   'approvals.respond': { what: 'Answering an approval or a question', relay: 'yes', phone: { via: 'respond' } },
   'secrets.answer': { what: 'Answering a secret card', relay: 'yes', phone: { via: 'secret' } },
   'buttons.press': { what: 'Pressing a reply button', relay: 'yes', phone: { via: 'press' } },
@@ -71,6 +75,7 @@ export const THREAD_REQUESTS: Record<string, Row> = {
 /** docs/parity.md: the table, works first, then the gaps. */
 export function parityDoc(): string {
   const cell = (w: Where | PhoneWhere) => (w === 'yes' || 'via' in w ? 'Yes' : `No: ${w.no}`);
+  const ios = (r: Row) => (r.ios ? `No: ${r.ios.no}` : cell(r.phone));
   const android = (r: Row) => (r.android ? `No: ${r.android.no}` : cell(r.phone));
   const rows = Object.entries(THREAD_REQUESTS).sort(([, a], [, b]) => score(b) - score(a));
   return [
@@ -81,13 +86,13 @@ export function parityDoc(): string {
     "thread request has no row, so a feature can't go missing on another Mac or the phone",
     'without someone deciding it should.',
     '',
-    '"Another Mac" is a thread on another runner opened in the Mac app through Convex. "Phone',
-    'and web" is the iPhone app and the website, which read every thread through Convex. "Android"',
-    "is the Android app, which reads the same way through its kit, a port of the iPhone's.",
+    '"Another Mac" is a thread on another runner opened in the Mac app through Convex. "Website"',
+    'and "iPhone" read every thread through Convex, with the same functions (convex/phone.ts).',
+    '"Android" is the Android app, which reads the same way through its kit, a port of the iPhone\'s.',
     '',
-    '| What | Request | Another Mac | Phone and web | Android |',
-    '|---|---|---|---|---|',
-    ...rows.map(([method, r]) => `| ${r.what} | \`${method}\` | ${cell(r.relay)} | ${cell(r.phone)} | ${android(r)} |`),
+    '| What | Request | Another Mac | Website | iPhone | Android |',
+    '|---|---|---|---|---|---|',
+    ...rows.map(([method, r]) => `| ${r.what} | \`${method}\` | ${cell(r.relay)} | ${cell(r.phone)} | ${ios(r)} | ${android(r)} |`),
     '',
     drawParityDoc(),
   ].join('\n');

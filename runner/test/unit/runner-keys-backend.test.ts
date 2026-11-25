@@ -1420,10 +1420,11 @@ test("a sidebar row's mode is kept, and a runner key's is cut short", async () =
   assert.deepEqual(modes, { A: 'auto', B: 'x'.repeat(16) });
 });
 
-// A sidebar row's `request` (API 96, docs/protocol/threads.md "What Mike first
-// asked") reaches the main Mac's watch, for its Feed, and a runner key's is
-// cut to 400 bytes, room for the runner's 200 characters of any text.
-test("a sidebar row's request is kept, and a runner key's is cut short", async () => {
+// A sidebar row's `request` (API 96, docs/protocol/threads.md "What Mike
+// first asked (taken out)"): runners stopped sending it on 23 Nov 2026, but
+// one of API 96 or 97 still does, so its row is still taken, and a runner
+// key's is still cut to 400 bytes.
+test("an older runner's sidebar row with request is still taken, and a runner key's is cut short", async () => {
   const s = await setup();
   const row = (threadId: string, request: string) => ({ threadId, title: 'x', cwd: '/', accountId: 'a', provider: 'claude', status: 'idle', needsYou: false, unread: false, preview: '', createdAt: 'c', lastActivityAt: 'l', request });
   const accented = 'é'.repeat(200);

@@ -15,10 +15,12 @@
 // result for the compaction comes to compactDone (the 'result' case in
 // onOutput), which says so in the transcript and sends the message. Both
 // are one turn, so the thread shows one turn with a quiet line in it.
+// Messages Mike sends while it compacts queue (nothing goes into the CLI
+// then) and go into the turn right after the held one (steerQueuedMeanwhile).
 // Each method's `this` is the Runner; runner.ts puts them on its prototype.
 import crypto from 'node:crypto';
 import type { Runner, ThreadState } from '../runner.ts';
-import { fromMike, isAutomaticInput } from '../runner.ts';
+import { fromMike, isAutomaticInput } from './messages.ts';
 import type { RunnerPart } from './part.ts';
 import type { QueuedSend } from '../store.ts';
 import type { TurnResult } from '../adapters/types.ts';
@@ -70,6 +72,9 @@ export type Precompact = {
   idleMs: number;
   costBefore?: number; // sessionCostTotal when it was sent
   noted?: boolean; // the CLI's own "Compacted" line was reworded
+  // Mike's messages queued while it compacted, which would have steered, each
+  // with the automatic inputs already queued when it came (turn ids).
+  meanwhile?: { id: string; before: string[] }[];
   send: () => void; // the turn's message, held until the compaction is done
 };
 
@@ -143,7 +148,8 @@ export const coldCompactPart = {
     const id = crypto.randomUUID();
     turn.precompact = { id, gen: rt.generation, msg, ...cold, costBefore: rec.sessionCostTotal, send };
     // Nothing goes into the CLI while it compacts: a message sent meanwhile
-    // waits for the next turn, as for a /compact typed by hand.
+    // queues, and Mike's go into this turn once it has compacted
+    // (steerQueuedMeanwhile). A /compact typed by hand holds them for the next.
     turn.noSteer = true;
     this.log.info('compacting a cold thread first', { threadId: rec.id, tokens: cold.tokens, idleMin: Math.round(cold.idleMs / 60_000) });
     rt.session.send({ id, text: `/compact ${COLD_COMPACT_INSTRUCTIONS}`, images: [] });
@@ -172,7 +178,7 @@ export const coldCompactPart = {
       rec.interruptedMessages = [...(rec.interruptedMessages ?? []), seq];
       this.emit(st, { type: 'system.note', savedMessage: true, text: 'Your stopped message and pictures are saved for your next message.' }, turn.turnId);
     } else if (!isAutomaticInput(msg)) {
-      rec.queue.unshift({ turnId: crypto.randomUUID(), retryAfterInterrupt: true, text: msg.text, images: msg.images, ...(msg.origin ? { origin: msg.origin } : {}) });
+      rec.queue.unshift({ turnId: crypto.randomUUID(), retryAfterInterrupt: true, text: msg.text, images: msg.images, ...(seq !== undefined ? { seq } : {}), ...(msg.origin ? { origin: msg.origin } : {}), ...(msg.ceiling !== undefined ? { ceiling: msg.ceiling } : {}) });
       this.emit(st, { type: 'system.note', text: 'Queued an unread message again after the CLI interrupted its delivery.' }, turn.turnId);
     }
     this.markDirty(st);
@@ -206,6 +212,8 @@ export const coldCompactPart = {
     } else {
       this.emit(st, { type: 'system.note', text: `Couldn't compact the conversation first, so this turn reads all of it${r.error ? `: ${r.error}` : '.'}` }, turn.turnId);
     }
+    // Raised above its ceiling while it compacted (runner/ceiling.ts).
+    if (this.heldAtDispatch(st, pre.msg)) return;
     try {
       pre.send();
     } catch (e) {
@@ -213,6 +221,73 @@ export const coldCompactPart = {
       // that failed in deliver does, and the message is kept.
       turn.precompact = pre;
       this.failTurn(st, e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (r.outcome === 'completed') this.steerQueuedMeanwhile(st, pre);
+  },
+
+  // Called by send for a message queued while a compaction runs: one of
+  // Mike's that would have gone into the turn (not a slash command, not an
+  // edit, not one asked to wait) is noted, to go in once it has compacted.
+  noteQueuedMeanwhile(this: Runner, st: ThreadState, msg: QueuedSend): void {
+    const pre = st.rt.turn?.precompact;
+    if (!pre || !fromMike(msg.text, msg) || msg.editOf !== undefined || this.commandPlan(st, msg.text)) return;
+    const before = st.rec.queue.filter((q) => isAutomaticInput(q)).map((q) => q.turnId);
+    (pre.meanwhile ??= []).push({ id: msg.turnId, before });
+  },
+
+  // The held message has gone in: Mike's messages that queued while it
+  // compacted go in after it, in order, as each would have without the
+  // compaction (thread c3f5af7d, 22 Nov 2026: three corrections sent during
+  // one waited out the whole turn, as canSteer holds every message behind a
+  // queued one). The compaction is automatic and unseen, so it changes how
+  // his messages go only while it runs. Anything else in the queue keeps its
+  // place: a reminder or the runner's own waits as before (and doesn't hold
+  // his up, as in canSteer); one that must wait for the turn to end (a slash
+  // command, one queued before the turn, another thread's) stops it there,
+  // so nothing jumps ahead of it; and canSteer still says no after Stop, with
+  // a login move waiting, while editing or moving.
+  steerQueuedMeanwhile(this: Runner, st: ThreadState, pre: Precompact): void {
+    const { rec, rt } = st;
+    const noted = new Map((pre.meanwhile ?? []).map((m) => [m.id, m.before]));
+    // A move to another runner under way: they go with the thread.
+    if (!noted.size || rt.moving) return;
+    for (let i = 0; i < rec.queue.length; ) {
+      const q = rec.queue[i]!;
+      if (isAutomaticInput(q)) {
+        i++;
+        continue;
+      }
+      const before = noted.get(q.turnId);
+      if (!before || this.commandPlan(st, q.text) || !this.canSteer(st, rec.queue.slice(0, i))) return;
+      rec.queue.splice(i, 1);
+      // Raised above what wrote it meanwhile (runner/ceiling.ts).
+      if (!this.underCeiling(st, q.ceiling)) {
+        this.withholdMessage(st, q);
+        continue;
+      }
+      try {
+        // Only what was queued before it counts as older: a report that came
+        // in after it, while it compacted, isn't (Gemini's review).
+        this.steer(st, q, { olderInputs: new Set(before) });
+      } catch (e) {
+        this.log.warn('could not steer a message queued while compacting', { threadId: rec.id, error: e instanceof Error ? e.message : String(e) });
+        const seq = rt.turn?.inputs?.get(q.turnId);
+        if (seq === undefined) {
+          // Not shown: it waits in the queue as it did.
+          rec.queue.splice(i, 0, q);
+        } else {
+          // Shown but not sent: kept as a stopped message is, for his next
+          // one, and the turn doesn't wait for an answer to it (Codex's review).
+          if (rt.turn) rt.turn.messages = rt.turn.messages.filter((id) => id !== q.turnId);
+          if (!rec.interruptedMessages?.includes(seq)) {
+            rec.interruptedMessages = [...(rec.interruptedMessages ?? []), seq];
+            this.emit(st, { type: 'system.note', savedMessage: true, text: 'Your stopped message and pictures are saved for your next message.' }, rt.turn?.turnId);
+          }
+        }
+        this.markDirty(st);
+        return;
+      }
     }
   },
 };

@@ -1,6 +1,8 @@
 #!/usr/bin/perl
 # One build or measurement per host. Both files stay locked until the hangup
-# guard has stopped the command's tree, including Desk Runner's GUI child.
+# guard has stopped the command's tree, including Desk Runner's GUI child
+# (or, when lsof alone can't confirm that for 10 minutes, until cleanup gives
+# up: perf-children.pl).
 # Usage: perl scripts/perf-lock.pl <pidfile|-> <command...>
 #        perl scripts/perf-lock.pl --desk <pidfile> <command...>
 #        perl scripts/perf-lock.pl --try <pidfile|-> <command...>  (75 if busy)
@@ -18,6 +20,16 @@
 # check-remote.sh's checks take too): a run waits there in line and holds it
 # until it has its locks, and a run that has the host alone holds it
 # throughout. A build lets it go once it's in, so the next build can join.
+#
+# THREADBEAR_PERF_LOCK_FIRST=1 (the app's update build, through remote.sh's
+# THREADBEAR_REMOTE_FIRST) goes ahead of everything else waiting, as a
+# landing's check does (scripts/host-turn.sh, which says how): it marks
+# itself in ~/.cache/threadbear-check/first while it waits, and every other
+# run lets such a mark go first, before the gate and again once it has it.
+# Mike asked on 24 Nov, after the update build was put off 1,162 times in
+# 1,350 tries behind agents' builds and his app ran half an hour to two
+# hours behind main. --try with it still gives up on a busy host, but not
+# for runs that are only queued: those go after it anyway.
 use strict;
 use warnings;
 use Fcntl qw(:flock);
@@ -66,6 +78,8 @@ if ($build && open(my $in, '<', "$home/.cache/threadbear-check/builds-at-once"))
     $lanes = 8 if $lanes > 8;
 }
 my $shared = $build && $lanes > 1;
+my $first = ($ENV{THREADBEAR_PERF_LOCK_FIRST} // '') eq '1';
+my $first_dir = "$home/.cache/threadbear-check/first";
 
 my $cancelled = 0;
 $SIG{TERM} = sub { $cancelled = 143 };
@@ -170,10 +184,62 @@ sub live_waiters {
     }
     return %live;
 }
+# Whether a run that goes first is waiting (scripts/host-turn.sh): a mark in
+# first/ that someone holds a lock on. One nobody holds (its run was killed)
+# doesn't count; one with a dot in its name is a note, not a mark.
+my $my_mark = "$first_dir/perf-$$";
+sub first_waiting {
+    opendir(my $dir, $first_dir) or return 0;
+    my @names = grep { !/^\./ && !/\./ } readdir $dir;
+    closedir $dir;
+    for my $name (@names) {
+        my $path = "$first_dir/$name";
+        next if $path eq $my_mark;
+        open(my $f, '<', $path) or next;
+        my $got = flock($f, LOCK_EX | LOCK_NB);
+        my $why = $!;
+        close $f;
+        return 1 if !$got && ($why == EAGAIN || $why == EWOULDBLOCK);
+    }
+    return 0;
+}
+# A run that goes first marks itself while it waits, until it has its locks.
+my $mark_fh;
+sub mark_first {
+    return unless $first;
+    make_path($first_dir);
+    open($mark_fh, '>', $my_mark) or return;
+    flock($mark_fh, LOCK_EX);
+}
+sub unmark_first {
+    return unless $mark_fh;
+    unlink($my_mark);
+    close $mark_fh;
+    undef $mark_fh;
+}
+# Everything else waits while one is waiting, before the gate.
+sub let_first_go {
+    return if $first;
+    my $said = 0;
+    while (first_waiting()) {
+        exit $cancelled if stopping();
+        if ($try) {
+            print STDERR "Host has a landing's check or the app's update build waiting; deferring the update build.\n";
+            exit 75;
+        }
+        print STDERR "Letting a landing's check or the app's update build go first on $host...\n" unless $said++;
+        select(undef, undef, undef, 0.2);
+    }
+}
 # Updaters never join the queue, and must not jump ahead of a waiter whose
 # blocking locker hasn't been scheduled yet. Stale notes don't hold it up.
 sub defer_to_waiters {
     return unless $try;
+    return if $first;
+    if (first_waiting()) {
+        print STDERR "Host has a landing's check or the app's update build waiting; deferring the update build.\n";
+        exit 75;
+    }
     my %live = live_waiters();
     return unless %live;
     print STDERR "Host has queued work; deferring the update build.\n";
@@ -205,6 +271,7 @@ sub queue_text {
 END {
     # The locker and watcher forks run END too: only the supervisor tidies.
     stop_waiting() if $$ == $main_pid;
+    unmark_first() if $$ == $main_pid;
     # Only our own note: a later holder may already have written its own.
     if ($$ == $main_pid && $wrote_holder && open(my $in, '<', $my_holder_file)) {
         my $pid = <$in>; close $in;
@@ -212,6 +279,13 @@ END {
     }
 }
 
+# Set while a run that doesn't go first waits for a lock with the gate held
+# (the perf or check lock, for builds or a check to finish): it gives up its
+# wait, and wait_for_lock says 0, when a run that goes first comes in, so the
+# caller can give the gate back to it (Codex's review: with two builds at
+# once, a check or measurement through the gate sat out a whole build ahead
+# of a landing's check).
+my $yield_to_first = 0;
 sub wait_for_lock {
     my ($lock, $mode, $what, @held) = @_;
     pipe(my $ready_r, my $ready_w) or die "perf-lock: ready pipe: $!\n";
@@ -244,11 +318,26 @@ sub wait_for_lock {
     close $live_r;
     my $ready = IO::Select->new($ready_r);
     my $next_note = time + 300;
+    my ($yielded, $next_look) = (0, 0);
     while (!$ready->can_read(0.1)) {
         last if stopping();
+        if ($yield_to_first && !$first && time >= $next_look) {
+            $next_look = time + 0.5;
+            if (first_waiting()) { $yielded = 1; last; }
+        }
         next unless $what && time >= $next_note;
         $next_note = time + 300;
         print STDERR "Still waiting for $what on $host: " . holder_text() . queue_text() . "\n";
+    }
+    if ($yielded && !$cancelled) {
+        # Its locker may have got the lock just now; on the shared open file
+        # it goes when the caller closes this one.
+        kill 'TERM', $locker;
+        waitpid($locker, 0);
+        close $live_w;
+        waitpid($watcher, 0);
+        close $ready_r;
+        return 0;
     }
     close $live_w if $cancelled;
     my $count = $cancelled ? 0 : sysread($ready_r, my $byte, 1);
@@ -259,6 +348,10 @@ sub wait_for_lock {
     waitpid($watcher, 0);
     exit $cancelled if $cancelled;
     die "perf-lock: blocking locker failed\n" unless $count && $status == 0;
+    # Got it just as one that goes first came in: that one still goes first,
+    # and the lock goes as the caller drops it (Codex's second review).
+    return 0 if $yield_to_first && !$first && first_waiting();
+    return 1;
     # flock is on the shared open description, so this parent's fd keeps it
     # held when the locker exits. It never drops its place in the kernel queue.
 }
@@ -288,7 +381,7 @@ sub take {
             }
             start_waiting() if $queue && !defined $waiting_since;
             print STDERR "Waiting for $what on $host ($path)" . ($queue ? ', ' . holder_text() . queue_text() : '') . "...\n" unless $said++;
-            wait_for_lock($lock, $mode, $queue ? $what : '', @held);
+            wait_for_lock($lock, $mode, $queue ? $what : '', @held) or return undef;
             $locked = 1;
         }
         exit $cancelled if stopping();
@@ -301,7 +394,30 @@ sub take {
     }
 }
 my @locks;
-my $gate = take($gate_lock, LOCK_EX, 'another build or measurement', 1);
+mark_first();
+# The gate, after any run that goes first; and given back for one that came
+# in while this waited for it, as two runs waiting on a lock are let in in
+# no particular order.
+sub take_gate {
+    for (;;) {
+        let_first_go();
+        my $g = take($gate_lock, LOCK_EX, 'another build or measurement', 1);
+        return $g if $first || !first_waiting();
+        close $g;
+    }
+}
+my $gate;
+# take_or_yield: take(), but undef when a run that goes first came in while
+# it waited (yield_to_first, above).
+sub take_or_yield {
+    $yield_to_first = 1;
+    my $l = take(@_);
+    $yield_to_first = 0;
+    return $l;
+}
+ACQUIRE: for (;;) {
+@locks = ();
+$gate = take_gate();
 if ($shared) {
     # A lane of its own: the first that's free, waiting in line for one
     # (holding the gate, so it's next) by looking again every fifth of a
@@ -313,6 +429,13 @@ if ($shared) {
         }
         last if $lane;
         exit $cancelled if stopping();
+        # Waiting for a lane with the gate held: one that goes first, come in
+        # meanwhile, takes the gate before this.
+        if (!$first && first_waiting()) {
+            close $gate;
+            $gate = take_gate();
+            next;
+        }
         if ($try) {
             print STDERR "Host is busy (its $lanes builds at once); deferring the update build.\n";
             exit 75;
@@ -340,16 +463,24 @@ if ($shared) {
         print STDERR "Letting a measurement from an older checkout go first on $host...\n" unless $said++;
         select(undef, undef, undef, 0.2);
     }
-    push @locks, take($perf_lock, LOCK_SH, 'a measurement or Desk Runner run', 1, $gate, @locks);
-    push @locks, take("$home/.cache/threadbear-check/lock", LOCK_SH, 'a check', 0, $gate, @locks);
+    for my $want ([$perf_lock, 'a measurement or Desk Runner run', 1], ["$home/.cache/threadbear-check/lock", 'a check', 0]) {
+        my $l = take_or_yield($want->[0], LOCK_SH, $want->[1], $want->[2], $gate, @locks);
+        unless ($l) { close $_ for @locks, $gate; next ACQUIRE; }
+        push @locks, $l;
+    }
     # In: the next build can come through the gate and join.
     close $gate;
 } else {
     push @locks, $gate;
-    push @locks, take($perf_lock, LOCK_EX, 'another build or measurement', 1, @locks);
-    push @locks, take("$home/.cache/threadbear-check/lock", LOCK_EX, 'another check', 0, @locks);
+    for my $want ([$perf_lock, 'another build or measurement', 1], ["$home/.cache/threadbear-check/lock", 'another check', 0]) {
+        my $l = take_or_yield($want->[0], LOCK_EX, $want->[1], $want->[2], @locks);
+        unless ($l) { close $_ for @locks; next ACQUIRE; }
+        push @locks, $l;
+    }
 }
-stop_waiting(); write_holder(); $wrote_holder = 1;
+last;
+}
+stop_waiting(); unmark_first(); write_holder(); $wrote_holder = 1;
 defer_to_waiters();
 # Only a run that has the host alone can have a measurement nested in it.
 if ($shared) { $ENV{THREADBEAR_PERF_LOCK_SHARED} = "$host:$$:$home"; delete $ENV{THREADBEAR_PERF_LOCK_OWNER}; }

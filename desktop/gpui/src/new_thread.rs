@@ -1068,8 +1068,8 @@ impl Threadbear {
                 .into_any_element()
         };
         match icon {
-            Some(icon) if icon.image_path.is_some() => img(std::path::PathBuf::from(
-                icon.image_path.clone().unwrap_or_default(),
+            Some(icon) if icon.image_path.is_some() => img(crate::fit_picture::icon_source(
+                icon.image_path.as_deref().unwrap_or_default(),
             ))
             .size(px(side))
             .rounded(px(4.))

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { makeHarness } from '../helpers/fakes.ts';
 import { findWorktreePatch } from '../../src/patches.ts';
 import { cleanUpWorktree, clearBuildCaches, land, makeWorktree, MAX_SPARES } from '../../src/worktrees.ts';
-import { HOOK_PATCH, KEEP, archiveAfterEdit, wrapGit, capture, commit, harness, hookRuns, isLocked, makeBranch, makeRepo, notes, sh, slowWorktreeRemoval, threadWithWorktree, toldAgent, until, write } from '../helpers/worktrees-harness.ts';
+import { HOOK_PATCH, KEEP, addBorrowScript, archiveAfterEdit, wrapGit, capture, commit, harness, hookRuns, isLocked, makeBranch, makeRepo, notes, sh, slowWorktreeRemoval, threadWithWorktree, toldAgent, until, write } from '../helpers/worktrees-harness.ts';
 
 test('with keep, an archived landed worktree is kept as a spare, and the next thread takes it, build cache and all', async () => {
   const { root, main } = makeRepo(KEEP);
@@ -511,4 +511,127 @@ test('a spare with edits to tracked files is passed over, edits kept, and stays 
   const three = await makeWorktree({ cwd: main, threadId: 'cccccccc-1', patch });
   assert.ok(three.ok && three.worktree.path !== one.worktree.path);
   assert.equal(fs.readFileSync(path.join(one.worktree.path, 'README.md'), 'utf8'), 'someone is working here\n');
+});
+
+// 23 Nov 2026: the Canvas thread borrowed slot-32 and moved itself there,
+// gave it back the day before and stayed in it; borrow-worktree.sh lent it to
+// another thread, and the Canvas thread's next turn committed on that
+// borrower's branch. A slot a thread works in is never lent, and a thread
+// never carries on in a slot that's someone else's now.
+// The runner's clock brought up to the real one, which borrow-worktree.sh
+// stamps its borrows with, so which came first reads as it happened.
+const realTime = (h: ReturnType<typeof harness>) => h.clock.advance(Math.max(0, Date.now() - h.clock.now()));
+
+async function threadInItsBorrow(h: ReturnType<typeof harness>, root: string, main: string) {
+  realTime(h);
+  const outside = path.join(root, 'outside');
+  fs.mkdirSync(outside, { recursive: true });
+  const started = h.adapter.sessions.length;
+  const { thread } = h.runner.create({ text: 'Go', accountId: 'claude-3', cwd: outside });
+  await until(() => h.adapter.sessions.length === started + 1, 'the CLI to start');
+  h.adapter.last.init();
+  h.adapter.last.result();
+  const wt = sh(main, `THREADBEAR_RUNNER_HOME='${h.home}' THREADBEAR_THREAD_ID=${thread.id} ./borrow-worktree.sh 2>/dev/null`);
+  // move_thread, as the Canvas thread did.
+  realTime(h);
+  const movedAt = h.clock.now();
+  h.runner.update({ threadId: thread.id, cwd: wt });
+  h.runner.send(thread.id, 'Work here');
+  await until(() => h.adapter.sessions.length === started + 2, 'a CLI in the borrow');
+  assert.equal(h.adapter.last.opts.cwd, wt, 'its own borrow: it works there');
+  h.adapter.last.init();
+  h.adapter.last.result();
+  return { id: thread.id, wt, movedAt };
+}
+
+const liveCli = (h: ReturnType<typeof harness>, id: string) => (h.runner as unknown as { threads: Map<string, { rt: { session?: unknown } }> }).threads.get(id)?.rt.session;
+
+// Its CLI let go, as one is after half an hour idle.
+async function letGo(h: ReturnType<typeof harness>, id: string) {
+  h.clock.advance(31 * 60_000);
+  await until(() => !liveCli(h, id), 'the idle CLI to go');
+}
+
+test('a thread brought back to a slot it moved into, lent to another borrower since, carries on in a fresh worktree', async () => {
+  const { root, main } = makeRepo(KEEP);
+  addBorrowScript(main);
+  const h = harness();
+  const t = await threadInItsBorrow(h, root, main);
+  sh(main, `./borrow-worktree.sh --give-back ${t.wt}`);
+  const borrowAs = (id: string) => sh(main, `THREADBEAR_RUNNER_HOME='${h.home}' THREADBEAR_THREAD_ID=${id} ./borrow-worktree.sh 2>/dev/null`);
+  await until(() => fs.readFileSync(path.join(h.home, 'threads', t.id, 'thread.json'), 'utf8').includes(t.wt), 'the record saved');
+  const passedOver = borrowAs('other-0');
+  assert.notEqual(passedOver, t.wt, 'not lent while the open thread is in it');
+  sh(main, `./borrow-worktree.sh --give-back ${passedOver}`);
+  // Archived, it works nowhere, so the next borrow may have the slot.
+  h.runner.update({ threadId: t.id, archived: true });
+  await until(() => !liveCli(h, t.id) && fs.readFileSync(path.join(h.home, 'threads', t.id, 'thread.json'), 'utf8').includes('archivedAt'), 'the archived CLI to go');
+  // Borrows are stamped to the second: this one comes clearly after the move.
+  await until(() => Math.floor(Date.now() / 1000) * 1000 > t.movedAt, 'a second past the move', 5000);
+  const other = borrowAs('other-1');
+  assert.equal(other, t.wt);
+  const theirs = sh(other, 'git rev-parse --abbrev-ref HEAD');
+  h.runner.update({ threadId: t.id, archived: false });
+  const before = h.adapter.sessions.length;
+  // A slash command waits for a message, which makes the move: in front of
+  // the notice it would reach the agent as words.
+  h.runner.send(t.id, '/compact');
+  await until(() => notes(h, t.id).some((n) => n.includes('Send one first, then /compact again')), 'the note');
+  assert.equal(h.adapter.sessions.length, before, 'no CLI for it in the lent slot');
+  h.runner.send(t.id, 'More please');
+  await until(() => h.adapter.sessions.length === before + 1, 'its next CLI');
+  const w = h.runner.get(t.id).worktree!;
+  assert.ok(w && w.path !== t.wt, 'a worktree of its own, not the borrower\'s');
+  assert.equal(h.adapter.last.opts.cwd, w.path);
+  assert.ok(notes(h, t.id).includes(`This thread's folder ${t.wt} was lent to another borrower, so it carries on in a fresh worktree at ${w.path}, on the branch ${w.branch}, made from main. tb land puts it on main.`));
+  assert.match(h.adapter.last.sent.at(-1)!.text, new RegExp(`Your folder ${t.wt} was lent to another borrower, so it isn't yours to work in any more`));
+  assert.equal(sh(other, 'git rev-parse --abbrev-ref HEAD'), theirs, "the borrower's branch untouched");
+});
+
+test('a spare an open thread still works in is passed over for a new thread, and that thread takes it back as its own', async () => {
+  const { root, main } = makeRepo(KEEP);
+  addBorrowScript(main);
+  const h = harness();
+  const t = await threadInItsBorrow(h, root, main);
+  sh(main, `./borrow-worktree.sh --give-back ${t.wt}`);
+  assert.ok(isLocked(main, t.wt));
+  const n = await threadWithWorktree(h, main);
+  assert.notEqual(n.w.path, t.wt, 'not the folder the open thread is in');
+  assert.ok(isLocked(main, t.wt), 'still a spare');
+  // Its next turn, its CLI still live from the turn that gave it back, finds
+  // its folder a spare: that CLI goes, and it takes the folder as a worktree
+  // of its own rather than work in the pool.
+  assert.ok(liveCli(h, t.id));
+  const before = h.adapter.sessions.length;
+  h.runner.send(t.id, 'More please');
+  await until(() => h.adapter.sessions.length === before + 1, 'its next CLI');
+  const w = h.runner.get(t.id).worktree!;
+  assert.equal(w?.path, t.wt);
+  assert.ok(!isLocked(main, t.wt));
+  assert.equal(sh(t.wt, 'git rev-parse --abbrev-ref HEAD'), w.branch);
+});
+
+test("a thread put in another's worktree or borrow after it was theirs (a Lab review's reviewer) stays there", async () => {
+  const { root, main } = makeRepo(KEEP);
+  addBorrowScript(main);
+  const h = harness();
+  const a = await threadWithWorktree(h, main);
+  const t = await threadInItsBorrow(h, root, main);
+  for (const folder of [path.join(a.w.path, 'runner'), t.wt]) {
+    const before = h.adapter.sessions.length;
+    // Made the second after: one in the same second as the borrow counts as
+    // before it, as the safe side.
+    await until(() => Math.floor(Date.now() / 1000) * 1000 > t.movedAt, 'a second past the borrow', 5000);
+    realTime(h);
+    const { thread } = h.runner.create({ text: 'Review it', accountId: 'claude-3', cwd: folder, worktree: false });
+    await until(() => h.adapter.sessions.length === before + 1, 'the reviewer CLI');
+    assert.equal(h.adapter.last.opts.cwd, folder);
+    assert.equal(h.runner.get(thread.id).worktree, undefined);
+    h.adapter.last.init();
+    h.adapter.last.result();
+    await letGo(h, thread.id);
+    h.runner.send(thread.id, 'And again');
+    await until(() => h.adapter.sessions.length === before + 2, 'its next CLI');
+    assert.equal(h.adapter.last.opts.cwd, folder, 'still there on its next turn');
+  }
 });

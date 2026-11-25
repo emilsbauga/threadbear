@@ -91,7 +91,8 @@ test('what Grok can do', () => {
   assert.equal(g.effort, 'codex');
   assert.equal(g.autoMode, 'asks');
   assert.equal(g.smallJobs, true, 'its hook denies every tool for one');
-  for (const can of [g.rewind, g.usageReadings]) assert.equal(can, false);
+  assert.equal(g.rewind, false);
+  assert.equal(g.usageReadings, true, 'its plan share, from _x.ai/billing');
 });
 
 test('a Grok thread takes an effort its model lists, and not one it does not', () => {

@@ -3,7 +3,6 @@
 // what `projects.update` changes (ProjectUpdate in RunnerAPI.swift), the
 // sidebar's sections with parts nested under their parent
 // (ProjectSections.swift), the Projects page's cards (ProjectCards.swift),
-// decisions (ProjectDecisions.swift), the folded rows (ProjectFolds.swift),
 // what a project's page borrows from its threads (ProjectPane, PatchGroups),
 // and the words the page and the cards say (ProjectPage.swift,
 // ProjectsHome.swift). The GPUI app draws from these; its `dump` says what
@@ -839,251 +838,8 @@ pub fn threads_in<'a>(
     out
 }
 
-// ---------------------------------------------------------------- folded rows
-
-/// "Not in a project"'s id among the open rows (`ProjectFolds.unfiledId`).
+/// "Not in a project"'s id, where the threads in none need a key of their own.
 pub const UNFILED_ID: &str = "-";
-
-/// Thread ids top to bottom as the folded list shows them, for the arrow
-/// keys: only open projects' threads, each once. A part's threads show when it
-/// and its parent are both open.
-pub fn fold_order(sections: &Sections, open: &HashSet<String>) -> Vec<String> {
-    let mut shown: Vec<&ThreadSummary> = Vec::new();
-    for top in sections.top_level() {
-        if !open.contains(top.id()) {
-            continue;
-        }
-        shown.extend(top.threads.iter().copied());
-        for part in sections.parts_of(top.id()) {
-            if open.contains(part.id()) {
-                shown.extend(part.threads.iter().copied());
-            }
-        }
-    }
-    if open.contains(UNFILED_ID) {
-        shown.extend(sections.unfiled.iter().copied());
-    }
-    let mut seen = HashSet::new();
-    shown
-        .into_iter()
-        .filter(|t| seen.insert(t.id.as_str()))
-        .map(|t| t.id.clone())
-        .collect()
-}
-
-/// What the folded list draws, a row id each: a project's row as "p:<id>",
-/// a thread as "<project>/<thread>" (`ProjectFolds.layout`).
-pub fn fold_layout(sections: &Sections, open: &HashSet<String>) -> Vec<String> {
-    let mut rows = Vec::new();
-    for top in sections.top_level() {
-        rows.push(format!("p:{}", top.id()));
-        if !open.contains(top.id()) {
-            continue;
-        }
-        rows.extend(top.threads.iter().map(|t| format!("{}/{}", top.id(), t.id)));
-        for part in sections.parts_of(top.id()) {
-            rows.push(format!("p:{}", part.id()));
-            if open.contains(part.id()) {
-                rows.extend(
-                    part.threads
-                        .iter()
-                        .map(|t| format!("{}/{}", part.id(), t.id)),
-                );
-            }
-        }
-    }
-    if !sections.unfiled.is_empty() {
-        rows.push(format!("p:{UNFILED_ID}"));
-        if open.contains(UNFILED_ID) {
-            rows.extend(
-                sections
-                    .unfiled
-                    .iter()
-                    .map(|t| format!("{UNFILED_ID}/{}", t.id)),
-            );
-        }
-    }
-    rows
-}
-
-// ---------------------------------------------------------------- the page's tabs
-
-/// A project's page in two tabs (the projectDecisions experiment), a port of
-/// ThreadbearCore's ProjectTabs.swift: its decisions, and everything else
-/// about it. Mike, 12 Nov 2026: "tabbed at the top so you can swap between
-/// coordinator and project info".
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ProjectTab {
-    Decisions,
-    Project,
-}
-
-impl ProjectTab {
-    pub const ALL: [ProjectTab; 2] = [ProjectTab::Decisions, ProjectTab::Project];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            ProjectTab::Decisions => "Decisions",
-            ProjectTab::Project => "Project",
-        }
-    }
-
-    /// The name a script and the dump use: "decisions" or "project".
-    pub fn name(self) -> &'static str {
-        match self {
-            ProjectTab::Decisions => "decisions",
-            ProjectTab::Project => "project",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<ProjectTab> {
-        ProjectTab::ALL.into_iter().find(|t| t.name() == name)
-    }
-
-    /// The tab a page opens on when none has been picked for it: Decisions
-    /// when something's waiting, else Project.
-    pub fn opening(decisions: usize) -> ProjectTab {
-        if decisions > 0 {
-            ProjectTab::Decisions
-        } else {
-            ProjectTab::Project
-        }
-    }
-
-    /// The tab showing: the one last picked for this project, else the one
-    /// it opened on this visit. Never worked out again from the decisions
-    /// while it's open, so the page doesn't jump under the pointer as they
-    /// come and go.
-    pub fn current(
-        picked: Option<ProjectTab>,
-        opened_on: Option<ProjectTab>,
-        decisions: usize,
-    ) -> ProjectTab {
-        picked
-            .or(opened_on)
-            .unwrap_or_else(|| ProjectTab::opening(decisions))
-    }
-
-    /// The tab beside this one, for ⇧⌘[ (-1) and ⇧⌘] (1): they stop at the
-    /// ends rather than wrapping, as there are only two.
-    pub fn step(self, by: i32) -> ProjectTab {
-        let at = ProjectTab::ALL.iter().position(|t| *t == self).unwrap_or(0) as i32;
-        ProjectTab::ALL[(at + by).clamp(0, ProjectTab::ALL.len() as i32 - 1) as usize]
-    }
-}
-
-// ---------------------------------------------------------------- decisions
-
-/// The thread is waiting on Mike with a card of asks he hasn't finished
-/// (`ProjectDecisions.isWaiting`): its last turn said it needs him, nothing is
-/// running, and some ask is unticked. One that needs him with no asks (a plain
-/// reply) isn't a decision.
-pub fn is_waiting(t: &ThreadSummary) -> bool {
-    t.waiting_on_mike()
-        && !t.is_archived()
-        && t.asks_seq.is_some()
-        && t.asks.iter().flatten().any(|a| a.ticked != Some(true))
-}
-
-/// How many of its asks are still open.
-pub fn open_asks(t: &ThreadSummary) -> usize {
-    if is_waiting(t) {
-        t.asks
-            .iter()
-            .flatten()
-            .filter(|a| a.ticked != Some(true))
-            .count()
-    } else {
-        0
-    }
-}
-
-/// The threads with decisions, newest activity first. Takes a section's
-/// threads, which already leave out archived and hibernating ones.
-pub fn decision_threads<'a>(threads: &[&'a ThreadSummary]) -> Vec<&'a ThreadSummary> {
-    let mut out: Vec<&ThreadSummary> = threads.iter().copied().filter(|t| is_waiting(t)).collect();
-    sort_newest_first(&mut out);
-    out
-}
-
-/// Open asks across these threads.
-pub fn decision_count(threads: &[&ThreadSummary]) -> usize {
-    threads.iter().map(|t| open_asks(t)).sum()
-}
-
-/// "1 decision", "3 decisions".
-pub fn decision_label(count: usize) -> String {
-    if count == 1 {
-        "1 decision".to_owned()
-    } else {
-        format!("{count} decisions")
-    }
-}
-
-/// The section's line beside its heading: "4 decisions from 3 threads", or
-/// just the count when each thread has one.
-pub fn decision_heading(decisions: usize, threads: usize) -> String {
-    if decisions == threads {
-        decision_label(decisions)
-    } else {
-        format!(
-            "{} from {}",
-            decision_label(decisions),
-            if threads == 1 {
-                "1 thread".to_owned()
-            } else {
-                format!("{threads} threads")
-            }
-        )
-    }
-}
-
-/// One line on what the thread is doing: its preview's first line.
-pub fn status_line(t: &ThreadSummary) -> Option<String> {
-    let line = t.preview.lines().next().unwrap_or("").trim();
-    (!line.is_empty()).then(|| line.to_owned())
-}
-
-/// An answer sent from the page (for card `sent_for`) the thread hasn't
-/// taken yet: once its turn starts it isn't waiting, and the card drops off.
-pub fn is_sending(t: &ThreadSummary, sent_for: Option<u64>) -> bool {
-    sent_for.is_some_and(|seq| t.asks_seq == Some(seq) && is_waiting(t))
-}
-
-/// A waiting thread's asks as its card has them (`decisionCard`), every one,
-/// ticked ones too, for drawing on its project's page the way its composer
-/// draws them. The summary carries what the card needs: the asks with their
-/// options, what each does, and their links.
-pub fn decision_asks(t: &ThreadSummary) -> Vec<crate::reducer::Ask> {
-    t.asks
-        .iter()
-        .flatten()
-        .filter_map(|a| {
-            crate::reducer::Ask::decode(&json!({
-                "action": a.action, "where": a.place, "reply": a.reply, "why": a.why, "options": a.options,
-                "optionNotes": a.option_notes, "suggested": a.suggested, "links": a.links, "ticked": a.ticked,
-            }))
-        })
-        .collect()
-}
-
-/// A decision as the dump says it: "Title: first ask | second ask", its open
-/// asks in plain words, and "(sending)" while an answer's on its way.
-pub fn decision_line(t: &ThreadSummary, sending: bool) -> String {
-    let asks: Vec<String> = t
-        .asks
-        .iter()
-        .flatten()
-        .filter(|a| a.ticked != Some(true))
-        .map(|a| crate::sidebar::preview_plain(&a.action))
-        .collect();
-    format!(
-        "{}: {}{}",
-        t.title,
-        asks.join(" | "),
-        if sending { " (sending)" } else { "" }
-    )
-}
 
 // ---------------------------------------------------------------- the Projects page's cards
 
@@ -1098,15 +854,11 @@ pub struct CardStatus {
     pub unread: usize,
     /// Open threads (not archived or hibernating).
     pub open: usize,
-    /// Open asks on its threads' cards, only with the projectDecisions
-    /// experiment on. A thread counted here isn't counted as new as well.
-    pub decisions: usize,
 }
 
 /// One piece of a card's status line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardPart {
-    Decisions(usize),
     NeedsYou(usize),
     Working(usize),
     Failed(usize),
@@ -1116,7 +868,6 @@ pub enum CardPart {
 impl CardPart {
     pub fn text(&self) -> String {
         match self {
-            CardPart::Decisions(n) => decision_label(*n),
             CardPart::NeedsYou(n) => format!("{n} needs you"),
             CardPart::Working(n) => format!("{n} working"),
             CardPart::Failed(n) => format!("{n} failed"),
@@ -1126,14 +877,12 @@ impl CardPart {
 }
 
 impl CardStatus {
-    pub fn of(threads: &[&ThreadSummary], decisions: bool) -> CardStatus {
+    pub fn of(threads: &[&ThreadSummary]) -> CardStatus {
         let mut status = CardStatus {
             open: threads.len(),
             ..Default::default()
         };
         for thread in threads {
-            let asks = if decisions { open_asks(thread) } else { 0 };
-            status.decisions += asks;
             let look = RowLook::of(thread, None);
             match look.status {
                 // Sub-agents or jobs still going count as working: the
@@ -1144,7 +893,7 @@ impl CardStatus {
                 RowStatus::Time | RowStatus::Stopped => {}
             }
             // Its dot is an unread dot, but it's counted as needing him already.
-            if look.unread && look.status != RowStatus::NeedsYou && asks == 0 {
+            if look.unread && look.status != RowStatus::NeedsYou {
                 status.unread += 1;
             }
         }
@@ -1153,20 +902,13 @@ impl CardStatus {
 
     /// Nothing running, waiting or new.
     pub fn is_quiet(&self) -> bool {
-        self.working == 0
-            && self.needs_you == 0
-            && self.failed == 0
-            && self.unread == 0
-            && self.decisions == 0
+        self.working == 0 && self.needs_you == 0 && self.failed == 0 && self.unread == 0
     }
 
     /// The status line, most pressing first: "1 needs you · 2 working".
     /// Empty when it's quiet; the card says when it was last active instead.
     pub fn parts(&self) -> Vec<CardPart> {
         let mut parts = Vec::new();
-        if self.decisions > 0 {
-            parts.push(CardPart::Decisions(self.decisions));
-        }
         if self.needs_you > 0 {
             parts.push(CardPart::NeedsYou(self.needs_you));
         }
@@ -1209,9 +951,8 @@ pub struct Card<'a> {
     pub parts: Vec<&'a Project>,
 }
 
-/// The cards in the sidebar's order, newest activity first. `decisions`
-/// counts each one's open asks (the projectDecisions experiment).
-pub fn cards<'a>(sections: &Sections<'a>, recent: usize, decisions: bool) -> Vec<Card<'a>> {
+/// The cards in the sidebar's order, newest activity first.
+pub fn cards<'a>(sections: &Sections<'a>, recent: usize) -> Vec<Card<'a>> {
     sections
         .top_level()
         .into_iter()
@@ -1220,7 +961,7 @@ pub fn cards<'a>(sections: &Sections<'a>, recent: usize, decisions: bool) -> Vec
             let threads = sections.threads_with_parts(section);
             Card {
                 project: section.project,
-                status: CardStatus::of(&threads, decisions),
+                status: CardStatus::of(&threads),
                 last_activity_ms: parts
                     .iter()
                     .map(|p| p.last_activity_ms)
@@ -1244,7 +985,7 @@ pub fn cards<'a>(sections: &Sections<'a>, recent: usize, decisions: bool) -> Vec
 
 /// Across every project, each thread once: one in two projects is on both
 /// cards but is still one thread working.
-pub fn overall(sections: &Sections, decisions: bool) -> CardStatus {
+pub fn overall(sections: &Sections) -> CardStatus {
     let mut seen = HashSet::new();
     let threads: Vec<&ThreadSummary> = sections
         .sections
@@ -1252,7 +993,7 @@ pub fn overall(sections: &Sections, decisions: bool) -> CardStatus {
         .flat_map(|s| s.threads.iter().copied())
         .filter(|t| seen.insert(t.id.as_str()))
         .collect();
-    CardStatus::of(&threads, decisions)
+    CardStatus::of(&threads)
 }
 
 /// The cards a search keeps (`ProjectCard.matching`). Every word has to be
@@ -1296,7 +1037,7 @@ pub fn match_count(shown: usize, total: usize) -> String {
     )
 }
 
-/// "4 projects · 3 decisions · 2 working · 1 needs you", each thread counted
+/// "4 projects · 2 working · 1 needs you", each thread counted
 /// once (`ProjectsHome.summary`).
 pub fn summary(cards: usize, overall: &CardStatus) -> String {
     let mut parts = vec![if cards == 1 {
@@ -1304,9 +1045,6 @@ pub fn summary(cards: usize, overall: &CardStatus) -> String {
     } else {
         format!("{cards} projects")
     }];
-    if overall.decisions > 0 {
-        parts.push(decision_label(overall.decisions));
-    }
     if overall.working > 0 {
         parts.push(format!("{} working", overall.working));
     }
@@ -1657,33 +1395,6 @@ mod tests {
     use super::*;
     use crate::inbox::{iso_time, OpenAsk};
     use chrono::FixedOffset;
-
-    #[test]
-    fn a_page_opens_on_its_decisions_when_something_waits() {
-        assert_eq!(ProjectTab::opening(3), ProjectTab::Decisions);
-        assert_eq!(ProjectTab::opening(0), ProjectTab::Project);
-        // What it opened on holds while the decisions come and go.
-        assert_eq!(
-            ProjectTab::current(None, Some(ProjectTab::Decisions), 0),
-            ProjectTab::Decisions
-        );
-        // A tab picked wins over both.
-        assert_eq!(
-            ProjectTab::current(Some(ProjectTab::Project), Some(ProjectTab::Decisions), 4),
-            ProjectTab::Project
-        );
-        assert_eq!(ProjectTab::current(None, None, 2), ProjectTab::Decisions);
-    }
-
-    #[test]
-    fn the_tab_keys_stop_at_the_ends() {
-        assert_eq!(ProjectTab::Decisions.step(1), ProjectTab::Project);
-        assert_eq!(ProjectTab::Project.step(1), ProjectTab::Project);
-        assert_eq!(ProjectTab::Project.step(-1), ProjectTab::Decisions);
-        assert_eq!(ProjectTab::Decisions.step(-1), ProjectTab::Decisions);
-        assert_eq!(ProjectTab::from_name("project"), Some(ProjectTab::Project));
-        assert_eq!(ProjectTab::from_name("other"), None);
-    }
 
     const NOW: i64 = 1_000_000_000;
 
@@ -2085,30 +1796,7 @@ mod tests {
             "the arrow keys go through a parent, then its parts"
         );
 
-        let open = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
-        assert_eq!(
-            fold_layout(&s, &open(&[])),
-            ["p:tb", "p:pool", "p:orphan"],
-            "a part folds away with its parent"
-        );
-        assert_eq!(
-            fold_layout(&s, &open(&["tb"])),
-            [
-                "p:tb",
-                "tb/t-tb",
-                "p:android",
-                "p:port",
-                "p:pool",
-                "p:orphan"
-            ]
-        );
-        assert_eq!(fold_order(&s, &open(&["tb", "port"])), ["t-tb", "t-port"]);
-        assert!(
-            fold_order(&s, &open(&["port"])).is_empty(),
-            "a part's threads only show with its parent open"
-        );
-
-        let all = cards(&s, 3, true);
+        let all = cards(&s, 3);
         assert_eq!(
             all.iter()
                 .map(|c| c.project.id.as_str())
@@ -2123,11 +1811,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Android app", "GPUI port"]
         );
-        assert_eq!(
-            (all[0].status.decisions, all[0].status.open),
-            (2, 3),
-            "both parts' decisions"
-        );
+        assert_eq!(all[0].status.open, 3, "both parts' threads");
         assert_eq!(
             matching(all, "GPUI")
                 .iter()
@@ -2180,37 +1864,6 @@ mod tests {
     }
 
     #[test]
-    fn folded_rows_show_only_open_projects_threads() {
-        let projects = vec![project("a", "A"), project("b", "B")];
-        let threads = vec![
-            thread("t1", 1., &["a", "b"]),
-            thread("t2", 2., &["b"]),
-            thread("loose", 3., &[]),
-        ];
-        let s = Sections::build(&projects, &threads, NOW);
-        let open = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
-        assert!(
-            fold_order(&s, &open(&[])).is_empty(),
-            "folded by default: nothing to arrow through"
-        );
-        assert_eq!(
-            fold_layout(&s, &open(&[])),
-            ["p:a", "p:b", "p:-"],
-            "a row a project, and one for the rest"
-        );
-        assert_eq!(
-            fold_order(&s, &open(&["b", "a"])),
-            ["t1", "t2"],
-            "a thread in two open projects comes once"
-        );
-        assert_eq!(
-            fold_layout(&s, &open(&["b"])),
-            ["p:a", "p:b", "b/t1", "b/t2", "p:-"]
-        );
-        assert_eq!(fold_order(&s, &open(&["-"])), ["loose"]);
-    }
-
-    #[test]
     fn cards_count_what_each_projects_threads_are_doing() {
         let mut quiet = project("quiet", "Quiet");
         quiet.updated_ms = NOW - 7 * 86_400_000;
@@ -2250,7 +1903,7 @@ mod tests {
             away,
         ];
         let s = Sections::build(&projects, &threads, NOW);
-        let all = cards(&s, 3, false);
+        let all = cards(&s, 3);
         assert_eq!(
             all.iter()
                 .map(|c| c.project.id.as_str())
@@ -2266,7 +1919,6 @@ mod tests {
                 failed: 1,
                 unread: 1,
                 open: 6,
-                decisions: 0
             },
             "background work counts as working; archived threads aren't counted"
         );
@@ -2289,115 +1941,15 @@ mod tests {
         }];
         let s = Sections::build(&projects, &both, NOW);
         assert_eq!(
-            cards(&s, 3, false)
+            cards(&s, 3)
                 .iter()
                 .map(|c| c.status.working)
                 .collect::<Vec<_>>(),
             [1, 1],
             "on both cards"
         );
-        assert_eq!(overall(&s, false).working, 1, "but one thread working");
-        assert_eq!(summary(2, &overall(&s, false)), "2 projects · 1 working");
-    }
-
-    #[test]
-    fn a_decision_is_a_thread_waiting_on_a_card_of_asks() {
-        assert!(is_waiting(&asking("t", 1., &["a"], 1)));
-        assert!(
-            !is_waiting(&ThreadSummary {
-                status: "running".into(),
-                ..asking("t", 1., &["a"], 1)
-            }),
-            "running: not his move yet"
-        );
-        assert!(
-            !is_waiting(&asking("t", 1., &["a"], 0)),
-            "needs him with no asks is a plain reply"
-        );
-        assert!(
-            !is_waiting(&ThreadSummary {
-                asks_seq: None,
-                ..asking("t", 1., &["a"], 1)
-            }),
-            "no card to answer"
-        );
-        let mut ticked = asking("t", 1., &["a"], 1);
-        ticked.asks.as_mut().unwrap()[0].ticked = Some(true);
-        assert!(!is_waiting(&ticked), "every ask ticked hands it back");
-        let mut two = asking("new", 1., &["a"], 3);
-        two.asks.as_mut().unwrap()[2].ticked = Some(true);
-        let old = asking("old", 60., &["a"], 1);
-        let busy = ThreadSummary {
-            status: "running".into(),
-            ..asking("busy", 0., &["a"], 1)
-        };
-        let list = vec![&old, &two, &busy];
-        assert_eq!(ids(&decision_threads(&list)), ["new", "old"]);
-        assert_eq!(
-            decision_count(&list),
-            3,
-            "two open on one card, one on the other; the running one waits"
-        );
-        assert_eq!(decision_heading(3, 2), "3 decisions from 2 threads");
-        assert_eq!(decision_heading(2, 2), "2 decisions");
-        assert!(is_sending(&old, Some(7)));
-        assert!(!is_sending(&old, Some(3)), "an answer to an older card");
-        assert!(!is_sending(&busy, Some(7)), "taken: its turn started");
-
-        let projects = vec![project("a", "A")];
-        let threads = vec![
-            asking("ask", 1., &["a"], 1),
-            ThreadSummary {
-                needs_you: true,
-                ..thread("new", 1., &["a"])
-            },
-        ];
-        let s = Sections::build(&projects, &threads, NOW);
-        assert_eq!(
-            cards(&s, 3, false)[0].status.words(),
-            "2 new",
-            "the experiment off: as before"
-        );
-        assert_eq!(
-            cards(&s, 3, true)[0].status.words(),
-            "1 decision · 1 new",
-            "a thread with a decision isn't counted as new too"
-        );
-        let mut t = asking("t", 1., &["a"], 1);
-        t.preview = "Batching is in (#67).\nMore after".into();
-        assert_eq!(status_line(&t).as_deref(), Some("Batching is in (#67)."));
-    }
-
-    #[test]
-    fn a_decisions_card_has_what_its_composer_would_draw() {
-        let t: ThreadSummary = serde_json::from_value(json!({
-            "id": "t", "title": "Compare SQLite", "status": "idle", "needs": "you", "needsYou": true, "asksSeq": 7,
-            "asks": [
-                { "action": "Keep **plain files** for now?", "why": "Faster for every size.", "options": ["Keep files", "Move to SQLite"],
-                  "optionNotes": ["Revisit at 5,000 threads", "About two days of work"], "suggested": 0, "links": [{ "title": "Numbers", "url": "https://example.com/n" }] },
-                { "action": "Done already", "ticked": true },
-            ],
-        }))
-        .unwrap();
-        let asks = decision_asks(&t);
-        assert_eq!(asks.len(), 2, "ticked ones too, as the card draws them");
-        assert_eq!(
-            asks[0].option_notes,
-            ["Revisit at 5,000 threads", "About two days of work"]
-        );
-        assert_eq!(
-            (asks[0].suggested, asks[0].links.len(), asks[1].ticked),
-            (Some(0), 1, true)
-        );
-        assert_eq!(
-            decision_line(&t, false),
-            "Compare SQLite: Keep plain files for now?",
-            "open asks only, in plain words"
-        );
-        assert_eq!(
-            decision_line(&t, true),
-            "Compare SQLite: Keep plain files for now? (sending)"
-        );
+        assert_eq!(overall(&s).working, 1, "but one thread working");
+        assert_eq!(summary(2, &overall(&s)), "2 projects · 1 working");
     }
 
     #[test]

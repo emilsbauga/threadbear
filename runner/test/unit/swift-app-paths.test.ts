@@ -34,6 +34,7 @@ const MOVED: Record<string, string> = {
 // these changes or goes with them.
 const ALLOWED: Record<string, string> = {
   'check.sh': "builds and tests the Swift app (its steps, swift_needed's app/ and dock/)",
+  'scripts/check-cache.mjs': "which files check.sh's Swift app steps (and app tools parse) read, for their pass records",
   'scripts/swift-freeze.sh': 'the freeze itself: what in app/ stays open',
   'runner/test/unit/swift-freeze.test.ts': "the freeze's tests",
   'runner/test/unit/check-mock-swift-tests.test.ts': 'tests check.sh running the Swift tests of the mock runner',

@@ -297,7 +297,7 @@ fn native_crashes(r: &Reporting) {
 
 fn same_program(crash: &NativeCrash, exe: &Path) -> bool {
     let reported = Path::new(&crash.proc_path);
-    reported == exe
+    report::same_program(&crash.proc_path, exe, &installed::home_dir())
         || matches!((reported.canonicalize(), exe.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 

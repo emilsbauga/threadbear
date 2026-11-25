@@ -11,6 +11,8 @@
 // still listening. done settles back to idle a moment later (so the row the
 // command changed has caught up before the control takes clicks again);
 // failed, and slow once the backend has the command, are dismissed to idle.
+// over: what it acted on has ended by itself (Stop's turn is over), so the
+// control goes back to idle from anywhere but failed, whose why is still said.
 // A slow send the backend hasn't got yet can't be dismissed: the Convex
 // client is still retrying it, so a second press would send it twice.
 //
@@ -20,6 +22,13 @@
 // The runner takes a command within a second or two while it's online, so
 // longer means it's asleep, offline or stuck: stop spinning and say so.
 export const COMMAND_SLOW_MS = 20_000;
+
+// Stop stays locked with its spinner after the runner says done, until the
+// turn really ends (over): the runner answers at once but the turn can run
+// on for up to its INTERRUPT_GRACE_MS (runner.ts). Past this it takes clicks
+// again, as the iPhone's Stop does (AppModel.stop's settle), in case the
+// thread's row never says so.
+export const STOP_HOLD_MS = 10_000;
 
 // What phone:command reports.
 export type CommandReport = { state: 'pending' | 'taken' | 'done' | 'failed'; note?: string; threadId?: string };
@@ -47,6 +56,8 @@ export type CommandEvent<P> =
   | { kind: 'tick'; at: number }
   // A moment after done: the control takes clicks again.
   | { kind: 'settle' }
+  // What it acted on ended by itself (Stop's turn is over).
+  | { kind: 'over' }
   | { kind: 'dismiss' };
 
 export function idle<P>(): CommandState<P> {
@@ -99,6 +110,8 @@ export function step<P>(s: CommandState<P>, e: CommandEvent<P>): CommandState<P>
     }
     case 'settle':
       return s.kind === 'done' ? { kind: 'idle', attempt: s.attempt } : s;
+    case 'over':
+      return s.kind === 'idle' || s.kind === 'failed' ? s : { kind: 'idle', attempt: s.attempt };
     case 'dismiss':
       return (s.kind === 'slow' && s.id) || s.kind === 'done' || s.kind === 'failed' ? { kind: 'idle', attempt: s.attempt } : s;
   }

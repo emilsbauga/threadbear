@@ -19,7 +19,7 @@ use crate::{
     GlobalState, ScrollableMask, Scrollbar, StyledExt, h_flex,
     scrollable_mask::horizontal_scroll_area,
     text::{
-        CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
+        CodeBlockActionsFn, CodeBlockHeaderFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
         MarkdownNode, TableActionsFn,
         document::{NodeRenderOptions, PrevBlock, flow_position},
         inline::{
@@ -2479,7 +2479,12 @@ impl CodeBlock {
             .into_iter()
             .filter(|(range, _)| range.start <= range.end && range.end <= code_len)
             .collect::<Vec<_>>();
-        if let Ok(mut cache) = self.highlight_cache.lock() {
+        // Nothing isn't kept: a highlighter that works in the background
+        // answers nothing until its colours are ready, and the block should
+        // ask again on the next frame rather than stay plain.
+        if !styles.is_empty()
+            && let Ok(mut cache) = self.highlight_cache.lock()
+        {
             *cache = Some(CachedCodeBlockHighlights {
                 highlighter: highlighter.clone(),
                 styles: styles.clone(),
@@ -2553,7 +2558,11 @@ impl CodeBlock {
         // the scrolled content so it holds its corner.
         let lang_label = self
             .lang()
-            .filter(|lang| !lang.is_empty() && node_cx.code_block_actions.is_none())
+            .filter(|lang| {
+                !lang.is_empty()
+                    && node_cx.code_block_actions.is_none()
+                    && node_cx.code_block_header.is_none()
+            })
             .map(|lang| {
                 div()
                     .absolute()
@@ -2584,6 +2593,12 @@ impl CodeBlock {
             .line_height(relative(1.6))
             .relative()
             .refine_style(&style.code_block())
+            .children(
+                node_cx
+                    .code_block_header
+                    .clone()
+                    .map(|header| header(self, window, cx)),
+            )
             .child(
                 Inline::new(
                     self.state.clone(),
@@ -2604,7 +2619,11 @@ impl CodeBlock {
                 .range_backgrounds(node_cx.range_backgrounds(leaf_key).to_vec())
                 .reveal(node_cx.reveal_at(leaf_key, 0, self.code().len())),
             );
-        let actions = node_cx.code_block_actions.clone().map(|actions| {
+        let actions = node_cx
+            .code_block_actions
+            .clone()
+            .filter(|_| node_cx.code_block_header.is_none())
+            .map(|actions| {
             div()
                 .id("actions")
                 .absolute()
@@ -2676,6 +2695,7 @@ pub(crate) struct NodeContext {
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: Arc<TextViewStyle>,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) code_block_header: Option<Arc<CodeBlockHeaderFn>>,
     pub(crate) code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     pub(crate) table_actions: Option<Arc<TableActionsFn>>,
     pub(crate) image_source: Option<Arc<super::text_view::ImageSourceFn>>,

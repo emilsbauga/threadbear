@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tmpDir } from '../helpers/fakes.ts';
+import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
-import { SpareWeek, brief, burnRate, dueWindows, projections, samplesFrom } from '../../src/spare-week.ts';
+import { SpareWeek, brief, burnRate, dueWindows, looksByItself, projections, samplesFrom, spareWeekBinding } from '../../src/spare-week.ts';
 import type { Account, Pool, UsageWindow } from '../../src/protocol.ts';
 import type { HistoryRow } from '../../src/usage-history.ts';
 
@@ -57,6 +57,36 @@ test('the last call is 8 hours out, at 20%, and an early one is skipped after it
   assert.equal(dueWindows([a], () => [], { [key]: ['last-call'] }, NOW).length, 0);
 });
 
+test('reset readings a second apart keep the stages already said, across a minute boundary', () => {
+  const reset = NOW + 18 * H;
+  const w = { ...week(83, 18), resetsAt: iso(reset - 1_000) };
+  const a = login('codex-1', [w]);
+  const key = `codex-1|weekly|${iso(reset)}`;
+  const done = { [key]: ['early'] as ('early' | 'last-call')[] };
+  assert.deepEqual(dueWindows([a], () => [], done, NOW), []);
+  w.resetsAt = iso(reset + 1_000);
+  assert.deepEqual(dueWindows([a], () => [], done, NOW), []);
+  // An early nudge still leaves one last call, even when another reading
+  // of this same reset differs by a second.
+  assert.equal(dueWindows([a], () => [], done, NOW + 12 * H)[0]?.stage, 'last-call');
+  assert.deepEqual(dueWindows([a], () => [], {
+    [key]: ['early'],
+    [`codex-1|weekly|${iso(reset - 1_000)}`]: ['last-call'],
+  }, NOW + 12 * H), []);
+});
+
+test('one reset history does not silence another account, model or a genuinely different reset', () => {
+  const w = week(83, 18);
+  const said = { [`a|weekly|${w.resetsAt}`]: ['early'] as ('early' | 'last-call')[] };
+  assert.equal(dueWindows([login('b', [w])], () => [], said, NOW).length, 1);
+  assert.equal(dueWindows([login('a', [{ ...w, kind: 'weekly_model', title: 'Weekly Fable' }])], () => [], said, NOW).length, 1);
+  const models = { [`a|weekly_model:Weekly Fable|${w.resetsAt}`]: ['early'] as ('early' | 'last-call')[] };
+  assert.equal(dueWindows([login('a', [{ ...w, kind: 'weekly_model', title: 'Weekly Opus' }])], () => [], models, NOW).length, 1);
+  const nextWeek = { ...w, resetsAt: iso(NOW + (18 + 168) * H) };
+  assert.equal(dueWindows([login('a', [nextWeek])], () => [], said, NOW + 168 * H).length, 1);
+  assert.equal(dueWindows([login('a', [{ ...w, resetsAt: iso(NOW + 20 * H) }])], () => [], said, NOW).length, 1);
+});
+
 test("signed out, ended, blocked or unread logins are passed over", () => {
   const w = [week(60, 18)];
   for (const extra of [{ signedOut: true }, { planEnded: true }] as Partial<Account>[]) {
@@ -79,6 +109,10 @@ test("a model's own week can't be left with more than the main week will have", 
   // One that resets with the main week is said by the main week's line.
   const same = login('claude-1', [week(60, 18), week(80, 18, 'weekly_model', 'Weekly Fable')]);
   assert.deepEqual(projections(same, () => [], NOW).map((x) => x.window.kind), ['weekly']);
+  same.usage!.windows[0]!.resetsAt = iso(NOW + 18 * H - 1_000);
+  assert.deepEqual(projections(same, () => [], NOW).map((x) => x.window.kind), ['weekly']);
+  same.usage!.windows[0]!.remainingPercent = 5;
+  assert.deepEqual(dueWindows([same], () => [], {}, NOW), []);
 });
 
 test('history samples are matched by kind, and a model week by its title', () => {
@@ -105,14 +139,15 @@ test("the brief names the login and its pool, asks before starting, and has noth
   assert.doesNotMatch(text, /Mike|dev\/me|misc/);
 });
 
-function rig(accounts: Account[], opts: { on?: boolean; looks?: boolean } = {}) {
+function rig(accounts: Account[], opts: { on?: boolean; looks?: boolean; home?: string; startId?: number } = {}) {
   const clock = new FakeClock(NOW);
   const started: { text: string; title: string; accountId: string; cwd?: string; why: string }[] = [];
   const sent: { threadId: string; text: string }[] = [];
   const archived = new Set<string>();
   const s = { on: opts.on ?? true, looks: opts.looks ?? true, accounts };
+  const home = opts.home ?? tmpDir('tb-spare-week-');
   const sw = new SpareWeek({
-    home: tmpDir('tb-spare-week-'),
+    home,
     clock,
     log: nullLogger,
     on: () => s.on,
@@ -122,13 +157,44 @@ function rig(accounts: Account[], opts: { on?: boolean; looks?: boolean } = {}) 
     history: () => [],
     start: (r) => {
       started.push(r);
-      return `t${started.length}`;
+      return `t${(opts.startId ?? 0) + started.length}`;
     },
     open: (id) => !archived.has(id),
     send: (threadId, text) => sent.push({ threadId, text }),
   });
-  return { sw, clock, started, sent, archived, s };
+  return { sw, clock, started, sent, archived, s, home };
 }
+
+test('an archived suggestion stays said after a restart and a jittered reset reading', () => {
+  const reset = NOW + 20 * H;
+  const first = rig([login('codex-1', [{ ...week(83, 20), resetsAt: iso(reset + 1_000) }])]);
+  assert.equal(first.sw.check().length, 1);
+  first.archived.add('t1');
+  const next = rig([login('codex-1', [week(83, 20)])], { home: first.home, startId: 1 });
+  next.archived.add('t1');
+  assert.deepEqual(next.sw.check(), []);
+  assert.equal(next.started.length, 0);
+  next.clock.advance(14 * H);
+  assert.equal(next.sw.check()[0]?.stage, 'last-call');
+  assert.equal(next.started.length, 1);
+  next.s.accounts[0]!.usage!.windows[0]!.resetsAt = iso(reset + 1_000);
+  assert.deepEqual(next.sw.check(), []);
+  assert.equal(next.started.length, 1);
+  assert.equal(next.sent.length, 0);
+  // A deliberate click can still open a fresh suggestion after archiving.
+  next.archived.add('t2');
+  assert.equal(next.sw.findWork('codex-1').started, true);
+});
+
+test('a model week sharing the main reset does not gain another nudge when only the main reading jitters', () => {
+  const a = login('claude-1', [week(60, 20), week(80, 20, 'weekly_model', 'Weekly Fable')]);
+  const { sw, archived, started } = rig([a]);
+  assert.equal(sw.check().length, 1);
+  archived.add('t1');
+  a.usage!.windows[0]!.resetsAt = iso(NOW + 20 * H - 1_000);
+  assert.deepEqual(sw.check(), []);
+  assert.equal(started.length, 1);
+});
 
 test('the check starts one thread pinned to the login, and the last call goes to it', () => {
   const { sw, clock, started, sent, s } = rig([login('claude-1', [week(60, 20)])]);
@@ -153,6 +219,79 @@ test('off, or on a second runner, the check starts nothing', () => {
   const second = rig([login('claude-1', [week(60, 20)])], { looks: false });
   second.sw.check();
   assert.equal(second.started.length, 0);
+});
+
+test('automatic nudges are runner messages in the event log, while Find work is a user action', async () => {
+  const h = makeHarness();
+  const clock = new FakeClock(NOW);
+  const a = login('claude-3', [week(60, 20)]);
+  const archived = new Set<string>();
+  const sw = new SpareWeek({
+    home: h.home, clock, log: nullLogger,
+    on: () => true, looks: () => true,
+    accounts: () => [a], pools: () => [], history: () => [],
+    open: (id) => !archived.has(id),
+    ...spareWeekBinding(h.runner),
+  });
+  sw.check();
+  const id = h.runner.list()[0]!.id;
+  assert.equal(h.events(id).find((e) => e.type === 'user.message')?.origin, 'runner');
+  assert.equal(h.events(id).find((e) => e.type === 'user.message')?.wakeReason, 'Its weekly allowance is about to reset');
+  h.adapter.last.init();
+  h.adapter.last.result();
+  await tick();
+  clock.advance(14 * H);
+  assert.equal(sw.check()[0]?.stage, 'last-call');
+  await tick();
+  assert.deepEqual(h.events(id).filter((e) => e.type === 'user.message').map((e) => e.origin), ['runner', 'runner']);
+  assert.deepEqual(h.events(id).filter((e) => e.type === 'user.message').map((e) => e.wakeReason), ['Its weekly allowance is about to reset', 'Its weekly allowance resets within hours']);
+  archived.add(id);
+  const manual = sw.findWork('claude-3');
+  assert.equal(manual.started, true);
+  assert.equal(h.events(manual.threadId).find((e) => e.type === 'user.message')?.origin, undefined);
+  assert.equal(h.events(manual.threadId).find((e) => e.type === 'user.message')?.wakeReason, undefined);
+});
+
+// THREADBEAR-2H: a runner handing over to a new release kept its half-hourly
+// check going, and as a draining runner can't start threads, each check that
+// found a week due failed. Wired as main.ts does: looks while not draining,
+// and the handover stops the timer.
+test('a runner handing over neither checks nor tries to start a thread', () => {
+  const clock = new FakeClock(NOW);
+  const r = { draining: false, tries: 0, accounts: [] as Account[] };
+  const sw = new SpareWeek({
+    home: tmpDir('tb-spare-week-'),
+    clock,
+    log: nullLogger,
+    on: () => true,
+    looks: () => looksByItself({ draining: r.draining, secondRunner: false }),
+    accounts: () => r.accounts,
+    pools: () => [],
+    history: () => [],
+    start: () => {
+      r.tries++;
+      // runner.create on a draining runner (new-threads.ts).
+      if (r.draining) throw new Error('This runner is handing over to a new one; start the thread there.');
+      return `t${r.tries}`;
+    },
+    open: () => false,
+    send: () => {},
+  });
+  sw.start();
+  // The timer is recurring by now: its first tick has run, with nothing due.
+  clock.advance(6 * 60_000);
+  // The handover: draining, and the timer stopped. Then a week comes due.
+  r.draining = true;
+  sw.stop();
+  assert.equal(clock.pending(), 0);
+  r.accounts = [login('claude-1', [week(60, 20)])];
+  clock.advance(3 * H);
+  assert.equal(r.tries, 0);
+  // Called anyway, the check doesn't reach the refusal either.
+  assert.deepEqual(sw.check(), []);
+  assert.equal(r.tries, 0);
+  assert.equal(looksByItself({ draining: false, secondRunner: true }), false);
+  assert.equal(looksByItself({ draining: false, secondRunner: false }), true);
 });
 
 test('Find work for it starts a thread whatever the thresholds, and a second press opens the same one', () => {

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { claudeCommands, CLAUDE_PATCH_ID } from '../../src/claude-trust.ts';
 import { PatchTrust, TRUST_ALL } from '../../src/patch-trust.ts';
 import { TrustOffThread } from '../../src/trust-off-thread.ts';
-import { codeOfUnhashedPatch } from '../../src/unhashed-scan.ts';
+import { SCAN_SHOWN_MS, codeOfUnhashedPatch } from '../../src/unhashed-scan.ts';
 import { execFileSync } from 'node:child_process';
 import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
 import { until } from '../helpers/worktrees-harness.ts';
@@ -50,6 +50,43 @@ test('a look on the worker finds what the same look on this thread does', async 
   fs.writeFileSync(patch, `const cmd = ['ec', 'ho'].join('');\nexport default { actions: [{ title: 'Go', run: cmd + ' hi' }] };\n`);
   const scan = codeOfUnhashedPatch(patch, folder, 0);
   assert.deepEqual(await off.editsAsk(patch, folder, 0), { all: scan.all, ...(scan.why ? { why: scan.why } : {}) });
+});
+
+// What Patches shows may come from a scan up to SCAN_SHOWN_MS old, as each
+// thread's patches are read every 15 to 20 s and the 10 s scan never lasted
+// to the next read (23 Nov); whether an edit asks still takes a fresh one,
+// and a change to what the scan read starts a new one either way.
+test('a scan lasts longer for what Patches shows than for whether an edit asks', () => {
+  const folder = path.join(tmpDir(), 'shown');
+  const patch = path.join(folder, '.threadbear', 'patches', 'p.ts');
+  fs.mkdirSync(path.dirname(patch), { recursive: true });
+  fs.writeFileSync(patch, `export default { actions: [{ title: 'Go', run: 'sh go.sh' }] };\n`);
+  fs.writeFileSync(path.join(folder, 'go.sh'), 'echo hi\n');
+  const first = codeOfUnhashedPatch(patch, folder, 1_000_000);
+  assert.equal(codeOfUnhashedPatch(patch, folder, 1_030_000, SCAN_SHOWN_MS), first);
+  assert.notEqual(codeOfUnhashedPatch(patch, folder, 1_030_000), first);
+  const second = codeOfUnhashedPatch(patch, folder, 1_030_000, SCAN_SHOWN_MS);
+  assert.notEqual(codeOfUnhashedPatch(patch, folder, 1_030_000 + SCAN_SHOWN_MS, SCAN_SHOWN_MS), second);
+  // Edited: scanned afresh at once, however old a scan Patches may show.
+  const third = codeOfUnhashedPatch(patch, folder, 2_000_000, SCAN_SHOWN_MS);
+  fs.writeFileSync(patch, `export default { actions: [{ title: 'Go', run: 'sh other.sh' }] };\n`);
+  const later = new Date(Date.now() + 10_000);
+  fs.utimesSync(patch, later, later);
+  assert.notEqual(codeOfUnhashedPatch(patch, folder, 2_001_000, SCAN_SHOWN_MS), third);
+});
+
+test('a scan for what Patches shows is never shared with one that wants it fresh', async (t) => {
+  const off = new TrustOffThread();
+  t.after(() => off.close());
+  const folder = path.join(tmpDir(), 'shared');
+  const patch = path.join(folder, '.threadbear', 'patches', 'p.ts');
+  fs.mkdirSync(path.dirname(patch), { recursive: true });
+  fs.writeFileSync(patch, `export default { actions: [{ title: 'Go', run: 'echo hi' }] };\n`);
+  const shown = off.editsAsk(patch, folder, 0, SCAN_SHOWN_MS);
+  const fresh = off.editsAsk(patch, folder, 0);
+  assert.notEqual(fresh, shown);
+  assert.equal(off.editsAsk(patch, folder, 0, SCAN_SHOWN_MS), shown);
+  await Promise.all([shown, fresh]);
 });
 
 test('the background lane shares a look under way; the urgent lane never does', async (t) => {

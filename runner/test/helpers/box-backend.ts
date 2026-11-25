@@ -64,7 +64,7 @@ export async function boxBackend(opts: { token?: boolean } = {}) {
   process.env.CONVEX_SITE_URL = 'https://site.example';
   const b = memoryBackend();
   const a = actionCtx(b);
-  const serviceId = await b.ctx.db.insert('runnerServices', { name: 'Cloud (Fly)', provider: 'fly', box: { cpus: 2, memoryMb: 4096 }, image: 'registry.fly.io/threadbear-box:1', limits: { ...boxes.BOX_LIMITS }, createdAt: Date.now() });
+  const serviceId = await b.ctx.db.insert('runnerServices', { name: 'Cloud (Fly)', provider: 'fly', box: { cpus: 2, memoryMb: 4096 }, image: 'registry.fly.io/threadbear-box@sha256:1111111111111111111111111111111111111111111111111111111111111111', limits: { ...boxes.BOX_LIMITS }, createdAt: Date.now() });
   const newBox = (threadId = THREAD, runnerId = BOX_RUNNER) => call(a, boxes.newBox, { serviceId, threadId, runnerId, login: LOGIN, repo: { origin: ORIGIN_WITH_TOKEN, subfolder: 'runner', baseBranch: 'main' } });
   const setToken = (token = CLAUDE_TOKEN, login = LOGIN, key = OWNER) => call(a, boxes.setCloudToken, { key, login, token });
   // A login with a cloud token, as a box's thread needs to start (boxMachine.ts needsToken).

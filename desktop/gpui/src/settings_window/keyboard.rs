@@ -630,6 +630,7 @@ impl SettingsWindow {
 fn group_id(group: Group) -> &'static str {
     match group {
         Group::Threads => "settings-keys-threads",
+        Group::Edit => "settings-keys-edit",
         Group::Go => "settings-keys-go",
         Group::View => "settings-keys-view",
     }

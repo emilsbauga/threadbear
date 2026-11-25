@@ -1,5 +1,4 @@
-// A GitHub pull request open as a tab in the side pane (the inlinePrs
-// experiment): a PR link clicked in a reply or in Highlights opens here
+// A GitHub pull request open as a tab in the side pane: a PR link clicked in a reply or in Highlights opens here
 // rather than in the browser, with what's needed to decide on it and the
 // buttons to act (docs/protocol/panels.md, "Pull requests"; the rules and words are
 // threadbear_core::pull_requests). Mike picked this layout, option A of three
@@ -111,11 +110,6 @@ impl PrPanes {
         };
         json!({ "url": url, "pr": load, "tab": ui.map(|u| u.tab.title()), "busy": ui.and_then(|u| u.busy), "error": ui.and_then(|u| u.error.clone()) })
     }
-}
-
-/// Whether PR links open here: the inlinePrs experiment, from `hello`.
-pub(crate) fn on(app: &crate::app::Threadbear) -> bool {
-    app.remote.experiments.iter().any(|e| e == "inlinePrs")
 }
 
 /// The canonical URL of a PR link, if it's one that opens here.
@@ -1547,7 +1541,7 @@ impl SidePane {
                         ) {
                             app.update(cx, |app, cx| {
                                 let id = t.id.clone();
-                                app.threads.insert(t.id.clone(), Arc::new(t));
+                                app.store_reply_summary(t);
                                 app.open(id, window, cx);
                             });
                         }
@@ -1720,9 +1714,6 @@ impl gpui_kit::base::text::MarkdownPlugin for PrMarks {
 /// click), for the dump's `prsRead`.
 #[cfg(feature = "automation")]
 pub(crate) fn dump_read(text: &str, app: &crate::app::Threadbear, cx: &App) -> Option<Vec<String>> {
-    if !on(app) {
-        return None;
-    }
     let loads = &app.side.read(cx).prs.loads;
     let out: Vec<String> = rules::pr_links(text)
         .into_iter()
@@ -1732,17 +1723,13 @@ pub(crate) fn dump_read(text: &str, app: &crate::app::Threadbear, cx: &App) -> O
 }
 
 /// For scripts: each PR link's mark in a reply, as "<url>: <state>" ("Pull
-/// request" until the runner says), in order. None with the experiment off
-/// or no PR links.
+/// request" until the runner says), in order. None with no PR links.
 #[cfg(feature = "automation")]
 pub(crate) fn dump_marks(
     text: &str,
     app: &crate::app::Threadbear,
     cx: &App,
 ) -> Option<Vec<String>> {
-    if !on(app) {
-        return None;
-    }
     let states = &app.side.read(cx).prs.states;
     let out: Vec<String> = rules::pr_links(text)
         .into_iter()

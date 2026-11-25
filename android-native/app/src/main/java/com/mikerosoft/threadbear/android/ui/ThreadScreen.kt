@@ -78,6 +78,7 @@ import com.mikerosoft.threadbear.kit.LabReviewText
 import com.mikerosoft.threadbear.kit.MessageImage
 import com.mikerosoft.threadbear.kit.PendingApproval
 import com.mikerosoft.threadbear.kit.PhoneMessage
+import com.mikerosoft.threadbear.kit.PhoneSection
 import com.mikerosoft.threadbear.kit.PhoneThread
 import com.mikerosoft.threadbear.kit.Plans
 import com.mikerosoft.threadbear.kit.Role
@@ -186,12 +187,14 @@ private fun ThreadBar(thread: PhoneThread?, back: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     var hibernate by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
+    var sharing by remember { mutableStateOf(false) }
     // The thread with the changes tapped here on top, so the menu says Remove
     // Star (or Wake) at once rather than after the runner's done it.
     val pending by model.commands.entries.collectAsStateWithLifecycle()
     val thread = thread?.let { model.shown(it, pending) }
     val projects by model.projects.collectAsStateWithLifecycle()
     if (renaming && thread != null) RenameDialog(thread) { renaming = false }
+    if (sharing && thread != null) ShareThreadSheet(thread) { sharing = false }
     TopAppBar(
         navigationIcon = { IconButton(onClick = back) { Icon(Line.Back, "Back", Modifier.size(22.dp)) } },
         title = {
@@ -231,6 +234,10 @@ private fun ThreadBar(thread: PhoneThread?, back: () -> Unit) {
                         menu = false
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("Thread ID", thread.threadId))
+                    }
+                    // Sharing by link, as the website's Share button (backend API 8).
+                    if (model.apiVersion >= BackendApi.SHARING) {
+                        MenuItem(if (thread.share?.byLink == true) "Shared by link…" else "Share…", Line.Share) { menu = false; sharing = true }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Info(Line.Folder, thread.cwd)
@@ -450,7 +457,9 @@ private fun StatusCard(vm: ThreadViewModel, thread: PhoneThread, messages: List<
     val lastSeq = messages.lastOrNull()?.seq
     val asks = thread.asks.orEmpty()
     val showsAsks = asks.isNotEmpty() && nothingOnItsWay && answeredAsks != thread.asksSeq && thread.waitingOnMike
-    val done = thread.status == ThreadStatus.IDLE && !thread.needsYou && thread.archivedAt == null && thread.working == null &&
+    // Waiting on its own work isn't done, as on the Mac.
+    val done = thread.status == ThreadStatus.IDLE && !thread.needsYou && thread.archivedAt == null && !thread.jobGoing &&
+        thread.waitState?.section != PhoneSection.RUNNING &&
         Turns.lastShown(messages)?.role == Role.ASSISTANT && nothingOnItsWay && answeredDone != lastSeq
     var picks by remember(thread.asksSeq) { mutableStateOf(mapOf<Int, Int>()) }
     var ticked by remember(lastSeq) { mutableStateOf(setOf<Int>()) }
@@ -473,7 +482,7 @@ private fun StatusCard(vm: ThreadViewModel, thread: PhoneThread, messages: List<
             }
         }
         // Its own id per status, so the seconds start again when a stopped one runs.
-        thread.isBusy || thread.working != null -> androidx.compose.runtime.key(thread.status == ThreadStatus.RUNNING) { WorkingLine(thread.working) }
+        thread.isBusy || thread.jobGoing -> androidx.compose.runtime.key(thread.status == ThreadStatus.RUNNING) { WorkingLine(thread.working) }
         showsAsks -> AsksCard(
             asks, picks, busy = answeredAsks == thread.asksSeq,
             pick = { i, c -> picks = if (c == null) picks - i else picks + (i to c) },

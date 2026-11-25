@@ -25,9 +25,9 @@
 // (`ScriptConsent`, and `Site::page_digest`).
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// What a page can pull in besides itself: passive files only. A sibling page
 /// or script named by the page would let it read whatever that names in turn.
@@ -60,6 +60,21 @@ pub const MAX_REFERENCE_SOURCE_BYTES: usize = 3 * MAX_REFERENCE_BYTES + 64;
 pub const MAX_ALLOWED_BYTES: usize = 2 * 1024 * 1024;
 /// How much of a page `has_scripts` reads.
 pub const SCRIPT_SCAN_BYTES: usize = 4 * 1024 * 1024;
+/// What one preview (one opening of a page) is served in all, as the browser
+/// asked: every request counts, a refused one too. A page of 2,000
+/// `big.png?1`, `?2`... each a fresh request to Chromium (the answers are
+/// `no-store`) read and sent a 64 MB picture 2,000 times, about 128 GiB
+/// (Daybreak 168, 22 Nov 2026). Real pages ask for a few hundred files at
+/// most, and a video a handful of times; opening the page again starts a
+/// fresh preview with a fresh budget.
+pub const MAX_REQUESTS: usize = 20_000;
+pub const MAX_SERVED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// How many spellings of one file's address (`pic.png`, `pic.png?v=2`) one
+/// preview answers. A cache-busting `?v=` is one; more are refused.
+pub const MAX_VARIANTS_PER_FILE: usize = 8;
+/// The files one preview keeps read, so a file asked for again (another
+/// spelling, a video seeked) isn't read again while it's unchanged.
+pub const MAX_CACHED_BYTES: usize = 256 * 1024 * 1024;
 
 /// The words over a page with scripts that aren't running (`LocalPagePreview`).
 pub mod words {
@@ -83,11 +98,51 @@ pub fn is_page(name: &str) -> bool {
     !last.starts_with('.') && PAGE_EXTENSIONS.contains(&extension(last).as_str())
 }
 
-/// A file served: its bytes and its MIME type.
+/// A file served: its bytes (shared with the site's cache, never copied per
+/// request) and its MIME type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Served {
-    pub data: Vec<u8>,
+    pub data: Arc<[u8]>,
     pub mime: String,
+}
+
+/// What one preview has been served so far (`MAX_REQUESTS`...).
+#[derive(Default)]
+struct Budget {
+    requests: usize,
+    bytes: u64,
+    /// Per file (its device and inode, so `BIG.png` and `big.png` on a
+    /// disk that ignores case are one file), the addresses it's been asked
+    /// for by (SHA-256 of each, so a megabyte-long query isn't kept).
+    variants: HashMap<(u64, u64), HashSet<[u8; 32]>>,
+}
+
+/// What's known about one version of a file (`Site::facts`).
+#[derive(Default)]
+struct Facts {
+    utf8: Option<bool>,
+    digest: Option<String>,
+    /// The folders it's been read for names from (one per spelling of its
+    /// folder, on a disk that ignores case).
+    scanned: HashSet<String>,
+}
+
+/// A file read once, with what it was when read: it's used again only while
+/// the open file still has the same identity, size and times.
+struct Cached {
+    stamp: Stamp,
+    data: Arc<[u8]>,
+    /// When it was last used (the cache's tick), for making room.
+    used: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Stamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
 }
 
 /// Whether a local page may show in the app (the open gate's rule for it, as
@@ -138,6 +193,16 @@ pub struct Site {
     pub page_only: bool,
     /// What it may read, and their names' bytes together (`MAX_ALLOWED_BYTES`).
     allowed: Mutex<(HashSet<String>, usize)>,
+    /// What this preview has been served (`MAX_REQUESTS`...).
+    budget: Mutex<Budget>,
+    /// Files read, by device and inode, their bytes together, and a tick
+    /// counting uses.
+    cache: Mutex<(HashMap<(u64, u64), Cached>, usize, u64)>,
+    /// What's been worked out about each version of a file served: so a
+    /// page or stylesheet asked for again isn't hashed, checked for UTF-8
+    /// or read for names again (Gemini's review: the same stylesheet asked
+    /// for 20,000 times was read for names 20,000 times).
+    facts: Mutex<HashMap<Stamp, Facts>>,
     /// The folder, held open for the site's life: every read starts here, so
     /// the folder being moved or swapped for a link later changes nothing.
     #[cfg(unix)]
@@ -179,6 +244,9 @@ impl Site {
                 page,
                 page_digest,
                 page_only: false,
+                budget: Mutex::default(),
+                facts: Mutex::default(),
+                cache: Mutex::default(),
                 root_fd,
             })
         }
@@ -208,8 +276,26 @@ impl Site {
     }
 
     /// The bytes and type for `path` (from the folder, decoded, as the page
-    /// asked for it), or None when it isn't one the page may read.
+    /// asked for it), or None when it isn't one the page may read. For tests
+    /// and callers with no address of their own: `serve_asked` is what a
+    /// browser's request goes through.
     pub fn serve(&self, path: &str) -> Option<Served> {
+        self.serve_asked(path, path)
+    }
+
+    /// `serve` for a request the browser made for `asked` (its address on
+    /// the view's origin, query and all, as Chromium sent it), whose path
+    /// decodes to `path`. Held to the preview's budget: `MAX_REQUESTS` and
+    /// `MAX_SERVED_BYTES` in all, and `MAX_VARIANTS_PER_FILE` spellings of
+    /// one file. Over it, None, as for a file the page may not read.
+    pub fn serve_asked(&self, asked: &str, path: &str) -> Option<Served> {
+        {
+            let mut budget = self.budget.lock().ok()?;
+            if budget.requests >= MAX_REQUESTS {
+                return None;
+            }
+            budget.requests += 1;
+        }
         let path = path.strip_prefix('/').unwrap_or(path);
         let parts = safe_parts(path)?;
         let relative = parts.join("/");
@@ -221,21 +307,62 @@ impl Site {
         {
             return None;
         }
-        let data = self.read(&parts)?;
-        if is_page {
-            if let Some(wanted) = &self.page_digest {
-                if &digest(&data) != wanted {
-                    return None;
+        // Once the file is open and known, before a byte of it is read: its
+        // spellings counted by what file it is, however the path was
+        // written, and its size charged up front, so a refusal reads nothing
+        // (Codex's review: case spellings on a disk that ignores case each
+        // read the whole file, and over-budget reads cost nothing).
+        let spelling: [u8; 32] = Sha256::digest(asked.as_bytes()).into();
+        let admit = |stamp: &Stamp| -> bool {
+            let Ok(mut budget) = self.budget.lock() else {
+                return false;
+            };
+            let bytes = budget.bytes.saturating_add(stamp.len);
+            if bytes > MAX_SERVED_BYTES {
+                return false;
+            }
+            let seen = budget.variants.entry((stamp.dev, stamp.ino)).or_default();
+            if !seen.contains(&spelling) {
+                if seen.len() >= MAX_VARIANTS_PER_FILE {
+                    return false;
+                }
+                seen.insert(spelling);
+            }
+            budget.bytes = bytes;
+            true
+        };
+        let (data, stamp) = self.read(&parts, admit)?;
+        let dir = relative.rsplit_once('/').map_or("", |(d, _)| d);
+        let scanned = SCANNED_EXTENSIONS.contains(&ext.as_str());
+        let (utf8, needs_scan) = if is_page || scanned {
+            let mut facts = self.facts.lock().ok()?;
+            let known = facts.entry(stamp).or_default();
+            if is_page {
+                if let Some(wanted) = &self.page_digest {
+                    let got = known.digest.get_or_insert_with(|| digest(&data));
+                    if got != wanted {
+                        return None;
+                    }
                 }
             }
-        }
-        let scanned = SCANNED_EXTENSIONS.contains(&ext.as_str());
-        let utf8 = scanned && std::str::from_utf8(&data).is_ok();
-        if scanned && !self.page_only {
+            let utf8 = scanned
+                && *known
+                    .utf8
+                    .get_or_insert_with(|| std::str::from_utf8(&data).is_ok());
+            // Read for names once per version and folder: the same file by
+            // another spelling of its folder (`SUB/style.css` on a disk that
+            // ignores case) names its assets from there (Gemini's review).
+            // Marked as read only once its names are in (below), so a request
+            // at the same moment reads it again rather than going ahead of
+            // them (Gemini's review).
+            (utf8, scanned && !known.scanned.contains(dir))
+        } else {
+            (false, false)
+        };
+        if needs_scan && !self.page_only {
             let head = &data[..data.len().min(SCAN_BYTES)];
             // A character cut in two at the end reads as U+FFFD, which names nothing.
             let text = String::from_utf8_lossy(head);
-            let dir = relative.rsplit_once('/').map_or("", |(d, _)| d);
             let refs = if ext == "css" {
                 css_references(&text, MAX_REFERENCES_PER_FILE)
             } else {
@@ -255,6 +382,13 @@ impl Site {
                     allowed.insert(found);
                 }
             }
+            if let Ok(mut facts) = self.facts.lock() {
+                facts
+                    .entry(stamp)
+                    .or_default()
+                    .scanned
+                    .insert(dir.to_owned());
+            }
         }
         let mut mime = mime_type(&ext).to_owned();
         // With no charset a UTF-8 page's ✓ shows as "âœ“".
@@ -264,11 +398,19 @@ impl Site {
         Some(Served { data, mime })
     }
 
-    /// The file at `parts` under the open folder: each folder on the way and
-    /// the file itself opened with O_NOFOLLOW, so a symlink anywhere refuses
-    /// it, then checked and read on that one open file.
+    /// The file at `parts` under the open folder: each folder on the way
+    /// and the file itself opened with O_NOFOLLOW, so a symlink anywhere
+    /// refuses it, then checked, put to `admit`, and read on that one open
+    /// file. Every request opens and checks it again; only the read is
+    /// skipped, when the open file is the same one, unchanged, as last read.
+    /// Exactly `stamp.len` bytes or nothing: a file that changes size
+    /// mid-read is refused this time.
     #[cfg(unix)]
-    fn read(&self, parts: &[String]) -> Option<Vec<u8>> {
+    fn read(
+        &self,
+        parts: &[String],
+        admit: impl FnOnce(&Stamp) -> bool,
+    ) -> Option<(Arc<[u8]>, Stamp)> {
         use std::io::Read as _;
         use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
         let (name, folders) = parts.split_last()?;
@@ -318,17 +460,81 @@ impl Site {
         if !meta.file_type().is_file() || meta.nlink() != 1 || meta.len() > MAX_BYTES {
             return None;
         }
-        let mut out = Vec::with_capacity(meta.len() as usize);
-        // It may have grown after the check: one byte past the limit says so.
-        file.take(MAX_BYTES + 1).read_to_end(&mut out).ok()?;
-        if out.len() as u64 > MAX_BYTES {
+        let stamp = Stamp {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        };
+        if !admit(&stamp) {
             return None;
         }
-        Some(out)
+        let key = (stamp.dev, stamp.ino);
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.2 += 1;
+            let tick = cache.2;
+            if let Some(hit) = cache.0.get_mut(&key).filter(|c| c.stamp == stamp) {
+                hit.used = tick;
+                return Some((hit.data.clone(), stamp));
+            }
+        }
+        let mut out = Vec::with_capacity(meta.len() as usize);
+        // It may have grown after the check: one byte past what was charged says so.
+        (&file).take(stamp.len + 1).read_to_end(&mut out).ok()?;
+        if out.len() as u64 != stamp.len {
+            return None;
+        }
+        let data: Arc<[u8]> = out.into();
+        // Kept only if it was still the same file after the read (a write
+        // during it moves its times), the least recently used going first
+        // to make room (clearing it all made five big pictures asked for in
+        // turn miss every time: Gemini's review).
+        let after = file.metadata().ok()?;
+        let unchanged = after.len() == stamp.len
+            && (after.mtime(), after.mtime_nsec()) == stamp.mtime
+            && (after.ctime(), after.ctime_nsec()) == stamp.ctime;
+        // Written to while it was read: what came may be half of each, so
+        // it's refused this time, never served or remembered under the
+        // stamp it had before (Gemini's review).
+        if !unchanged {
+            return None;
+        }
+        if let Ok(mut cache) = self.cache.lock() {
+            let (files, bytes, tick) = &mut *cache;
+            if let Some(old) = files.remove(&key) {
+                *bytes -= old.data.len();
+            }
+            if data.len() <= MAX_CACHED_BYTES {
+                while *bytes + data.len() > MAX_CACHED_BYTES {
+                    let Some(oldest) = files.iter().min_by_key(|(_, c)| c.used).map(|(k, _)| *k)
+                    else {
+                        break;
+                    };
+                    if let Some(gone) = files.remove(&oldest) {
+                        *bytes -= gone.data.len();
+                    }
+                }
+                *bytes += data.len();
+                files.insert(
+                    key,
+                    Cached {
+                        stamp,
+                        data: data.clone(),
+                        used: *tick,
+                    },
+                );
+            }
+        }
+        Some((data, stamp))
     }
 
     #[cfg(not(unix))]
-    fn read(&self, _parts: &[String]) -> Option<Vec<u8>> {
+    fn read(
+        &self,
+        _parts: &[String],
+        _admit: impl FnOnce(&Stamp) -> bool,
+    ) -> Option<(Arc<[u8]>, Stamp)> {
         None
     }
 }

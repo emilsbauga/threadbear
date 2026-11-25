@@ -57,7 +57,9 @@ export const mailPart = {
       st,
       `${said ? `You hibernated this thread until: ${said}\n\n` : ''}Threadbear's email watcher woke it because this email looks like what it was waiting for. That's a guess from the email alone, so check it really is. If it is, carry on with what you meant to do. If it isn't, ${back}, and say in a line what's still missing.\n\n${text}`,
       [],
-      { origin: 'runner', queue: true, wakeReason: 'An email it was waiting for came in' },
+      // Its agent's own snooze words come back with it: held to the access
+      // it had as it wrote them (runner/ceiling.ts).
+      { origin: 'runner', queue: true, wakeReason: 'An email it was waiting for came in', ...(said && this.snoozeCeiling(st, st.rec.wakeWhen) ? { ceiling: this.snoozeCeiling(st, st.rec.wakeWhen) } : {}) },
     );
     this.log.info('woke for an email', { threadId });
     return true;

@@ -164,9 +164,7 @@ impl Threadbear {
                 }
                 cx.background_executor().timer(CHECK).await;
                 let showing = this
-                    .read_with(cx, |t, cx| {
-                        t.dock.read(cx).controller.is_showing(shell::USAGE)
-                    })
+                    .read_with(cx, |t, cx| t.dock.read(cx).is_showing(shell::USAGE))
                     .unwrap_or(false);
                 if !showing {
                     break;
@@ -412,7 +410,7 @@ impl Threadbear {
             notes.push(rules::PARTIAL);
         }
         json!({
-            "shown": self.dock.read(cx).controller.is_showing(shell::USAGE),
+            "shown": self.dock.read(cx).is_showing(shell::USAGE),
             "lines": rules::lines_named(&self.logins.pools, accounts, stats, now, &zone, |p| self.logins.provider_title(p)),
             "icon": {
                 "percent": (level * 100.).round() as i64,
@@ -2309,16 +2307,11 @@ pub(crate) fn automation(
     }
     if let Some(show) = cmd["show"].as_bool() {
         app.update(cx, |t, cx| {
-            if t.dock.read(cx).controller.is_showing(shell::USAGE) != show {
+            if t.dock.read(cx).is_showing(shell::USAGE) != show {
                 t.toggle_under_threads(shell::USAGE, cx);
             }
         });
-        let shown = app
-            .read(cx)
-            .dock
-            .read(cx)
-            .controller
-            .is_showing(shell::USAGE);
+        let shown = app.read(cx).dock.read(cx).is_showing(shell::USAGE);
         return match (show, shown) {
             (true, true) => Ok(json!("ok shown")),
             (true, false) => Err("the panel didn't open".into()),

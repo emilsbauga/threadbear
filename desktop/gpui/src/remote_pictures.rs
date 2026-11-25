@@ -30,16 +30,47 @@ pub(crate) const MAX_BYTES: u64 = 16 * 1024 * 1024;
 #[derive(Clone)]
 pub(crate) enum Picture {
     Loading,
-    Ready(Arc<Image>),
+    /// Decoded within the budget (fit_picture.rs) and kept in its books.
+    Ready(Arc<RenderImage>),
     /// Over the size cap: only its start came, which won't draw.
     Truncated,
     Failed(String),
 }
 
+/// Where a remote picture has got. A ready one's pixels are in
+/// fit_picture.rs's books, not here, so they go when the books need the room
+/// and are asked for again when next drawn.
+#[derive(Clone)]
+enum State {
+    Loading,
+    Ready,
+    Truncated,
+    Failed(String),
+    /// No room for it with the pictures on screen: asked again in a while.
+    Busy,
+}
+
 /// Every remote picture asked for since launch, by runner and path.
 #[derive(Default)]
 struct RemotePictures {
-    pictures: HashMap<(String, String), Picture>,
+    pictures: HashMap<(String, String), State>,
+}
+
+/// Its key in fit_picture.rs's books.
+fn kept_key(runner: &str, path: &str) -> String {
+    format!("remote\n{runner}\n{path}")
+}
+
+/// The picture as `picture` hands it out: a ready one from the books, or
+/// None when the books have let it go.
+fn shown(state: &State, runner: &str, path: &str) -> Option<Picture> {
+    Some(match state {
+        State::Loading => Picture::Loading,
+        State::Ready => Picture::Ready(crate::fit_picture::drawn(&kept_key(runner, path))?.0),
+        State::Truncated => Picture::Truncated,
+        State::Failed(why) => Picture::Failed(why.clone()),
+        State::Busy => Picture::Loading,
+    })
 }
 
 impl Global for RemotePictures {}
@@ -53,48 +84,113 @@ pub(crate) fn picture(
     redraw: AnyWeakEntity,
     cx: &mut App,
 ) -> Picture {
+    asked(runner, path, client, Some(redraw), cx)
+}
+
+/// The picture as an `img` draws it, asked for as a tile asks: for the
+/// viewer, which shows the one a tile's click opens from the same books
+/// (fit_picture.rs), not asking that Mac again while they still have it.
+pub(crate) fn source(runner: String, path: String, client: Arc<Client>) -> ImageSource {
+    ImageSource::Custom(Arc::new(move |_window, cx| {
+        match asked(&runner, &path, &client, None, cx) {
+            Picture::Ready(image) => Some(Ok(image)),
+            Picture::Loading => None,
+            Picture::Truncated => Some(Err(std::io::Error::other(
+                "It's too big to send from that Mac.",
+            )
+            .into())),
+            Picture::Failed(why) => Some(Err(std::io::Error::other(why).into())),
+        }
+    }))
+}
+
+fn asked(
+    runner: &str,
+    path: &str,
+    client: &Arc<Client>,
+    redraw: Option<AnyWeakEntity>,
+    cx: &mut App,
+) -> Picture {
     let key = (runner.to_owned(), path.to_owned());
     if let Some(found) = cx.default_global::<RemotePictures>().pictures.get(&key) {
-        return found.clone();
+        if let Some(picture) = shown(found, runner, path) {
+            return picture;
+        }
     }
     cx.default_global::<RemotePictures>()
         .pictures
-        .insert(key.clone(), Picture::Loading);
+        .insert(key.clone(), State::Loading);
     let (client, params) = (
         client.clone(),
         json!({ "path": path, "runnerId": runner, "maxBytes": MAX_BYTES }),
     );
     cx.spawn(async move |cx| {
+        // A turn first: at most a few answers held whole before they're
+        // decoded (fit_picture.rs).
+        let mut turn = crate::fit_picture::reader(
+            crate::fit_picture::Reads::Remote,
+            crate::fit_picture::answer_bytes(MAX_BYTES),
+            cx,
+        )
+        .await;
         let answer = call(client, "files.read", params).await;
-        let picture = match answer {
-            Ok(value) => match FileRead::decode(&value) {
-                Some(read) if read.truncated => Picture::Truncated,
+        // Off this thread, and not past what was asked for (FileRead).
+        let answer = match answer {
+            Ok(value) => Ok(cx
+                .background_executor()
+                .spawn(async move { FileRead::decode_at_most(&value, MAX_BYTES) })
+                .await),
+            Err(e) => Err(e),
+        };
+        let state = match answer {
+            Ok(read) => match read {
+                Some(read) if read.truncated => State::Truncated,
+                // Its runner's word on the cap isn't taken for it.
+                Some(read) if read.data.len() as u64 > MAX_BYTES => State::Truncated,
                 Some(read) => match crate::viewer::format_of(&key.1, &read.data) {
-                    Some(format) => {
-                        // Shrunk to what the GPU can draw (fit_picture.rs), off this thread.
-                        match cx
-                            .background_executor()
-                            .spawn(async move { crate::fit_picture::fit_bytes(format, read.data) })
-                            .await
-                        {
-                            Some((format, data)) => {
-                                Picture::Ready(Arc::new(Image::from_bytes(format, data)))
-                            }
-                            None => Picture::Failed(crate::fit_picture::TOO_BIG.into()),
+                    // Decoded within the budget, off this thread (fit_picture.rs).
+                    Some(_) => {
+                        turn.read(read.data.len() as u64);
+                        let kept = kept_key(&key.0, &key.1);
+                        let bytes: crate::fit_picture::Bytes = Arc::new(read.data);
+                        match crate::fit_picture::decode_kept(kept, bytes, false, turn, cx).await {
+                            Ok(()) => State::Ready,
+                            // Asked again once there may be room (fit_picture.rs).
+                            Err(crate::fit_picture::Refused::Busy) => State::Busy,
+                            Err(refused) => State::Failed(refused.to_string()),
                         }
                     }
-                    None => Picture::Failed("It isn't a picture this app can show.".into()),
+                    _ => State::Failed("It isn't a picture this app can show.".into()),
                 },
-                None => Picture::Failed("Couldn't read the runner's answer.".into()),
+                None => State::Failed("Couldn't read the runner's answer.".into()),
             },
-            Err(e) => Picture::Failed(e.message),
+            Err(e) => State::Failed(e.message),
         };
+        let busy = matches!(state, State::Busy);
+        if busy {
+            // Forgotten in a while, so the next draw asks again.
+            let again = key.clone();
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(30))
+                    .await;
+                cx.update(|cx| {
+                    let pictures = &mut cx.default_global::<RemotePictures>().pictures;
+                    if matches!(pictures.get(&again), Some(State::Busy)) {
+                        pictures.remove(&again);
+                    }
+                    cx.refresh_windows();
+                });
+            })
+            .detach();
+        }
         cx.update(|cx| {
             cx.default_global::<RemotePictures>()
                 .pictures
-                .insert(key, picture);
-            if let Some(entity) = redraw.upgrade() {
-                cx.notify(entity.entity_id());
+                .insert(key, state);
+            match redraw.and_then(|r| r.upgrade()) {
+                Some(entity) => cx.notify(entity.entity_id()),
+                None => cx.refresh_windows(),
             }
         });
     })
@@ -102,15 +198,14 @@ pub(crate) fn picture(
     Picture::Loading
 }
 
-/// Drawn already: its bytes, for the viewer (viewer.rs), which shows the
-/// picture a tile's click opens without asking that Mac again.
-pub(crate) fn ready(runner: &str, path: &str, cx: &App) -> Option<Arc<Image>> {
+/// Drawn already: the picture's own size, for the viewer (viewer.rs).
+pub(crate) fn ready_size(runner: &str, path: &str, cx: &App) -> Option<(u32, u32)> {
     match cx
         .try_global::<RemotePictures>()?
         .pictures
         .get(&(runner.to_owned(), path.to_owned()))?
     {
-        Picture::Ready(image) => Some(image.clone()),
+        State::Ready => crate::fit_picture::drawn(&kept_key(runner, path)).map(|(_, size)| size),
         _ => None,
     }
 }
@@ -125,7 +220,7 @@ pub(crate) fn not_up_yet(path: &str) -> bool {
 pub(crate) fn retry(runner: &str, path: &str, cx: &mut App) {
     let key = (runner.to_owned(), path.to_owned());
     let pictures = &mut cx.default_global::<RemotePictures>().pictures;
-    if matches!(pictures.get(&key), Some(Picture::Failed(_))) {
+    if matches!(pictures.get(&key), Some(State::Failed(_))) {
         pictures.remove(&key);
     }
 }
@@ -142,11 +237,12 @@ pub(crate) fn words(picture: &Picture, runner_name: &str) -> Option<String> {
 
 /// The picture as far as it's got, without asking for it.
 #[cfg(feature = "automation")]
-fn peek(runner: &str, path: &str, cx: &App) -> Option<Picture> {
-    cx.try_global::<RemotePictures>()?
+pub(crate) fn peek(runner: &str, path: &str, cx: &App) -> Option<Picture> {
+    let state = cx
+        .try_global::<RemotePictures>()?
         .pictures
-        .get(&(runner.to_owned(), path.to_owned()))
-        .cloned()
+        .get(&(runner.to_owned(), path.to_owned()))?;
+    shown(state, runner, path)
 }
 
 /// `tiles`, as the Swift app's: what each picture of the last row of at

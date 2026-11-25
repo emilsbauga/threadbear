@@ -28,6 +28,17 @@ impl DockModel {
         &self.controller.layout
     }
 
+    /// The panel can be seen: in a window of its own, or the selected tab of
+    /// its group.
+    pub fn is_showing(&self, panel: &str) -> bool {
+        self.controller.is_showing(panel)
+    }
+
+    /// A panel is being dragged.
+    pub fn is_dragging(&self) -> bool {
+        self.controller.drag.is_some()
+    }
+
     /// Runs a change to the controller, telling the app if the layout moved.
     pub fn update_controller<R>(
         &mut self,

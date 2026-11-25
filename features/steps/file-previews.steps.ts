@@ -107,6 +107,19 @@ Then('the pane shows a video {int} by {int}', async function (this: ThreadbearWo
   await this.until(`a ${width}x${height} video in the pane`, (d) => pane(d)?.previewKind === 'video' && pane(d)?.previewText === `${width}x${height}`);
 });
 
+// The GPUI app says "audio" for a sound file in the pane's player.
+Then('the pane shows a sound player', async function (this: ThreadbearWorld) {
+  await this.until('a sound player in the pane', (d) => pane(d)?.previewKind === 'audio');
+});
+
+When('I press play on the sound in the pane', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'preview', play: true });
+});
+
+Then('the sound in the pane is playing', async function (this: ThreadbearWorld) {
+  await this.until('the sound playing', (d) => (pane(d) as { previewVideo?: { playing?: boolean } } | undefined)?.previewVideo?.playing === true);
+});
+
 // The Swift app says "quickLook" for whatever Quick Look draws, so it's that
 // there; the GPUI app's PDFKit view says "pdf" and its pages.
 Then('the pane shows the PDF', async function (this: ThreadbearWorld) {

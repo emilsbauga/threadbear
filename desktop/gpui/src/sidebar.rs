@@ -147,18 +147,29 @@ impl Threadbear {
                 self.with_group(&t.id, nesting.as_deref(), &mut out);
             }
         }
+        // Then the archive's sessions, as drawn under them (archive_search.rs).
+        if searching {
+            let sections = self.shown_sections(cx, now);
+            let own: HashSet<&str> = sections
+                .iter()
+                .flat_map(|s| s.rows.iter().map(|t| t.id.as_str()))
+                .collect();
+            out.extend(self.archive_arrow_keys(&own, cx));
+        }
         out
     }
 
     /// Up or down a thread from the open one (from nothing open, the first
     /// or the last), kept in view, with the keyboard staying in the list.
     pub(crate) fn step_thread(&mut self, step: i32, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.mode, SidebarMode::Inbox | SidebarMode::Feed) {
+        if self.mode != SidebarMode::Inbox {
             return;
         }
         let order = self.arrow_order(cx);
-        let next = match self
-            .selected
+        // An archived session open in the thread's place counts as where the
+        // list is (archive_search.rs).
+        let current = self.selected.clone().or_else(|| self.archive_open_key());
+        let next = match current
             .as_ref()
             .and_then(|s| order.iter().position(|id| id == s))
         {
@@ -166,9 +177,16 @@ impl Threadbear {
             None => order.last(),
             Some(i) => order.get((i as i32 + step).clamp(0, order.len() as i32 - 1) as usize),
         };
-        let Some(next) = next.cloned().filter(|n| self.selected.as_ref() != Some(n)) else {
+        let Some(next) = next.cloned().filter(|n| current.as_ref() != Some(n)) else {
             return;
         };
+        if next.starts_with("archive:") {
+            self.step_to_archive(&next, window, cx);
+            window.focus(&self.sidebar.focus, cx);
+            crate::web_panels::keyboard_to_app(window);
+            self.reveal_row(&next, cx);
+            return;
+        }
         // It comes in from the way the list was walked (open_motion.rs).
         self.opening.next = Some(crate::open_motion::Opening::Step(step.signum()));
         self.open(next.clone(), window, cx);
@@ -382,6 +400,8 @@ pub(crate) enum MenuAction {
     ArchiveAs(&'static str),
     Unarchive,
     Backlog(bool),
+    /// Back to the inbox, labelled a wrong hide (quiet_inbox.rs).
+    ShouldHaveShown,
     Wake,
     Hibernate(&'static str),
     HibernateUntilRestart,
@@ -713,11 +733,50 @@ impl Threadbear {
         params: Value,
         cx: &mut Context<Self>,
     ) {
+        self.update_thread_with(id, change, params, None, cx);
+    }
+
+    /// The same for a box's chips: the box's own thread, never the main
+    /// panel's (a box in a thread's own panel changed whichever thread the
+    /// main panel had open, 23 Nov review). A folder, login or pool change
+    /// isn't guessed, so its chip spins until the runner answers
+    /// (composer_chips.rs `chips_busy`).
+    pub(crate) fn update_thread_from_box(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut ThreadSummary),
+        params: Value,
+        cx: &mut Context<Self>,
+    ) {
+        let busy = if params.get("cwd").is_some() {
+            Some(format!("movingFolder/{id}"))
+        } else if params.get("accountId").is_some() || params.get("poolId").is_some() {
+            Some(format!("moving/{id}"))
+        } else {
+            None
+        };
+        self.update_thread_with(id, change, params, busy, cx);
+    }
+
+    fn update_thread_with(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut ThreadSummary),
+        params: Value,
+        busy: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let before = self.threads.get(id).cloned();
         if let Some(t) = self.threads.get_mut(id).map(std::sync::Arc::make_mut) {
             change(t);
+            // The runner's state is from before the change: the app's own
+            // rule draws the guess until the runner's next summary.
+            t.wait_state = None;
         }
         let guess = self.threads.get(id).cloned();
+        if let Some(key) = &busy {
+            self.chip_busy.insert(key.clone());
+        }
         let mut params = params;
         params["threadId"] = json!(id);
         let client = self.client.clone();
@@ -726,6 +785,9 @@ impl Threadbear {
         cx.spawn(async move |this, cx| {
             let res = going.await;
             this.update(cx, |this, cx| {
+                if let Some(key) = &busy {
+                    this.chip_busy.remove(key);
+                }
                 if let Err(e) = res {
                     this.show_error(e.message, cx);
                     threadbear_core::inbox::roll_back(&mut *this.threads, before, guess.as_deref());
@@ -777,9 +839,6 @@ impl Threadbear {
         if self.selected.as_deref() != Some(id) {
             return;
         }
-        // Put away from the Feed, which stays: the thread behind it goes
-        // without another opening in its place.
-        let next = next.filter(|_| self.home_page() != Some(SidebarMode::Feed));
         match next {
             Some(next) => {
                 // The page flying to its heading fades this one in under it
@@ -804,6 +863,7 @@ impl Threadbear {
 
     /// Whether an experiment is on for this Mac's runner: Settings' switch
     /// first, as it changes without a new hello, else the hello's list.
+    /// Agent Archive's search asks it too (archive_search.rs).
     pub(crate) fn experiment_on(&self, id: &str) -> bool {
         let switch = self.runner_settings.as_ref().and_then(|s| {
             s["experiments"]
@@ -822,15 +882,16 @@ impl Threadbear {
     /// docs/protocol/threads.md, "Inbox guess"). Either answer archives. Only for a
     /// thread on this Mac's runner: another's wouldn't be sent the answer.
     /// ⌘E, a row's box and a swipe stay one step.
+    ///
+    /// `id` is the card's own thread: in a thread's own panel that isn't the
+    /// main panel's (23 Nov review: it archived the main panel's thread).
     pub(crate) fn archive_from_card(
         &mut self,
+        id: String,
         at: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.selected.clone() else {
-            return;
-        };
         // Only where the thread stands finished with nothing for him: an old
         // done card's Archive, further up a thread that's since asked him
         // something, isn't an answer about this.
@@ -842,7 +903,7 @@ impl Threadbear {
                     && !t.needs_you
             });
         if !asks {
-            return self.toggle_archive(window, cx);
+            return self.toggle_archive_of(id, window, cx);
         }
         let rows = vec![
             MenuRow::item(
@@ -1144,6 +1205,8 @@ impl Threadbear {
             t.wake_when = Some(json!({ "said": said, "pending": true }));
             t.waiting_on = None;
             t.awaiting_app_restart = None;
+            // As `update_thread`: the app's own rule draws the guess.
+            t.wait_state = None;
         }
         let guess = self.threads.get(&id).cloned();
         self.leave_selection(&id, next, window, cx);
@@ -1164,6 +1227,17 @@ impl Threadbear {
         cx.notify();
     }
 
+    /// A row button's tip, as drawn and as `dump` lists it. A greyed-out
+    /// Delete on another runner's thread names the Mac to delete it on.
+    pub(crate) fn row_action_tip(&self, action: RowAction, t: &ThreadSummary) -> String {
+        match t.runner_id.as_deref() {
+            Some(runner) if !action.enabled(t) => {
+                format!("Delete it on {}", self.runner_name_of(runner))
+            }
+            _ => action.tip(t).to_owned(),
+        }
+    }
+
     /// Delete from the sidebar, only for an archived chat, after asking
     /// (`AppModel.deleteThread`). Its trash button shows a spinner until the
     /// runner answers, so it can't be pressed twice.
@@ -1175,7 +1249,9 @@ impl Threadbear {
         let Some(thread) = self.threads.get(&id) else {
             return;
         };
-        if !thread.is_archived() && thread.backlog.is_none() && thread.backlogged != Some(true) {
+        if (!thread.is_archived() && thread.backlog.is_none() && thread.backlogged != Some(true))
+            || !RowAction::Delete.enabled(thread)
+        {
             return;
         }
         let title = format!("Delete \u{201C}{}\u{201D}?", thread.title);
@@ -1330,6 +1406,7 @@ impl Threadbear {
             MenuAction::Backlog(later) => {
                 self.set_backlogged(&id, later, cx);
             }
+            MenuAction::ShouldHaveShown => self.should_have_shown(&id, cx),
             MenuAction::Wake => self.wake_row(&id, cx),
             MenuAction::Hibernate(preset) => {
                 let until = rows::snooze_date(preset, &rows::local_now());
@@ -1420,12 +1497,32 @@ impl Threadbear {
             rows.push(MenuRow::item("Wake", "sun.max", MenuAction::Wake));
         }
         if t.is_archived() {
+            // One the quiet inbox hid (quiet_inbox.rs) can say so as it comes back.
+            if t.quietly_archived.is_some() {
+                rows.push(MenuRow::item(
+                    "Should Have Shown Me",
+                    "eye",
+                    MenuAction::ShouldHaveShown,
+                ));
+            }
             rows.push(MenuRow::item(
                 "Unarchive",
                 "tray.and.arrow.up",
                 MenuAction::Unarchive,
             ));
-            rows.push(MenuRow::item("Delete…", "trash", MenuAction::Delete));
+            // Another runner's thread can't be deleted through Convex
+            // (runner/src/parity.ts): greyed out, naming where it can be.
+            match t.runner_id.as_deref() {
+                Some(runner) => rows.push(
+                    MenuRow::item(
+                        format!("Delete on {}", self.runner_name_of(runner)),
+                        "trash",
+                        MenuAction::Delete,
+                    )
+                    .disabled(),
+                ),
+                None => rows.push(MenuRow::item("Delete…", "trash", MenuAction::Delete)),
+            }
         } else {
             rows.push(MenuRow::item("Archive", "archivebox", MenuAction::Archive));
             if t.backlog.is_some() || t.backlogged == Some(true) {
@@ -2163,6 +2260,18 @@ impl Threadbear {
                 });
             }
         }
+        // Agent Archive's sessions with the words, after the app's own
+        // (archive_search.rs).
+        if loaded && searching {
+            let own: HashSet<&str> = sections
+                .iter()
+                .flat_map(|s| s.rows.iter().map(|t| t.id.as_str()))
+                .collect();
+            for (key, row) in self.render_archive_rows(&own, &p, cx) {
+                list = list.child(motion.row(&key, row));
+                drawn.push(key);
+            }
+        }
         // A fold moves the rows below it as its height eases, so nothing
         // glides while one's under way, nor as it ends and its rows go: the
         // rest are where they'll stay by then. One with no easing (a script's,
@@ -2366,8 +2475,8 @@ impl Threadbear {
     /// cursor in the new box.
     pub(crate) fn new_thread(&mut self, cx: &mut Context<Self>) {
         self.leave_pane(cx);
+        self.archive.open = None;
         self.selected = None;
-        self.leave_feed_for_thread();
         self.shows_home = false;
         self.projects.open = None;
         self.note_navigation();
@@ -3294,7 +3403,23 @@ impl Threadbear {
                 }
                 RowAction::Delete => {
                     let busy_key = format!("delete:{id}");
-                    if self.sidebar.busy.contains(&busy_key) {
+                    if !action.enabled(t) {
+                        // Greyed out, no click: the tip says where it can be deleted.
+                        tipped!(
+                            div()
+                                .flex_none()
+                                .size(px(22.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .opacity(0.35),
+                            key,
+                            self.row_action_tip(*action, t)
+                        )
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(icon(symbol, 13., p.secondary))
+                        .into_any_element()
+                    } else if self.sidebar.busy.contains(&busy_key) {
                         // On the way: a spinner, and no more clicks.
                         div()
                             .flex_none()
@@ -3461,7 +3586,7 @@ impl Threadbear {
                 "mark": mark,
                 "trailing": tail.text,
                 "tile": tile,
-                "hoverButtons": hovered.then(|| mode.actions().iter().map(|a| a.tip(t)).collect::<Vec<_>>()),
+                "hoverButtons": hovered.then(|| mode.actions().iter().map(|a| self.row_action_tip(*a, t)).collect::<Vec<_>>()),
                 "runner": t.runner_id.as_deref().map(|id| self.runner_place_of(id)),
                 // Laid out within the part of the list that's showing (null
                 // for a row that isn't drawn, as in a folded section).
@@ -3618,7 +3743,7 @@ impl Threadbear {
                 }),
             ) => {
                 let (secondary, fill) = (p.secondary, p.tile);
-                img(std::path::PathBuf::from(path))
+                img(crate::fit_picture::icon_source(path))
                     .flex_none()
                     .size(px(side))
                     .rounded(radius)
@@ -3733,7 +3858,7 @@ fn render_tile(
             }),
         ) => {
             let (letter, secondary, fill) = (letter.clone(), p.secondary, p.tile);
-            img(std::path::PathBuf::from(path))
+            img(crate::fit_picture::icon_source(path))
                 .size(size)
                 .rounded(px(7.))
                 .object_fit(ObjectFit::Contain)
@@ -4299,6 +4424,13 @@ pub(crate) fn automation(
             });
             Ok(json!(id.map_or("ok".to_string(), |id| format!("ok {id}"))))
         }
+        // An archived row's "Should Have Shown Me", as its menu does
+        // (quiet_inbox.rs).
+        "should-have-shown" => {
+            let id = target(cx)?;
+            app.update(cx, |t, cx| t.should_have_shown(&id, cx));
+            Ok(json!(format!("ok {id}")))
+        }
         // The Archived section's Show more row.
         "archive-more" => {
             app.update(cx, |t, cx| {
@@ -4350,7 +4482,10 @@ pub(crate) fn automation(
         "archive" => {
             let id = target(cx)?;
             // `slide`: as its button does it, sliding off first. Otherwise at
-            // once, for the specs that read the list straight after.
+            // once, for the specs that read the list straight after. Either
+            // way without the confirm the button asks first for a busy
+            // (running or waiting) thread; a `click-at` on the button gets
+            // that, and its reply names the dialog.
             if cmd["slide"].as_bool() == Some(true) {
                 app.update(cx, |t, cx| t.archive_row_sliding(id.clone(), window, cx));
             } else {
@@ -4445,6 +4580,10 @@ pub(crate) fn automation(
                         }
                     } else {
                         let recipes = Some(app.read(cx).recipes.home_scroll.clone());
+                        // The threads list's own, for a control at the foot of
+                        // a long Inbox (the quiet inbox's line), below the
+                        // fold on those Macs (23 Nov).
+                        let threads = Some(app.read(cx).sidebar.scroll.clone());
                         let scrolls = app
                             .read(cx)
                             .side
@@ -4453,7 +4592,8 @@ pub(crate) fn automation(
                             .shown_scroll()
                             .into_iter()
                             .chain(crate::activity_panels::panel_scrolls())
-                            .chain(recipes);
+                            .chain(recipes)
+                            .chain(threads);
                         for scroll in scrolls {
                             let pane = scroll.bounds();
                             if bounds.center().x < pane.left()

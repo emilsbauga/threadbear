@@ -5,6 +5,7 @@ import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sd
 import type { Logger } from './log.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 import { IS_WINDOWS } from './platform.ts';
+import { unwrapped } from './background.ts';
 import { parseProcesses, powershellPath, win32Helper } from './win32-helper.ts';
 import crypto from 'node:crypto';
 
@@ -293,7 +294,15 @@ export class ProcessRegistry {
       if (created) {
         if ((await this.confirmStart(e, created)) !== false) return e.threadId;
         throw new StaleProcess(pid);
-      } else if (!(e.lstart || e.started) || sameStart(e, processInfo(pid))) return e.threadId;
+      } else if (!(e.lstart || e.started)) return e.threadId;
+      else {
+        // A recorded CLI whose start can't be read is no answer (the
+        // connection closes), not "some other process" (Codex's and
+        // Gemini's reviews of finding 175).
+        const info = processInfo(pid);
+        if (!info) throw new StaleProcess(pid);
+        if (sameStart(e, info)) return e.threadId;
+      }
     }
     return undefined;
   }
@@ -403,10 +412,21 @@ export class ProcessRegistry {
   private settling = new Map<Entry, Promise<unknown>>();
   private lingering = new Set<Entry>();
 
-  // True once the job has ended (or had nothing left in it).
-  private endJob(name: string, pid?: number): Promise<boolean> {
+  // 'ended' once the job has ended, with everything in it. 'missing' when
+  // no job has that name any more: its name went with the last handle to
+  // it, which only the helper held, so a helper that has stopped since (a
+  // question timed out, the runner crashed) leaves its processes running
+  // in a job no one can reach. Those are left to the pid-based clean-up,
+  // which checks each is still the process it was; there's nothing to end
+  // later either (review, 23 Nov 2026: taken as ended, they survived).
+  // false when it couldn't be ended now, to try again at the next start.
+  private endJob(name: string, pid?: number): Promise<'ended' | 'missing' | false> {
     return (this.jobs ?? helperJobs).end(name).then(
-      () => true,
+      (r) => {
+        if (r !== 'missing') return 'ended' as const;
+        this.log.warn("a CLI's job had gone (its helper stopped); what it held is stopped by pid where it can be", { pid });
+        return 'missing' as const;
+      },
       (e) => {
         this.log.warn("could not end a CLI's job; it's tried again at the next start", { pid, error: String(e) });
         return false;
@@ -438,7 +458,7 @@ export class ProcessRegistry {
     for (const e of previous) {
       if (!e || typeof e.pid !== 'number' || e.exited) continue;
       // Its job has ended, and with it the CLI: its pid may be anyone's now.
-      if (IS_WINDOWS && e.job && ended[jobbed.indexOf(e)]) continue;
+      if (e.job && ended[jobbed.indexOf(e)] === 'ended') continue;
       if (sameGroup({ pgid: e.pid, lstart: e.lstart ?? '', started: e.started }, e.lstart || e.started ? undefined : path.basename(e.command ?? ''))) targets.push(e.pid);
       for (const g of e.groups ?? []) if (sameGroup(g)) targets.push(g.pgid);
     }
@@ -447,7 +467,9 @@ export class ProcessRegistry {
       killGroup(pgid, 'SIGTERM');
     }
     await waitGone(targets, graceMs);
-    const stubborn = targets.filter((p) => groupAlive(p));
+    // On Windows the first round was already taskkill /F, so a second could
+    // only reach a process that took a pid freed since (FORCE_AGAIN).
+    const stubborn = FORCE_AGAIN ? targets.filter((p) => groupAlive(p)) : [];
     for (const pgid of stubborn) killGroup(pgid, 'SIGKILL');
     await waitGone(stubborn, 2000);
     this.entries.clear();
@@ -478,16 +500,23 @@ export class ProcessRegistry {
     }));
     // A CLI whose job has ended is gone, and its pid may be someone else's
     // by now (Codex's review): only the others get taskkill.
-    const done = new Set(jobbed.filter((_, i) => ended[i]).map((e) => e.pid));
-    const pids = this.pids().filter((p) => !(IS_WINDOWS && done.has(p)));
+    const done = new Set(jobbed.filter((_, i) => ended[i] === 'ended').map((e) => e.pid));
+    const pids = this.pids().filter((p) => !done.has(p));
     const groups = pids.flatMap((pid) => [pid, ...this.toolGroups(pid)]);
     for (const pgid of groups) killGroup(pgid, 'SIGTERM');
     await waitGone(groups, graceMs);
-    for (const pgid of groups) if (groupAlive(pgid)) killGroup(pgid, 'SIGKILL');
+    if (FORCE_AGAIN) for (const pgid of groups) if (groupAlive(pgid)) killGroup(pgid, 'SIGKILL');
     this.entries.clear();
     this.save();
   }
 }
+
+// Whether stragglers get a second, forced round after the grace. Not on
+// Windows: killGroup is taskkill /T /F there, forced already, and nothing
+// holds a pid as a process group does on a Mac, so a pid still alive after
+// it may be another process's by now (Codex's review, 23 Nov 2026: a CLI
+// whose job had gone now reaches this).
+const FORCE_AGAIN = !IS_WINDOWS;
 
 async function waitGone(pgids: number[], ms: number): Promise<void> {
   const deadline = Date.now() + ms;
@@ -750,7 +779,8 @@ export function groupSpawner(
       windowsHide: true,
     });
     const pid = child.pid;
-    if (pid) registry.add(pid, opts.command, threadId);
+    // The agent's own name, not taskpolicy's or nice's, as they exec it.
+    if (pid) registry.add(pid, unwrapped(opts.command, opts.args), threadId);
     log.info('spawned CLI', { threadId, pid, cwd: opts.cwd });
     let buf = '';
     child.stderr?.setEncoding('utf8');

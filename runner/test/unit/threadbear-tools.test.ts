@@ -388,6 +388,12 @@ test('parseWhen and tool titles', () => {
   assert.equal(parseWhen('30m', now), '2026-10-26T12:30:00.000Z');
   assert.equal(parseWhen('1d', now), '2026-10-27T12:00:00.000Z');
   assert.throws(() => parseWhen('soonish', now));
+  // Words with a number in are words, not a time: V8's Date.parse reads
+  // "MACG-3843" as the year 3843 and "after PR 123" as the year 123 (a
+  // thread showed snoozed until 3843-01-01, 20 Nov).
+  for (const words of ['MACG-3843', 'after PR 123', '3843', 'Nov 21']) assert.throws(() => parseWhen(words, now), words);
+  assert.equal(parseWhen('2026-10-27T09:00:00+08:00', now), '2026-10-27T01:00:00.000Z');
+  assert.equal(parseWhen('2026-10-28', now), '2026-10-28T00:00:00.000Z');
   assert.equal(toolTitle('mcp__threadbear__move_thread', { folder: '~/dev/x' }, '/'), 'Move this thread to ~/dev/x');
   assert.equal(toolTitle('mcp__threadbear__delete_thread', { threadId: 'abcdef123456' }, '/'), 'Delete thread abcdef12');
 });
@@ -1247,6 +1253,108 @@ test('a reply that came only as a summary: end_turn asks for it again, and the r
   assert.doesNotMatch(read.text, /resent the full/);
 });
 
+test('end_turn asks once whether asks wait for a shell job still running, and the thread stays under Running when they do', async () => {
+  // 24 Nov 2026: "it's landing now, I'll confirm here once it's on main",
+  // with an ask about a PR, sat in Mike's Inbox while the landing ran.
+  const ask = { asks: [{ question: 'Pass on the Terminal tabs PR?', options: [{ label: 'Pass' }, { label: 'Take it' }] }] };
+  const h = makeHarness();
+  const { thread, s } = start(h);
+  s.text('m1', 'Landing now.');
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'Land the picker fix' }] });
+  const { call } = tools(h, thread.id, undefined, () => true);
+  toolCall(s, 'e1', END_TURN, ask);
+  const refused = await call('end_turn', ask);
+  assert.equal(refused.error, true);
+  assert.match(refused.text, /^Not ended: you are asking the user something while a background job of yours is still running \("Land the picker fix"\)/);
+  assert.match(refused.text, /askWhen: "jobsEnd"/);
+  assert.match(refused.text, /askWhen: "now"/);
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: false, text: refused.text, truncated: false, images: [] } });
+  // Said: taken, and the thread isn't waiting on Mike while the job runs.
+  const held = { ...ask, askWhen: 'jobsEnd' };
+  toolCall(s, 'e2', END_TURN, held);
+  assert.equal((await call('end_turn', held)).error, false);
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e2', ok: true, text: 'Noted: this thread needs the user.', truncated: false, images: [] } });
+  s.result('completed');
+  let sum = h.runner.get(thread.id);
+  assert.equal(sum.needs, 'you');
+  assert.equal(sum.asksAfterJobs, true);
+  assert.equal(sum.needsYou, false);
+  assert.equal(sum.waitState, 'job');
+  // The job ends and no turn comes to read it: the asks are Mike's.
+  s.out({ kind: 'tasks', tasks: [] });
+  h.clock.advance(60_000);
+  sum = h.runner.get(thread.id);
+  assert.equal(sum.waitState, 'needsYou');
+});
+
+test('held asks: the next turn is asked once before ending with nothing, and a job started later holds nothing', async () => {
+  // Codex and Gemini's review, 24 Nov: the turn the landing's end opens
+  // said "Landed", needs nothing, and the held card was gone unseen.
+  const ask = { asks: [{ question: 'Pass on the Terminal tabs PR?', options: [{ label: 'Pass' }, { label: 'Take it' }] }], askWhen: 'jobsEnd' };
+  const h = makeHarness();
+  const { thread, s } = start(h);
+  s.text('m1', 'Landing now.');
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'Land the picker fix' }] });
+  const { call } = tools(h, thread.id, undefined, () => true);
+  toolCall(s, 'e1', END_TURN, ask);
+  assert.equal((await call('end_turn', ask)).error, false);
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: 'Noted: this thread needs the user.', truncated: false, images: [] } });
+  s.result('completed');
+  assert.equal(h.runner.get(thread.id).waitState, 'job');
+  // The landing goes and a dev server is left: it isn't what the asks wait for.
+  s.out({ kind: 'tasks', tasks: [{ id: 'b2', type: 'local_bash', kind: 'shell', description: 'Dev server' }] });
+  assert.equal(h.runner.get(thread.id).waitState, 'job', 'held through the wake grace');
+  h.clock.advance(60_000);
+  assert.equal(h.runner.get(thread.id).asksAfterJobs, undefined);
+  assert.equal(h.runner.get(thread.id).waitState, 'needsYou');
+  // A turn that ends with no end_turn at all leaves the held card standing.
+  h.runner.send(thread.id, 'next');
+  await tick();
+  const s2 = h.adapter.last;
+  s2.text('m2', 'Landed.');
+  s2.result('completed');
+  const sum = h.runner.get(thread.id);
+  assert.equal(sum.needs, 'you');
+  assert.equal(sum.asks?.[0].action, 'Pass on the Terminal tabs PR?');
+  // And one can't end with nothing without hearing about them, once.
+  h.runner.send(thread.id, 'and now?');
+  await tick();
+  const s3 = h.adapter.last;
+  s3.text('m3', 'All landed.');
+  const done = { needs: 'nothing' };
+  toolCall(s3, 'e2', END_TURN, done);
+  const refused = await call('end_turn', done);
+  assert.equal(refused.error, true);
+  assert.match(refused.text, /^Not ended: last turn you held asks back until your job ended, and the user has not seen them \("Pass on the Terminal tabs PR\?"\)/);
+  s3.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e2', ok: false, text: refused.text, truncated: false, images: [] } });
+  toolCall(s3, 'e3', END_TURN, done);
+  assert.equal((await call('end_turn', done)).error, false);
+});
+
+test('end_turn with asks and a shell job running: "now" is taken at once and goes to the Inbox, and with no job nothing is asked', async () => {
+  const ask = { asks: [{ question: 'Does the preview look right?', options: [{ label: 'Yes' }, { label: 'No' }] }] };
+  const h = makeHarness();
+  const { thread, s } = start(h);
+  s.text('m1', 'The preview is up.');
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'Dev server' }] });
+  const { call } = tools(h, thread.id, undefined, () => true);
+  const now = { ...ask, askWhen: 'now' };
+  toolCall(s, 'e1', END_TURN, now);
+  assert.equal((await call('end_turn', now)).error, false);
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: true, text: 'Noted: this thread needs the user.', truncated: false, images: [] } });
+  s.result('completed');
+  const sum = h.runner.get(thread.id);
+  assert.equal(sum.asksAfterJobs, undefined);
+  assert.equal(sum.waitState, 'needsYou');
+
+  const other = makeHarness();
+  const o = start(other);
+  o.s.text('m1', 'Done.');
+  const plain = tools(other, o.thread.id, undefined, () => true);
+  toolCall(o.s, 'e1', END_TURN, ask);
+  assert.equal((await plain.call('end_turn', ask)).error, false);
+});
+
 test('end_turn asks once about an ask pointing at another thread with no link, and takes a thread: link', async () => {
   // 17 Nov 2026: "Pick a direction ... in its own thread", no answers, no
   // link, and on the phone no way to that thread.
@@ -1721,7 +1829,7 @@ test("end_turn lists only today's form, whichever forms it takes", async () => {
   const h = makeHarness();
   const { thread } = start(h);
   const one = await mcpClient(h, thread.id, true).endTurnShown();
-  assert.deepEqual(Object.keys(one.inputSchema.properties).sort(), ['archive', 'asks', 'byline', 'findings', 'headline', 'needs', 'next', 'snooze', 'waitFor']);
+  assert.deepEqual(Object.keys(one.inputSchema.properties).sort(), ['archive', 'askWhen', 'asks', 'byline', 'findings', 'headline', 'needs', 'next', 'snooze', 'waitFor']);
   assert.ok(!one.inputSchema.required?.length, 'every field is optional');
   const ask = (one.inputSchema.properties.asks as { items: { required: string[]; properties: Record<string, { description?: string; items?: { type?: string } }> } }).items;
   assert.deepEqual(ask.required, ['question']);

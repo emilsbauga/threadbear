@@ -552,6 +552,11 @@ pub enum ScrollSource {
     /// A pan of a finger on a touchscreen, recognized by GPUI, including the
     /// momentum GPUI synthesizes after the finger lifts.
     Touch,
+    /// A mouse's wheel. Some report smooth pixel deltas, as a trackpad does
+    /// ([`ScrollDelta::precise`] is true), but unlike a trackpad they come
+    /// with no gesture phase and no momentum: Mike's Razer, 23 Nov.
+    /// (Threadbear's addition; macOS only.)
+    Wheel,
 }
 
 impl Sealed for ScrollEvent {}

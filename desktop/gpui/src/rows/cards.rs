@@ -3,8 +3,8 @@
 // runner's request for a thread (ApprovalRowCell, QuestionRowCell,
 // SecretRowCell, PlanCardCell and ReviewRowCell in Cells.swift).
 use super::metrics::*;
+use super::parts::{self, icon};
 use super::row_wrap;
-use super::work::{self, icon};
 use crate::style::{self, size};
 use crate::thread::ThreadPane;
 use gpui_kit::base::TestSupportExt as _;
@@ -137,7 +137,7 @@ fn mono(
     color: Hsla,
     cx: &App,
 ) -> Stateful<Div> {
-    work::mono_text(id, words, color, cx)
+    parts::mono_text(id, words, color, cx)
 }
 
 /// `approvalTitleText`: "Write release.sh?", its folder dimmed after it, and
@@ -231,7 +231,7 @@ pub(crate) fn approval_payload(
             col = col.child(
                 div()
                     .mt(px(4.))
-                    .child(work::fields_text(ix * 100 + n, &extra, cx)),
+                    .child(parts::fields_text(ix * 100 + n, &extra, cx)),
             );
         }
         return col.into_any_element();
@@ -278,7 +278,7 @@ pub(crate) fn approval_payload(
                 ));
                 let extra = ApprovalText::fields_beyond_diff(input);
                 if !extra.is_empty() {
-                    col = col.child(div().mt(px(4.)).child(work::fields_text(
+                    col = col.child(div().mt(px(4.)).child(parts::fields_text(
                         ix * 100 + n,
                         &extra,
                         cx,
@@ -299,7 +299,7 @@ pub(crate) fn approval_payload(
     if fields.is_empty() {
         return mono(("title", ix * 100 + n), request.title.clone(), label, cx).into_any_element();
     }
-    work::fields_text(ix * 100 + n, &fields, cx).into_any_element()
+    parts::fields_text(ix * 100 + n, &fields, cx).into_any_element()
 }
 
 /// The folder, access and model it would start with, then the whole brief:
@@ -1594,13 +1594,9 @@ impl ThreadPane {
         // The plan (its start, until it's opened), or once approved its
         // checklist with the plan under it when opened.
         let plan_markdown = if expanded { body_text } else { preview };
-        let doc = (!plan_markdown.is_empty() && (plan.entries.is_empty() || expanded)).then(|| {
-            self.markdown_state(
-                &format!("plan-{}", plan.item_id),
-                &markdown_source(&plan_markdown, &self.summary.id),
-                cx,
-            )
-        });
+        let plan_source = markdown_source(&plan_markdown, &self.summary.id);
+        let doc = (!plan_markdown.is_empty() && (plan.entries.is_empty() || expanded))
+            .then(|| self.markdown_state(&format!("plan-{}", plan.item_id), &plan_source, cx));
         let text_style = self.reading_style(cx);
         let mut content = v_flex().child(heading);
         let mut body = v_flex().mt(px(8.));
@@ -1613,12 +1609,14 @@ impl ThreadPane {
                     .when(!plan.entries.is_empty(), |d| d.mt(px(23.)))
                     .text_size(px(size::BODY))
                     .line_height(px(size::BODY_LINE))
-                    .child(
+                    .child(crate::shell_blocks::with_header(
                         self.linked_text(&doc, &row.id, cx)
                             .selectable(true)
                             .style(text_style)
-                            .shared_code_block_highlighter(super::plain_code_blocks()),
-                    ),
+                            .shared_code_block_highlighter(super::code_blocks(cx)),
+                        &plan_source,
+                        &self.summary.id,
+                    )),
             );
         }
         content = content.child(body);

@@ -20,7 +20,7 @@ import type { PatchInfo } from '../protocol.ts';
 import { plainLine, waitingWhy } from '../patch-changes.ts';
 import { actionRunProblem, automaticTrust, isInside, EMPTY_PATCH_SET, PATCH_EXTENSIONS, patchDirs, projectRoots, hookApplies, loadPatchSet, applyLive, hasLive, projectPanels, renderListPanel, renderPanel, toggleListPanel, NoSwitches, runCommand, PATCH_SH_MAX_BYTES, type CommandOutcome, type PanelRender, type PatchSet, type PatchThread, type ProjectFolder, projectPatchFiles } from '../patches.ts';
 import { liveCommandEnv } from '../shell-allowlist.ts';
-import { codeOfUnhashedPatch, commandShown, shellWords, type CodeScan, type UnsureWhy } from '../unhashed-scan.ts';
+import { SCAN_SHOWN_MS, codeOfUnhashedPatch, commandShown, shellWords, type CodeScan, type UnsureWhy } from '../unhashed-scan.ts';
 import type { EditsAsk } from '../trust-off-thread.ts';
 export { codeOfUnhashedPatch, commandShown, shellWords, type UnsureWhy };
 import fs from 'node:fs';
@@ -28,7 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ThreadState, Turn } from '../runner.ts';
 import type { ThreadRecord } from '../store.ts';
-import { FOLDER_CACHE_MS, HOOK_TELL_CHARS, HOOK_TELL_LIMIT, LIVE_POLL_MS, LIVE_SHARE_MS, PATCHES_TTL_MS } from '../runner.ts';
+import { FOLDER_CACHE_MS, HOOK_TELL_CHARS, HOOK_TELL_LIMIT, LIVE_POLL_MS, LIVE_SHARE_MS, PATCHES_TTL_MS } from './timings.ts';
 import { safeStart } from '../safe-cut.ts';
 
 // The files in a Claude login's folder that hold its user settings.
@@ -115,7 +115,13 @@ export const patchesPart = {
   // patch file that has appeared or broken since the last read is said in
   // the transcript (not on the first read, which would say it at startup).
   refreshPatches(this: Runner, st: ThreadState): Promise<void> {
+    // Only a call that starts the read keeps it: one made while a read runs
+    // (a live poll) gets back a finished promise, which would leave
+    // threadPatchesIdle spinning on it. readPatches marks the entry
+    // refreshing before its first await.
+    const started = st.rt.patches && !st.rt.patches.refreshing ? st.rt.patches : undefined;
     const read = this.readPatches(st);
+    if (started?.refreshing) started.read = read;
     this.patchReads.add(read);
     void read.finally(() => this.patchReads.delete(read));
     return read;
@@ -125,6 +131,21 @@ export const patchesPart = {
   // reads go to the disk asynchronously, so a tick or two isn't enough.
   async patchesIdle(this: Runner): Promise<void> {
     while (this.patchReads.size) await Promise.allSettled([...this.patchReads]);
+  },
+
+  // Resolves once this thread's patches are read, including a read asked
+  // for again while one ran. What patches.trust and a panel button wait on:
+  // patchesIdle waits for every thread's, and with many threads polling
+  // live state or slow to read there may never be a moment with none
+  // (patches.trust timed out at 120 seconds, 22 Nov).
+  async threadPatchesIdle(this: Runner, st: ThreadState): Promise<void> {
+    let last: Promise<void> | undefined;
+    for (let e = st.rt.patches; e?.refreshing && e.read; e = st.rt.patches) {
+      // Never spin on a read already waited for: give the loop a turn.
+      if (e.read === last) await new Promise((r) => setImmediate(r));
+      last = e.read;
+      await e.read.catch(() => {});
+    }
   },
 
   async readPatches(this: Runner, st: ThreadState): Promise<void> {
@@ -146,8 +167,19 @@ export const patchesPart = {
       if (claude) base = { ...base, patches: [...base.patches, claude] };
       base = await this.withEditsAsk(base, cwd);
       set = await applyLive(base, { cwd, threadId: rec.id, thread: this.patchThread(rec), run: (command, dir) => this.runLiveCommand(rec.id, command, dir), verify: (file, hash) => this.patchTrust.verify(file, hash) });
+      const pressesBefore = entry.presses ?? 0;
       const borrowed = await this.borrowedPanelSet(st);
       if (borrowed.length) set = { ...set, panels: [...set.panels, ...borrowed] };
+      // One a press put in the set while this read ran (showPanelButton)
+      // stays as the press read it: this read may have looked before it.
+      // The read asked for again by that press brings it properly.
+      const pressed = new Set(this.borrowedPanels(st).map((b) => borrowedPanelId(b.cwd, b.panelId)));
+      const since = new Map(entry.set.panels.filter((x) => x.from && pressed.has(x.id) && (entry.pressed?.get(x.id) ?? 0) > pressesBefore).map((x) => [x.id, x]));
+      if (since.size) {
+        const panels = set.panels.map((y) => since.get(y.id) ?? y);
+        for (const x of since.values()) if (!panels.some((y) => y.id === x.id)) panels.push(x);
+        set = { ...set, panels };
+      }
     } catch (e) {
       this.log.warn('could not read the folder for patches', { threadId: rec.id, cwd, error: String(e) });
       base = entry.base;
@@ -188,24 +220,52 @@ export const patchesPart = {
   // folder's, so the page shouldn't take it for one (the YouTube page then
   // offers its own threads to ask in). One that has gone is left out.
   async borrowedPanelSet(this: Runner, st: ThreadState): Promise<Panel[]> {
-    const { rec } = st;
     const out: Panel[] = [];
     for (const { cwd, panelId } of this.borrowedPanels(st)) {
-      try {
-        if (!isDirectory(cwd)) continue;
-        const theirs = await this.loadSharedPatchSet(cwd, [], this.projects?.allFolders() ?? []);
-        const panel = theirs.panels.find((p) => p.id === panelId && p.kind === 'url');
-        if (!panel) continue;
-        const one = { ...EMPTY_PATCH_SET, panels: [panel], patches: theirs.patches.filter((p) => p.id === panel.patch) };
-        const live = await applyLive(one, { cwd, threadId: rec.id, thread: this.patchThread(rec), run: (command, dir) => this.runLiveCommand(rec.id, command, dir), verify: (file, hash) => this.patchTrust.verify(file, hash) });
-        const shown = live.panels[0];
-        if (!shown) continue;
-        out.push({ ...shown, id: borrowedPanelId(cwd, panelId), from: cwd, ...(shown.url ? { url: shown.url.replaceAll('{threadId}', '') } : {}) });
-      } catch (e) {
-        this.log.warn('could not read a panel button\'s panel', { threadId: rec.id, cwd, error: String(e) });
-      }
+      const panel = await this.borrowedPanel(st, cwd, panelId);
+      if (panel) out.push(panel);
     }
     return out;
+  },
+
+  // One of them, as borrowedPanelSet has it: on its own, a press shows it
+  // without waiting for the rest of the thread's patches (showPanelButton).
+  async borrowedPanel(this: Runner, st: ThreadState, cwd: string, panelId: string): Promise<Panel | undefined> {
+    const shown = await this.folderPanelLive(st, cwd, panelId);
+    return shown && { ...shown, id: borrowedPanelId(cwd, panelId), from: cwd, ...(shown.url ? { url: shown.url.replaceAll('{threadId}', '') } : {}) };
+  },
+
+  // A folder's web panel as add_button found it (folderPanel), with its
+  // live state run in that folder for this thread: its badge and summary,
+  // and its `when`, which can hide it (undefined then, or when it's gone).
+  async folderPanelLive(this: Runner, st: ThreadState, cwd: string, panelId: string): Promise<Panel | undefined> {
+    const { rec } = st;
+    try {
+      if (!isDirectory(cwd)) return undefined;
+      const theirs = await this.loadSharedPatchSet(cwd, [], this.projects?.allFolders() ?? []);
+      const panel = theirs.panels.find((p) => p.id === panelId && p.kind === 'url');
+      if (!panel) return undefined;
+      const one = { ...EMPTY_PATCH_SET, panels: [panel], patches: theirs.patches.filter((p) => p.id === panel.patch) };
+      const live = await applyLive(one, { cwd, threadId: rec.id, thread: this.patchThread(rec), run: (command, dir) => this.runLiveCommand(rec.id, command, dir), verify: (file, hash) => this.patchTrust.verify(file, hash) });
+      return live.panels[0];
+    } catch (e) {
+      this.log.warn('could not read a panel button\'s panel', { threadId: rec.id, cwd, error: String(e) });
+      return undefined;
+    }
+  },
+
+  // Puts a pressed panel button's panel among the thread's own now, with
+  // the badge and summary it was just read with, until the next read of
+  // the thread's patches brings it (with whatever else changed).
+  addBorrowedPanel(this: Runner, st: ThreadState, panel: Panel): void {
+    const entry = st.rt.patches;
+    if (!entry) return;
+    entry.presses = (entry.presses ?? 0) + 1;
+    (entry.pressed ??= new Map()).set(panel.id, entry.presses);
+    const panels = entry.set.panels.some((p) => p.id === panel.id) ? entry.set.panels.map((p) => (p.id === panel.id ? panel : p)) : [...entry.set.panels, panel];
+    if (JSON.stringify(panels) === JSON.stringify(entry.set.panels)) return;
+    entry.set = { ...entry.set, panels };
+    this.markDirty(st);
   },
 
   // Threads in the same folder with the same projects get the same set, so
@@ -344,7 +404,7 @@ export const patchesPart = {
       .map((f) => f.file);
     this.log.info('patches trusted', { threadId, files: trusted });
     this.rereadAllPatches();
-    await this.patchesIdle();
+    await this.threadPatchesIdle(st);
     return { trusted };
   },
 
@@ -506,7 +566,7 @@ export const patchesPart = {
         let scan: EditsAsk;
         const from = info.source === 'home' ? cwd : (info.folder ?? cwd);
         try {
-          scan = this.offThread ? await this.offThread.editsAsk(info.file, from, this.clock.now()) : codeOfUnhashedPatch(info.file, from, this.clock.now());
+          scan = this.offThread ? await this.offThread.editsAsk(info.file, from, this.clock.now(), SCAN_SHOWN_MS) : codeOfUnhashedPatch(info.file, from, this.clock.now(), SCAN_SHOWN_MS);
         } catch {
           return info;
         }

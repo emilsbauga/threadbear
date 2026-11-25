@@ -16,6 +16,7 @@ import { postMessage, getReceipt } from './intake';
 import { jsonRequest, upload, download } from './intakeFiles';
 import { takeUpload } from './uploads';
 import { safeDecode, withCard } from './shareCard';
+import { promoteRoute } from './boxImage';
 
 const http = httpRouter();
 for (const op of ['prepare', 'finalize', 'cancel']) http.route({ path: `/intake/v2/${op}`, method: 'POST', handler: jsonRequest });
@@ -118,6 +119,10 @@ http.route({
     return new Response(JSON.stringify({ ok }), { status: ok ? 200 : 404, headers: { 'Content-Type': 'application/json' } });
   }),
 });
+
+// The box-image workflow promoting the image a new box boots, with a GitHub
+// Actions OIDC token (boxImage.ts says what it checks).
+http.route({ path: '/box-image/promote', method: 'POST', handler: promoteRoute });
 
 // The three upload routes below take their one-use ticket the same way
 // (uploads.ts takeUpload): claimed before the body is read, the body read

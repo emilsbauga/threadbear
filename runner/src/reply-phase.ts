@@ -69,6 +69,7 @@ import {
   endTurnAccepted, endTurnAddedArchive, endTurnAddedSnooze, endTurnAsksForMessage, endTurnIsOneReply, endTurnMessageStands, endTurnOwesReply,
   endTurnRefusedRepeat, endTurnRefusedUnread, endTurnTaken, endTurnWantsReply, needsFromText, needsFromTool, replyWithoutRepeat, splitReplySection,
   summaryFromTool, summaryMarkdown, type Needs,
+  askWhenFromTool,
 } from './needs.ts';
 
 export const REPLY_FIELDS = [
@@ -242,7 +243,9 @@ export function dropsStream(t: ReplyFields): boolean {
 // nothing said (a slash command's turn says nothing without end_turn).
 export function turnNeeds(turn: ReplyFields & Pick<Turn, 'command'>): (Needs & { from: 'tool' | 'text' }) | undefined {
   const tool = turn.endTurn && needsFromTool(turn.endTurn);
-  if (turn.replyNeeds) return { ...turn.replyNeeds, from: 'text' };
+  // The asks came in the reply, but whether they wait for its jobs was
+  // said in the call (from Codex and Gemini's review, 24 Nov).
+  if (turn.replyNeeds) return { ...turn.replyNeeds, ...(askWhenFromTool(turn.endTurn) === 'jobsEnd' && turn.replyNeeds.needs === 'you' ? { afterJobs: true as const } : {}), from: 'text' };
   if (tool) return { ...tool, from: 'tool' };
   if (turn.command) return undefined;
   const text = turn.lastText && needsFromText(turn.lastText);

@@ -1,0 +1,63 @@
+# New loops in the desktop app's Rust: modules that use each other in a
+# circle, or types and functions that know each other in one across modules
+# (desktop/scripts/structure.mjs says what passes and why). Its own workflow
+# on one standard Mac runner, free for a public repo (runner.yml), so it adds
+# nothing to tb land's quick check: indexing the workspace takes a few
+# minutes, too long for every landing.
+#
+# A Mac, as the web runtime's code (desktop/web/src/mac) is only read there,
+# and structure-allow.txt was made on one.
+#
+# tb land: hold while red
+name: Rust structure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - desktop/**
+      - rust-toolchain.toml
+      - .github/workflows/structure.yml
+  pull_request:
+    paths:
+      - desktop/**
+      - rust-toolchain.toml
+      - .github/workflows/structure.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A held workflow's runs on main finish one at a time, never cancelled
+# (docs/thread-worktrees.md, "Red on GitHub"); a pull request's newer push
+# replaces its older run.
+concurrency:
+  group: structure-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  structure:
+    # Only in Mike's repo or when started by hand, as runner.yml says.
+    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
+    name: No new loops
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+
+      # The pinned toolchain with its rust-analyzer, and deslop-please at the
+      # version structure-allow.txt was made with: a newer one may find more.
+      - name: Tools
+        run: |
+          rustup toolchain install
+          rustup component add rust-analyzer
+          cargo install deslop-please --locked --version 0.1.3
+
+      - name: No new loops
+        run: node desktop/scripts/structure.mjs

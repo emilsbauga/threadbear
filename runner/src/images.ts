@@ -26,6 +26,10 @@ export interface ConvertOptions {
   quality?: number;
   // Shrinks the picture to fit this many pixels on its longer side.
   maxPx?: number;
+  // ImageMagick only: refuse to decode a picture over this many pixels a side
+  // or in all (project icons, icon-budget.ts); sips has no such setting, and
+  // the icon's own headers are checked before either sees it.
+  decodeLimit?: { side: number; pixels: number };
 }
 
 // The first of `names` on PATH, or undefined. Looked up once per name.
@@ -135,6 +139,9 @@ export function magickCommand(magick: string, src: string, out: string, o: Conve
   return [
     magick,
     [
+      ...(o.decodeLimit
+        ? ['-limit', 'width', String(o.decodeLimit.side), '-limit', 'height', String(o.decodeLimit.side), '-limit', 'area', String(o.decodeLimit.pixels), '-limit', 'memory', '256MiB', '-limit', 'map', '512MiB']
+        : []),
       // The decoder named, so ImageMagick never picks one itself; [0]: the
       // first frame or page only, as sips does for a GIF or TIFF.
       `${kind}:${src}[0]`,

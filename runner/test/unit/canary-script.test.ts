@@ -27,3 +27,14 @@ test("the canary's lines reach the terminal through forTerminal", () => {
   assert.match(text, /console\.log\(`\$\{ok \? 'ok  ' : 'FAIL'\} \$\{forTerminal\(line\)/);
   assert.equal(text.match(/console\.(log|error)\(/g)?.length, 1, 'say is the only place it prints');
 });
+
+// A failed remote turn can mean a usage limit, not a sign-out. On 24 Nov
+// all three weekly-limit failures were reported as signed-out logins.
+test('a failed first turn points to its evidence without diagnosing a sign-out', () => {
+  const text = fs.readFileSync(file, 'utf8');
+  const branch = text.match(/if \(first\.card\?\.outcome === 'failed'\) \{([\s\S]*?)\n    \}/)?.[1];
+  assert.ok(branch, 'the failed first-turn report');
+  assert.match(branch, /thread \$\{id\}/, 'identify the remote thread');
+  assert.match(branch, /events on \$\{r\.name\} say why/, 'point to the recorded failure');
+  assert.doesNotMatch(branch, /signed.out|auth status/, 'the canary has not checked that login');
+});

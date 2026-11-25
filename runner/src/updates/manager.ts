@@ -83,11 +83,27 @@ const ACP_UPDATE_TIMEOUT_MS = 5 * 60_000;
 export const ACP_CHECK_FRESH_MS = 24 * 60 * 60_000;
 
 // An ACP agent's `--version`: OpenCode prints "1.18.23", Grok
-// "grok 1.0.77 (50ca579fa996) [stable]". The first word that starts with a
-// digit, else the first word.
+// "grok 1.0.77 (50ca579fa996) [stable]". The first word that looks like a
+// version (two numbers and a dot at least), else the whole output when
+// it's one word. Antigravity's prints only build lines ("Built on Fri Oct
+// 30 01:09:22 2026"), and until 24 Nov 2026 its row said "Antigravity 30".
 export function acpVersion(stdout: string): string | undefined {
   const text = stdout.trim();
-  return /(?:^|\s)v?(\d[^\s]{0,59})/.exec(text)?.[1] ?? /^\S{1,60}/.exec(text)?.[0];
+  return /(?:^|\s)v?(\d+\.\d[^\s]{0,57})/.exec(text)?.[1] ?? /^\S{1,60}$/.exec(text)?.[0];
+}
+
+// An install kept in a folder named for its version
+// (~/.delegate/agy-acp/1.4.5/agy_acp_server.par), for an agent whose
+// `--version` doesn't say.
+export function versionFromFolder(binary: string): string | undefined {
+  let real = binary;
+  try {
+    real = fs.realpathSync(binary);
+  } catch {
+    // The path as given.
+  }
+  const dir = path.basename(path.dirname(real));
+  return /^v?(\d+\.\d+(?:\.\d+)*)$/.exec(dir)?.[1];
 }
 
 export class CliUpdates {
@@ -113,6 +129,12 @@ export class CliUpdates {
   // runner started (recheckHold).
   private regated = new Set<string>();
   private rechecking?: Promise<void>;
+  // A Codex install finished this run without leaving a copy, and whether
+  // connected apps have been told (once a run). It stays a warning through
+  // retries until a copy lands: one connecting mid-retry would otherwise
+  // hear info, and nothing more if that failed too (Gemini's review).
+  private codexGaveUp = false;
+  private toldNoCodex = false;
   // The hold thread's state as last sent, so only a change re-sends the list.
   // The hold's thread and where it was, as status() last read it and as
   // the last clis.updated sent it: a read in between (clis.list) mustn't
@@ -152,6 +174,10 @@ export class CliUpdates {
     if (this.d.enabled?.('codex') !== false && this.managedCodex() && this.copies.cleanPartials().length) this.d.log.info('cli updates: removed an unfinished Codex install');
     this.track('claude', this.refreshInstalled());
     for (const p of this.acpProviders()) this.track(p, this.refreshAcp(p));
+    // No copy of its own yet (a first start): install one now rather than
+    // after the first check, as Codex threads can't start until it's there.
+    // The check a minute on finds it running (startUpdate) or there.
+    if (this.installsFirstCodex() && !this.copies.currentVersion()) this.track('codex', this.runCheck('codex', false));
     this.schedule('check', FIRST_CHECK_MS);
   }
 
@@ -175,6 +201,22 @@ export class CliUpdates {
     if (this.cfg.codexPath) return this.cfg.codexPath;
     if (!this.configOff('codex') && this.copies.currentVersion()) return this.copies.currentLink;
     return this.fallbackCodex();
+  }
+
+  // What to tell the apps when the Codex binary new sessions would start
+  // isn't there, or undefined. While Threadbear's own first copy is on its
+  // way that's only a note (the apps keep info out of the error bar, and a
+  // warning sat there after the copy landed, 14 Nov); a warning once an
+  // install finished without one, or when nothing will put it there.
+  missingCodexNotice(): { level: 'info' | 'warning'; message: string } | undefined {
+    const start = this.codexBinary();
+    if (fs.existsSync(this.d.codex.resolve(start).command)) return undefined;
+    if (this.cfg.codexPath) return { level: 'warning', message: `The codex CLI isn't at ${this.cfg.codexPath} (codexPath in runner.json), so Codex threads can't start.` };
+    if (this.policy('codex') === 'off') return { level: 'warning', message: `The codex CLI isn't at ${start}, so Codex threads can't start. Install @openai/codex next to the runner's Node, or set codexPath in runner.json.` };
+    if (this.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) return { level: 'warning', message: `The codex CLI isn't at ${start}, so Codex threads can't start. With CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC set, Threadbear doesn't install its own copy: install @openai/codex next to the runner's Node, or set codexPath in runner.json.` };
+    if (!this.installsFirstCodex()) return { level: 'warning', message: `The codex CLI isn't at ${start}, so Codex threads can't start until Threadbear has installed its own copy: set Codex's updates to Automatic in Usage and it installs one.` };
+    if (this.codexGaveUp) return { level: 'warning', message: `The codex CLI isn't at ${start}, so Codex threads can't start: installing Threadbear's own copy didn't work (Usage says why). It tries again at the next hourly check.` };
+    return { level: 'info', message: `The codex CLI isn't at ${start} yet, so Codex threads can't start until Threadbear has installed its own copy (Usage shows how that's going).` };
   }
 
   list(): CliStatus[] {
@@ -287,7 +329,7 @@ export class CliUpdates {
     const binary = this.d.acp?.binary(p);
     if (!binary) return;
     const r = await this.exec(binary, ['--version'], { timeoutMs: LOOKUP_TIMEOUT_MS });
-    const version = r.code === 0 ? acpVersion(r.stdout) : undefined;
+    const version = (r.code === 0 ? acpVersion(r.stdout) : undefined) ?? versionFromFolder(binary);
     if (version && this.installed[p] !== version) {
       this.installed[p] = version;
       this.changed();
@@ -370,6 +412,12 @@ export class CliUpdates {
     return !this.cfg.codexPath;
   }
 
+  // Whether a check installs Threadbear's own Codex when there's no copy
+  // yet (runCheck): updates on auto, and version lookups allowed.
+  private installsFirstCodex(): boolean {
+    return this.managedCodex() && this.policy('codex') === 'auto' && !this.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  }
+
   private fallbackCodex(): string {
     return codexBeside(this.execPath);
   }
@@ -408,6 +456,7 @@ export class CliUpdates {
   }
 
   private async runCheck(p: Provider, asked: boolean): Promise<void> {
+    if (!asked && this.d.enabled?.(p) === false) return;
     await this.refreshInstalled();
     const policy = this.policy(p);
     if (policy === 'off' && !asked) return;
@@ -581,6 +630,10 @@ export class CliUpdates {
       this.finish('codex', { state: 'failed', message: 'codexPath is set by hand, so Threadbear leaves that Codex alone.' });
       return;
     }
+    // With no copy yet, a plain Update is a first install like a check's:
+    // the tested version when the latest isn't known (lookups off, or
+    // pressed while the first install looks it up) or is held (reviews).
+    if (!o.version && !o.force && !this.copies.currentVersion()) o = { ...o, bootstrap: true };
     const target = o.version ?? this.st.codex?.latestVersion ?? (o.bootstrap ? this.d.codex.testedVersion : undefined);
     if (!target) {
       this.finish('codex', { state: 'failed', message: "The latest Codex version isn't known yet." });
@@ -617,6 +670,9 @@ export class CliUpdates {
       return;
     }
     if (this.copies.has(target) && state.hold?.version === target) {
+      // A first start whose latest was held and kept, and whose tested
+      // version didn't install then: that's still the one to try.
+      if (o.bootstrap && target !== this.d.codex.testedVersion && !this.copies.currentVersion()) return this.installCodex(this.d.codex.testedVersion, { bootstrap: false });
       this.finish('codex', { state: 'unchanged', targetVersion: target, message: `Codex ${target} is held back because ${state.hold.reason}.` });
       return;
     }
@@ -629,6 +685,12 @@ export class CliUpdates {
       // On a first start, a latest that won't install still leaves the
       // tested version to try.
       if (o.bootstrap && target !== this.d.codex.testedVersion && !this.copies.currentVersion()) return this.installCodex(this.d.codex.testedVersion, { bootstrap: false });
+      // npm's "latest" can name a release minutes before its download is
+      // up (0.172.0 on 24 Nov). Not a failure: the next check tries again.
+      if (unpublished(r.output, target)) {
+        this.finish('codex', { state: 'unchanged', targetVersion: target, message: `Codex ${target} isn't ready to download yet; the next check tries again.` });
+        return;
+      }
       this.finish('codex', { state: 'failed', targetVersion: target, message: r.message });
       return;
     }
@@ -691,6 +753,15 @@ export class CliUpdates {
 
   private finish(p: Provider, u: NonNullable<CliStatus['update']>): void {
     this.setUpdate(p, { ...u, finishedAt: this.iso() });
+    if (p !== 'codex' || u.state === 'succeeded' || !this.managedCodex() || this.copies.currentVersion()) return;
+    // Failed or held with no copy at all: the note apps got at hello turns
+    // into a warning, said once to those already connected.
+    this.codexGaveUp = true;
+    const notice = this.missingCodexNotice();
+    if (notice?.level === 'warning' && !this.toldNoCodex) {
+      this.toldNoCodex = true;
+      this.d.notice?.('warning', notice.message);
+    }
   }
 
   private save(): void {
@@ -732,4 +803,9 @@ function stripUndefined<T extends Record<string, unknown>>(o: T): T {
 // replaces or clears it.
 function sameHold(a: CodexHold | undefined, b: CodexHold): boolean {
   return a?.version === b.version && a.reason === b.reason && (a.missing ?? []).join('\n') === (b.missing ?? []).join('\n');
+}
+
+// npm's 404 for the release's own download, as against any other failure.
+export function unpublished(output: string, version: string): boolean {
+  return /\bE404\b/.test(output) && output.includes(`/codex-${version}.tgz`);
 }

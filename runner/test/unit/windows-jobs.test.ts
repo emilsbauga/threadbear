@@ -419,3 +419,62 @@ test("a draining runner that can't hand on its unended jobs keeps its list, and 
     cli.kill();
   }
 });
+
+// Review, 23 Nov 2026: a job's name goes with its last handle, which only
+// the helper held. Once the helper had stopped (a question timed out, the
+// runner crashed), ending the job by name found nothing, and that counted
+// as ended, so the pid fallback was skipped and the CLI, its MCP servers and
+// tools went on running. Now the helper says 'missing', and those pids get
+// the clean-up a CLI without a job gets, which checks each is still the
+// process it was; a job really ended still leaves its pid alone.
+function ownGroupSleeper() {
+  // Its own process group on a Mac, as the runner starts a CLI, so killing
+  // the group reaches only it.
+  return spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'], { stdio: 'ignore', windowsHide: true, detached: process.platform !== 'win32' });
+}
+
+test("a job the helper can't find any more (it restarted) isn't taken as ended: the next start stops the CLI by pid", async () => {
+  const dir = tmpDir();
+  const lost = ownGroupSleeper();
+  const ended = ownGroupSleeper();
+  try {
+    const lostName = newJobName();
+    const endedName = newJobName();
+    const record = (pid: number, job: string) => ({ pid, command: 'node', startedAt: new Date().toISOString(), lstart: processInfo(pid)?.lstart ?? '', job });
+    fs.writeFileSync(path.join(dir, 'children.json'), JSON.stringify([record(lost.pid!, lostName), record(ended.pid!, endedName)]));
+    const reg = new ProcessRegistry(dir, nullLogger);
+    reg.jobs = { assign: async () => '1', end: async (n) => (n === lostName ? 'missing' : 'ended'), forget: async () => {} };
+    await reg.sweepOrphans(PATIENCE_MS);
+    await until(() => !pidExists(lost.pid!));
+    assert.equal(pidExists(lost.pid!), false, 'the CLI whose job had gone is stopped by its pid');
+    assert.equal(pidExists(ended.pid!), true, "a job that ended leaves its pid alone (anyone's by now, on Windows)");
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'children.json'), 'utf8')), [], 'nothing kept to end again: the name will never come back');
+  } finally {
+    lost.kill();
+    ended.kill();
+  }
+});
+
+test("at shutdown a CLI whose job can't be found any more is stopped by its pid, and nothing is kept for the next start", async () => {
+  const dir = tmpDir();
+  const reg = new ProcessRegistry(dir, nullLogger);
+  reg.jobs = {
+    assign: async (pid) => {
+      const l = processInfo(pid)?.lstart ?? '';
+      return /^\d+$/.test(l) ? l : '1';
+    },
+    end: async () => 'missing',
+    forget: async () => {},
+  };
+  const cli = ownGroupSleeper();
+  try {
+    reg.add(cli.pid!, 'node', 'th1');
+    await until(() => !(reg as unknown as { assigning: Set<unknown> }).assigning.size);
+    await reg.killAll(PATIENCE_MS);
+    await until(() => !pidExists(cli.pid!));
+    assert.equal(pidExists(cli.pid!), false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'children.json'), 'utf8')), []);
+  } finally {
+    cli.kill();
+  }
+});

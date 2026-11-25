@@ -64,7 +64,7 @@ test("a runner's huge held backlog can't stop another Mac's held push, and drain
   await runner('bad');
   await runner('mac1');
   const big = 'q'.repeat(7_600);
-  for (let i = 0; i < 3000; i++) await b.ctx.db.insert('threads', { threadId: `bad-${i}`, runnerId: 'bad', ...THREAD_BASICS, title: 'x', asked: big, view: 'den', needsYou: true, pushHeldAt: stale });
+  for (let i = 0; i < 3000; i++) await b.ctx.db.insert('threads', { threadId: `bad-${i}`, runnerId: 'bad', ...THREAD_BASICS, title: 'x', asked: big, view: 'inbox', needsYou: true, pushHeldAt: stale });
   await b.ctx.db.insert('threads', { threadId: 'needs', runnerId: 'mac1', ...THREAD_BASICS, title: 'Needs him', view: 'inbox', needsYou: true, pushHeldAt: stale });
   const LIMIT = 16 * 1024 * 1024;
   const run = async (fn: any, args: Record<string, unknown>) => {
@@ -105,7 +105,7 @@ const devices = load('devices');
 
 async function secondary(b: ReturnType<typeof memoryBackend>, n: number, now: number) {
   await b.ctx.db.insert('runners', { runnerId: 'sec', name: 'Other', version: '1', lastSeenAt: now, startedAt: new Date(now).toISOString(), draining: false, threadCount: n, atMac: true, atMacAt: now });
-  for (let i = 0; i < n; i++) await b.ctx.db.insert('threads', { threadId: `sec-${i}`, runnerId: 'sec', ...THREAD_BASICS, title: 'x', view: 'den', needsYou: true, pushHeldAt: now - 1000 });
+  for (let i = 0; i < n; i++) await b.ctx.db.insert('threads', { threadId: `sec-${i}`, runnerId: 'sec', ...THREAD_BASICS, title: 'x', view: 'inbox', needsYou: true, pushHeldAt: now - 1000 });
 }
 
 // Runs what's been scheduled, oldest first, at most `limit` callbacks, with

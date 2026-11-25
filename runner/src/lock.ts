@@ -10,19 +10,25 @@ import { IS_WINDOWS } from './platform.ts';
 // is gone, or whose pid now belongs to another process, is taken over.
 export type Lock = { release(): void };
 
-export function acquireLock(runDir: string): Lock | { heldBy: number } {
-  const file = path.join(runDir, 'runner.pid');
+// `name` lets other jobs that must run one at a time across runners (the
+// Agent Archive build, agent-archive.ts) use the same kind of lock.
+export function acquireLock(runDir: string, name = 'runner.pid'): Lock | { heldBy: number } {
+  const file = path.join(runDir, name);
   // Where PowerShell can't give the start time on Windows, node's own clock does.
   const info = processInfo(process.pid);
   const me = { pid: process.pid, ...(info ? startOf(info) : { lstart: IS_WINDOWS ? ownStartTime() : '' }) };
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       fs.mkdirSync(runDir, { recursive: true });
-      const fd = fs.openSync(file, 'wx', 0o644);
+      // Written whole, then linked in, which fails if the lock exists: an
+      // empty file mid-write would look unowned to another taker, who would
+      // delete it and take the lock too.
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(me) + '\n', { mode: 0o644 });
       try {
-        fs.writeSync(fd, JSON.stringify(me) + '\n');
+        fs.linkSync(tmp, file);
       } finally {
-        fs.closeSync(fd);
+        fs.rmSync(tmp, { force: true });
       }
       return {
         release() {
@@ -40,7 +46,7 @@ export function acquireLock(runDir: string): Lock | { heldBy: number } {
       fs.rmSync(file, { force: true });
     }
   }
-  throw new Error(`Couldn't take the runner lock at ${file}`);
+  throw new Error(`Couldn't take the lock at ${file}`);
 }
 
 type Holder = { pid: number; lstart?: string } & Started;

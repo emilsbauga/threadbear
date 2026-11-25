@@ -100,17 +100,31 @@ pub fn tooltip(runners: &[RunnerInfo]) -> String {
     lines.join("\n")
 }
 
-/// The panel's first line: "All online", or "1 of 2 online" (an updating
-/// one counts as up).
+/// The panel's first line, which says what the rail icon's grey dot is
+/// about: "All online", or who isn't ("Dell XPS is offline", "Pixel is
+/// updating"). On 24 Nov "4 of 5 online" left Mike asking what the dot meant.
 pub fn summary(runners: &[RunnerInfo]) -> String {
-    let up = runners
-        .iter()
-        .filter(|r| state(r) != State::Offline)
-        .count();
-    if up == runners.len() {
+    let names = |want: State| {
+        runners
+            .iter()
+            .filter(|r| state(r) == want)
+            .map(|r| r.name.as_str())
+            .collect::<Vec<_>>()
+    };
+    let verb = |n: usize| if n == 1 { "is" } else { "are" };
+    let mut parts = Vec::new();
+    for (who, what) in [
+        (names(State::Offline), "offline"),
+        (names(State::Updating), "updating"),
+    ] {
+        if !who.is_empty() {
+            parts.push(format!("{} {} {what}", list(&who), verb(who.len())));
+        }
+    }
+    if parts.is_empty() {
         "All online".to_owned()
     } else {
-        format!("{up} of {} online", runners.len())
+        parts.join(" · ")
     }
 }
 
@@ -624,14 +638,14 @@ mod tests {
             tooltip(&list),
             "Runners\n1 of 3 online\nmac-mini and cloud offline"
         );
-        assert_eq!(summary(&list), "1 of 3 online");
+        assert_eq!(summary(&list), "mac-mini and cloud are offline");
         list[1].online = true;
         list[1].draining = true;
         assert_eq!(
             tooltip(&list),
             "Runners\n2 of 3 online\ncloud offline\nmac-mini is updating"
         );
-        assert_eq!(summary(&list), "2 of 3 online", "an updating runner is up");
+        assert_eq!(summary(&list), "cloud is offline · mac-mini is updating");
     }
 
     #[test]

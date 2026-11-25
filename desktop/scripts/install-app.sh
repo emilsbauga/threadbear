@@ -45,7 +45,7 @@ if [ -n "$build_on" ]; then
   # name; and the binaries come from where the build says it built
   # (remote.sh sets CARGO_TARGET_DIR), not a key worked out here (Codex's
   # reviews, 12 Nov).
-  "$root/desktop/scripts/remote.sh" "$build_on" --build -- bash -c "set -o pipefail; cd desktop && nice cargo build --release -p threadbear-gpui --features $features 2>&1 | tail -2 && echo \"BUILT_IN=\$CARGO_TARGET_DIR\"" > "$work/remote.out" 2>&1 || { cat "$work/remote.out" >&2; exit 1; }
+  "$root/desktop/scripts/remote.sh" "$build_on" --build -- bash -c "set -o pipefail; cd desktop && nice ./scripts/pinned-cargo.sh build --release -p threadbear-gpui --features $features 2>&1 | tail -2 && echo \"BUILT_IN=\$CARGO_TARGET_DIR\"" > "$work/remote.out" 2>&1 || { cat "$work/remote.out" >&2; exit 1; }
   cat "$work/remote.out"
   built_in="$(sed -n 's/^BUILT_IN=//p' "$work/remote.out" | tail -1)"
   [[ "$built_in" == /* ]] || { echo "The build on $build_on didn't say where it built." >&2; exit 1; }
@@ -55,7 +55,8 @@ if [ -n "$build_on" ]; then
   done
 else
   export CARGO_HTTP_MULTIPLEXING=false CARGO_NET_RETRY=10
-  (cd "$root/desktop" && taskpolicy -b "$root/scripts/one-build.sh" cargo build --release -p threadbear-gpui --features "$features")
+  # The pinned Rust, as the app's own updates build with (pinned-cargo.sh).
+  (cd "$root/desktop" && taskpolicy -b "$root/scripts/one-build.sh" "$root/desktop/scripts/pinned-cargo.sh" build --release -p threadbear-gpui --features "$features")
   cp "$root/desktop/target/release/threadbear-gpui" "$root/desktop/target/release/threadbear-web-helper" "$work/"
 fi
 

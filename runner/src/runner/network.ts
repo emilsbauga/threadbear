@@ -6,7 +6,7 @@ import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
 import type { Provider } from '../protocol.ts';
 import type { ThreadState } from '../runner.ts';
-import { CARRY_ON_NETWORK, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS } from '../runner.ts';
+import { CARRY_ON_NETWORK, NET_CARRY_ON_MAX, NET_PROBE_FIRST_MS, NET_PROBE_MAX_MS, NET_WAIT_MAX_MS } from './carry-on.ts';
 
 export const networkPart = {
   // A turn failed because the API couldn't be reached (errorKind network,

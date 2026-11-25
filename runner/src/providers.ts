@@ -34,8 +34,8 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     smallJobs: false,
     usageReadings: true,
   },
-  // Over ACP (adapters/acp/): Auto behaves like Ask, and neither
-  // rewind nor usage readings exist for them.
+  // Over ACP (adapters/acp/): Auto behaves like Ask, and rewind doesn't
+  // exist for them; only Grok says how much room a login has.
   cursor: {
     id: 'cursor',
     name: 'Cursor',
@@ -73,7 +73,8 @@ export const PROVIDER_INFO: Record<Provider, ProviderInfo> = {
     // Threadbear's hook denies every tool for a small job, reads included
     // (adapters/acp/grok-guard.ts).
     smallJobs: true,
-    usageReadings: false,
+    // Its plan's weekly share, from _x.ai/billing (adapters/acp/grok-billing.ts).
+    usageReadings: true,
   },
   // Gemini on a Google plan, through Google's antigravity-acp. It has no
   // sign-in command of its own (it signs in over ACP's authenticate).

@@ -15,6 +15,14 @@
 #
 # linux/amd64 only, Fly's default: Claude Code's download below is that
 # platform's.
+#
+# Every input is pinned by its bytes: the Node image by digest, Claude Code
+# by SHA-256, the runner's packages by package-lock.json's integrity hashes,
+# and the Debian packages by box/debs.lock (a dated snapshot of Debian's
+# archive, with each file's SHA-256). Nothing is taken from apt's live
+# indexes, so rebuilding a commit installs the same files, and a package
+# Debian (or anyone who can sign for it) publishes later reaches no box until
+# box/lock-debs.sh is run again and its lock committed (Daybreak, 24 Nov).
 
 # Node 24 on Debian 13, pinned by digest. To move it on:
 #   docker buildx imagetools inspect node:24-trixie-slim | grep -m1 Digest
@@ -24,8 +32,9 @@ ARG NODE_IMAGE=node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940
 # The native build, as its installer would put it, at the version Mike's
 # runners are on when this is bumped (box mode turns the runner's CLI
 # updates off, and DISABLE_AUTOUPDATER below Claude Code's own, so a box
-# runs exactly this one). To move it on, take the version and the
-# linux-x64 checksum from its manifest:
+# runs exactly this one). Fetched with Node's own fetch (no apt, no curl)
+# and kept only if its SHA-256 is this one. To move it on, take the version
+# and the linux-x64 checksum from its manifest:
 #   v=$(curl -fsSL https://downloads.claude.ai/claude-code-releases/latest)
 #   curl -fsSL https://downloads.claude.ai/claude-code-releases/$v/manifest.json | jq -r '.platforms["linux-x64"].checksum'
 FROM ${NODE_IMAGE} AS claude
@@ -33,9 +42,8 @@ ARG TARGETARCH
 ARG CLAUDE_CODE_VERSION=2.1.327
 ARG CLAUDE_CODE_SHA256=343c744baa14bfd38286a7cb90871051f04379956da6c5b803a9e66019a76ac9
 RUN [ "${TARGETARCH:-amd64}" = amd64 ] || { echo "The box image is linux/amd64 only (Claude Code's download and checksum here are linux-x64's)." >&2; exit 1; } \
- && apt-get update -q \
- && apt-get install -y -q --no-install-recommends ca-certificates curl \
- && curl -fsSL -o /claude "https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION}/linux-x64/claude" \
+ && node -e 'const [url, out] = process.argv.slice(1); fetch(url).then(async (r) => { if (!r.ok) throw new Error(`HTTP ${r.status} from ${url}`); require("fs").writeFileSync(out, Buffer.from(await r.arrayBuffer())); }).catch((e) => { console.error(e); process.exit(1); });' \
+      "https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION}/linux-x64/claude" /claude \
  && echo "${CLAUDE_CODE_SHA256}  /claude" | sha256sum -c - \
  && chmod 755 /claude
 
@@ -55,10 +63,15 @@ FROM ${NODE_IMAGE}
 ARG CLAUDE_CODE_VERSION=2.1.327
 # git for the clone, worktrees and saves; ps (procps) for the runner's
 # process checks; ca-certificates for https. Nothing else: a repo's own
-# worktree setup installs what it needs.
-RUN apt-get update -q \
- && apt-get install -y -q --no-install-recommends ca-certificates git procps \
- && rm -rf /var/lib/apt/lists/*
+# worktree setup installs what it needs. Exactly the files box/debs.lock
+# names, each checked against its SHA-256 by box/debs.ts before dpkg sees
+# any of them; the lock stays in the image as the record of what's in it.
+COPY box/debs.lock box/debs.ts /opt/threadbear/box/
+RUN node /opt/threadbear/box/debs.ts /opt/threadbear/box/debs.lock /tmp/debs \
+ && dpkg -i /tmp/debs/*.deb \
+ && rm -rf /tmp/debs \
+ && node /opt/threadbear/box/debs.ts --installed /opt/threadbear/box/debs.lock \
+ && git --version && ps --version
 COPY --from=claude /claude /root/.local/share/claude/versions/${CLAUDE_CODE_VERSION}
 RUN mkdir -p /root/.local/bin /work \
  && ln -s ../share/claude/versions/${CLAUDE_CODE_VERSION} /root/.local/bin/claude

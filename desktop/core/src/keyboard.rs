@@ -11,16 +11,18 @@ use crate::shortcuts::{ShortcutBindings, ShortcutCommand, ShortcutKey};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Group {
     Threads,
+    Edit,
     Go,
     View,
 }
 
 impl Group {
-    pub const ALL: [Group; 3] = [Group::Threads, Group::Go, Group::View];
+    pub const ALL: [Group; 4] = [Group::Threads, Group::Edit, Group::Go, Group::View];
 
     pub fn title(self) -> &'static str {
         match self {
             Group::Threads => "Threads",
+            Group::Edit => "Edit",
             Group::Go => "Go",
             Group::View => "View",
         }
@@ -53,12 +55,14 @@ pub const SEARCH_PROMPT: &str = "Search shortcuts";
 pub fn group(command: ShortcutCommand) -> Group {
     use ShortcutCommand::*;
     match command {
-        NewThread | Archive | Hibernate | Stop | CopyTranscript => Group::Threads,
-        Back | Forward | NextInboxThread | OpenAnything | OpenAnythingAlso | ShowInbox
-        | ShowScheduled | ShowProjects | ShowLibrarian | ShowHibernating | ShowArchived
-        | PreviousTab | NextTab | Settings => Group::Go,
+        NewThread | Archive | Hibernate | Stop | CopyTranscript | AttachFiles => Group::Threads,
+        FindInThread => Group::Edit,
+        Back | Forward | NextInboxThread | OpenAnything | OpenAnythingAlso
+        | OpenAnythingPalette | FocusMessageBox | ShowInbox | ShowScheduled | ShowProjects
+        | ShowLibrarian | ShowHibernating | ShowArchived | Settings => Group::Go,
         ZoomIn | ZoomOut | ActualSize | ToggleThreads | TogglePanels | ToggleTerminal
-        | ResetPanelLayout | CollapseThreads => Group::View,
+        | ToggleTerminalAlso | ToggleThreadsAlso | ResetPanelLayout | CollapseThreads
+        | ToggleSidebarPanels => Group::View,
     }
 }
 
@@ -530,16 +534,18 @@ mod tests {
                 "Archive",
                 "Hibernate",
                 "Stop",
-                "Copy Transcript as Markdown"
+                "Copy Transcript as Markdown",
+                "Attach Images or Markdown"
             ]
         );
+        assert_eq!(titles(Group::Edit), ["Find in Thread"]);
         assert_eq!(
             titles(Group::Go)[..3],
             ["Back", "Forward", "Next Inbox Thread"]
         );
         assert_eq!(titles(Group::Go).last(), Some(&"Settings…"));
         assert_eq!(titles(Group::View).first(), Some(&"Zoom In"));
-        assert_eq!(titles(Group::View).last(), Some(&"Collapse Threads"));
+        assert_eq!(titles(Group::View).last(), Some(&"Show Sidebar Panels"));
         let all: usize = Group::ALL.iter().map(|g| g.commands().len()).sum();
         assert_eq!(
             all,

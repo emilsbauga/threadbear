@@ -10,6 +10,7 @@ import { useTranscript } from './transcript';
 import { ConvexError } from 'convex/values';
 import { api } from '../../convex/_generated/api';
 import { go, threadPath, useRoute } from './route';
+import { stillWorking } from './sections';
 import { useSignInNote, useSigningIn, useToken } from './token';
 import { lastWorkedOn, recapDue, recapParts } from './view-logic';
 import { EditedDrafts, MessageText, Pictures, PlanCard, picturesByRow, ToolRun, Worked, type PageMessage } from './messages';
@@ -17,7 +18,8 @@ import { splitEdited } from './draft';
 import { ReplyButton } from './reply-button';
 import { OutLink } from './link-confirm';
 import { CommandNote, useCommand } from './command-state';
-import { unqueued } from './command';
+import { STOP_HOLD_MS, unqueued } from './command';
+import { holdStop, releaseStop, stopHeldFor } from './stop-hold';
 import { withFailed, withoutSent } from './composer-draft';
 import { previewOf, ShareControl, SharePage } from './share';
 import { busy, Lists, ResizeHandle, type Row, useSidebarWidth } from './sidebar';
@@ -27,7 +29,7 @@ import { Rail } from './rail';
 // Loaded only when it's opened: the viewer's diagrams are most of its size.
 const MachinesPage = lazy(() => import('./machines'));
 import { NewThread, ProjectPage, ProjectsList, RunnerPage, RunnersList, ScheduledList, SchedulePage, UsageList, UsagePage } from './pages';
-import { duration, fold, isNote, splitTurns, type Item } from './turns';
+import { duration, fold, gapLabel, isNote, splitTurns, type Item } from './turns';
 import { folderName, sender } from './format';
 import * as Icon from './icons';
 import { ReviewRow } from './review-row';
@@ -268,6 +270,15 @@ function ThreadView({ token, threadId }: { token: string; threadId: string }) {
         </div>
       );
     }
+    if (item.kind === 'gap') {
+      // "5 min later · Codex answered": the wait before a turn the agent woke
+      // up for, or the runner's own message started, as the Mac draws it.
+      return (
+        <div key={`g${item.gap.seq}`} className="turn-gap">
+          <span>{gapLabel(item.gap)}</span>
+        </div>
+      );
+    }
     const m = item.m;
     if (item.kind === 'note') {
       return (
@@ -429,10 +440,42 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
   const send = useMutation(api.phone.send);
   const interrupt = useMutation(api.phone.interrupt);
   const [text, setText] = useState(t.backlog?.text ?? '');
-  // Stop pressed: a spinner in its place until its runner has stopped the
-  // turn, or a note saying why it couldn't.
-  const stopCmd = useCommand(token);
-  const stop = () => void stopCmd.run(() => interrupt({ token, threadId: t.threadId }), undefined);
+  // Stop pressed: a spinner in its place, taking no more clicks, until the
+  // turn is over (or STOP_HOLD_MS after its runner said done, as the iPhone
+  // lets go), or a note saying why it couldn't. The runner says done as soon
+  // as it has asked the CLI to stop, and the turn can run on for seconds
+  // after: settling then showed Stop again while it ran, and a second press
+  // sent a second interrupt.
+  const stopCmd = useCommand(token, { settleMs: STOP_HOLD_MS });
+  const threadId = t.threadId;
+  const stop = () => {
+    holdStop(threadId, Date.now());
+    void stopCmd.run(() => interrupt({ token, threadId }), undefined);
+  };
+  // A Stop pressed before this page was made (Mike opened another thread and
+  // came back) still holds, for what's left of it (stop-hold.ts).
+  const [carried, setCarried] = useState(() => stopHeldFor(threadId, Date.now()));
+  useEffect(() => {
+    if (!carried) return;
+    const timer = setTimeout(() => setCarried(0), carried);
+    return () => clearTimeout(timer);
+  }, [carried]);
+  const stopDone = stopCmd.state.kind === 'done';
+  useEffect(() => {
+    if (stopDone) holdStop(threadId, Date.now());
+  }, [stopDone, threadId]);
+  // Over once the turn has ended, not while it waits on a card: the runner's
+  // interrupt takes the card away and the same turn runs on (Codex's review).
+  const turnOn = busy(t) || t.status === 'waiting';
+  const stopOver = stopCmd.over;
+  useEffect(() => {
+    if (turnOn) return;
+    stopOver();
+    releaseStop(threadId);
+    setCarried(0);
+  }, [turnOn, stopOver, threadId]);
+  const stopping = stopCmd.spinning || stopDone || (carried > 0 && stopCmd.state.kind === 'idle');
+  const stopLocked = stopCmd.busy || (carried > 0 && stopCmd.state.kind === 'idle');
   // Picks on the card of asks: ask index to choice index, for one card.
   const [picks, setPicks] = useState<Draft['picks']>({ by: {} });
   const [ticked, setTicked] = useState<Draft['ticked']>({ set: new Set() });
@@ -457,7 +500,9 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
   const holding = unqueued(sending.state);
   const asks = !busy(t) && !t.pendingApproval ? (t.asks ?? []) : [];
   const by = picks.card === t.asksSeq ? picks.by : {};
-  const finished = !busy(t) && !t.needsYou && !t.pendingApproval && !asks.length && !t.archivedAt && !t.working;
+  // Waiting on its own work isn't done, as on the Mac (19 Nov: a thread
+  // waiting for CI before it could land said Done and was archived).
+  const finished = !busy(t) && !t.needsYou && !t.pendingApproval && !asks.length && !t.archivedAt && !t.working && !stillWorking(t);
   const next = finished ? (t.next ?? []) : [];
   // What the runner found still open (docs/protocol/threads.md, "Loose ends"), as
   // on the Mac and the phone: open ones first, then booked check-ins.
@@ -628,8 +673,8 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
           {busy(t) && !ready ? (
             // Stop only while nothing's typed, as on the Mac: a message
             // typed during a turn goes into it.
-            <button type="button" className="send" disabled={stopCmd.busy} onClick={stop} aria-label={stopCmd.busy ? 'Stopping' : 'Stop'} title={stopCmd.busy ? 'Stopping' : 'Stop'}>
-              {stopCmd.spinning ? <span className="spinner" /> : <Icon.Stop />}
+            <button type="button" className="send" disabled={stopLocked} onClick={stop} aria-label={stopLocked ? 'Stopping' : 'Stop'} title={stopLocked ? 'Stopping' : 'Stop'}>
+              {stopping ? <span className="spinner" /> : <Icon.Stop />}
             </button>
           ) : (
             <button className="send" disabled={!ready || holding} aria-label={holding ? 'Sending' : 'Send'} title={holding ? 'Sending' : 'Send'}>

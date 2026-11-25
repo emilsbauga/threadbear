@@ -118,7 +118,17 @@ export class RunnerClient {
     });
     this.ws.on('close', (code, reason) => {
       this.closeInfo = { code, reason: reason.toString() };
-      for (const p of this.pending.values()) p.reject(new Error(`connection closed (${code})`));
+      // 4503: the runner couldn't tell which process this is (a slow lsof on
+      // a busy Mac), so it closed rather than guess (Daybreak finding 175).
+      // 4403 with this reason: this tb is under a thread of another runner on
+      // this machine, which this runner turns away (Daybreak finding 177).
+      const why =
+        code === 4503
+          ? "connection closed (4503): the runner couldn't tell which process this is; try again"
+          : code === 4403 && reason.toString() === "under another runner's thread"
+            ? "connection closed (4403): this is under a thread of another runner on this machine, and only a thread that started this runner (or a terminal) can use it"
+            : `connection closed (${code})`;
+      for (const p of this.pending.values()) p.reject(new Error(why));
       this.pending.clear();
     });
   }

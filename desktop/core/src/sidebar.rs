@@ -163,8 +163,16 @@ impl RowAction {
             RowAction::Archive => "Archive",
             RowAction::Unsnooze => "Wake",
             RowAction::Unarchive => "Unarchive",
+            RowAction::Delete if !self.enabled(t) => "Delete it on the Mac it runs on",
             RowAction::Delete => "Delete chat…",
         }
+    }
+
+    /// Whether the button can be pressed. Delete can't on another runner's
+    /// thread: that goes through Convex, which has no delete
+    /// (runner/src/parity.ts, "Done on that Mac").
+    pub fn enabled(self, t: &ThreadSummary) -> bool {
+        !(self == RowAction::Delete && t.is_remote())
     }
 
     /// Its SF Symbol, which `gpui/src/icons.rs` maps to the bundled icon.
@@ -1401,6 +1409,7 @@ pub fn dress_box(t: &mut ThreadSummary, b: &crate::remote::RunnerBox) {
         return;
     }
     t.needs_you = true;
+    t.wait_state = Some("needsYou".to_owned());
     if matches!(t.status.as_str(), "starting" | "running") {
         t.status = "idle".to_owned();
     }
@@ -1868,6 +1877,18 @@ mod tests {
         let starred = thread(json!({ "starredAt": "2026-11-09T00:00:00Z" }));
         assert_eq!(RowAction::Star.tip(&starred), "Remove star");
         assert_eq!(RowAction::Star.symbol(&starred), "star.fill");
+        // Another Mac's thread: its delete would go through Convex, which
+        // has none (runner/src/parity.ts), so the trash is greyed out.
+        assert!(RowAction::Delete.enabled(&plain));
+        let mut elsewhere = thread(json!({}));
+        elsewhere.runner_id = Some("bb7cc4a5feb2".into());
+        assert!(!RowAction::Delete.enabled(&elsewhere));
+        assert!(RowAction::Unarchive.enabled(&elsewhere));
+        assert_eq!(
+            RowAction::Delete.tip(&elsewhere),
+            "Delete it on the Mac it runs on"
+        );
+        assert_eq!(RowAction::Delete.tip(&plain), "Delete chat…");
     }
 
     #[test]

@@ -280,7 +280,7 @@ impl Threadbear {
                             .collect();
                         this.tour.samples = samples.iter().map(|t| t.id.clone()).collect();
                         for t in samples {
-                            this.threads.insert(t.id.clone(), std::sync::Arc::new(t));
+                            this.store_reply_summary(t);
                         }
                         // The step on show may want one open or hovered.
                         if this.tour.tour.is_on() && this.tour.tour.intro.is_none() {
@@ -564,7 +564,7 @@ impl Threadbear {
                     SidebarMode::Scheduled => due.push(Intro::Scheduled),
                     SidebarMode::Projects => due.push(Intro::Projects),
                     SidebarMode::Librarian => due.push(Intro::Librarian),
-                    SidebarMode::Inbox | SidebarMode::Recipes | SidebarMode::Feed => {}
+                    SidebarMode::Inbox | SidebarMode::Recipes => {}
                 }
             }
             for (on, w, intro) in [

@@ -18,14 +18,14 @@ import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
 import type { Models, ModelFailure } from './models/index.ts';
 import type { Notification, ThreadActivity } from './runner.ts';
-import type { LibrarianEntry, LibrarianJob, LibrarianOutcome, LibrarianReason, LibrarianStatus } from './protocol.ts';
+import type { ImageRef, LibrarianEntry, LibrarianJob, LibrarianOutcome, LibrarianReason, LibrarianStatus } from './protocol.ts';
 import { ErrorCode, RpcError } from './protocol.ts';
 import type { ThreadRecord } from './store.ts';
 import type { ProjectRecord, Projects } from './projects.ts';
 import { LINKS_MAX, NOTES_LONG, WHY_MAX } from './projects.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 import { findUp, isInside } from './patches.ts';
-import { SYMBOLS, fileHash, findIcon, storeIcon } from './project-icons.ts';
+import { SYMBOLS, fileHash, findIcons, storeIcon, storedIconOk } from './project-icons.ts';
 import { userLine } from './user-name.ts';
 import type { PocketCardInput, PocketCardSummary } from './sync.ts';
 import { POCKET_ICONS, type PocketIconName } from './pocket-icons.ts';
@@ -100,6 +100,8 @@ const BACKFILL_DAYS = 30;
 // folders changed is looked at after ICON_SOON_MS.
 export const ICON_SWEEP_MS = 60 * 60_000;
 export const ICON_SOON_MS = 3_000;
+// Pictures tried in turn when the best can't be copied here.
+const ICON_TRIES = 5;
 // A project's notes past NOTES_LONG get rewritten shorter, this long after
 // the project last changed, so a thread part-way through adding to them
 // has finished first.
@@ -1157,23 +1159,34 @@ export class Librarian {
   private async keepIcon(projectId: string): Promise<void> {
     const rec = this.projects.record(projectId);
     if (!rec || (rec.icon && rec.icon.by !== 'librarian')) return;
-    const found = rec.folders.length ? await findIcon(rec.folders, [rec.title]) : undefined;
-    if (found) {
-      const hash = await fileHash(found.path);
-      if (!hash) return;
+    // The best picture that can be copied here, trying the next when one
+    // can't (no converter for it, or it can't be made small).
+    const found = rec.folders.length ? (await findIcons(rec.folders, [rec.title])).slice(0, ICON_TRIES) : [];
+    for (const candidate of found) {
+      const hash = await fileHash(candidate.path);
+      if (!hash) continue;
       const had = rec.icon?.image;
-      if (had && rec.icon?.from === found.path && rec.icon.hash === hash && fs.existsSync(had.path)) return;
-      const image = await storeIcon(found.path, this.projects.iconDir, rec.id, hash);
+      // The same file, already copied as this release copies one (an older
+      // release kept a file it couldn't convert as it was: made again).
+      if (had && rec.icon?.from === candidate.path && rec.icon.hash === hash && (await storedIconOk(had))) return;
+      let image: ImageRef | undefined;
+      try {
+        image = await storeIcon(candidate.path, this.projects.iconDir, rec.id, hash);
+      } catch (e) {
+        this.log.warn('librarian could not copy an icon', { projectId: rec.id, from: candidate.path, error: String(e) });
+      }
       if (this.stopped) return;
-      this.projects.setFoundIcon(rec.id, { image, from: found.path, hash });
-      this.log.info('librarian found an icon', { projectId: rec.id, from: found.path });
-      return;
+      if (image) {
+        this.projects.setFoundIcon(rec.id, { image, from: candidate.path, hash });
+        this.log.info('librarian found an icon', { projectId: rec.id, from: candidate.path });
+        return;
+      }
     }
     // A picture whose folder has left the project goes; one whose file has
     // just gone from a repo that's still there stays until there's another.
     if (rec.icon?.image) {
       const from = rec.icon.from;
-      if (from && rec.folders.some((f) => isInside(from, f)) && fs.existsSync(rec.icon.image.path)) return;
+      if (from && rec.folders.some((f) => isInside(from, f)) && (await storedIconOk(rec.icon.image))) return;
     } else if (rec.icon?.symbol) {
       return;
     }

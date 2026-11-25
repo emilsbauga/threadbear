@@ -584,6 +584,7 @@ test("Mike's runner never pushes a release tag whose signature doesn't verify ag
     git(w.mike, 'push', '-q', 'origin', 'main');
     const committed = Number(git(w.mike, 'log', '-1', '--format=%ct')) * 1000;
     let signingKey = w.mikeKey.priv;
+    let ownerConfig: string | undefined;
     if (how === 'corrupt') {
       // A signer that says it signed but leaves a signature that's no good,
       // as the provider did: ssh-keygen signs, then the blob is mangled.
@@ -596,14 +597,23 @@ case "$*" in *"-Y sign"*)
   awk '{ l[NR] = $0 } END { for (i = 1; i <= NR; i++) { if (l[i + 2] ~ /^-----END/) l[i] = "AAAAAAAA" substr(l[i], 9); print l[i] } }' "$last.sig" > "$last.sig.tmp" && mv "$last.sig.tmp" "$last.sig" ;;
 esac
 `, { mode: 0o755 });
-      git(w.mike, 'config', 'gpg.ssh.program', program);
+      // Mike's own git config (global), as his signing setup is: the
+      // checkout's own config can't name a signing program (Daybreak 179).
+      ownerConfig = path.join(w.root, 'owner.gitconfig');
+      fs.writeFileSync(ownerConfig, `[gpg "ssh"]\n\tprogram = ${program}\n`);
     } else {
       signingKey = key(w.root, 'not-announced').priv;
     }
     const logged: string[] = [];
     const log = { ...nullLogger, warn: (m: string) => logged.push(m) };
     const up = upstreamFor(w.mike, w.home, new FakeClock(committed + 2 * SETTLE_MS), { publish: { publish: true, signingKey }, runningMainSettled: () => true, log });
-    assert.equal(await up.publishOnce(), undefined, how);
+    const global = process.env.GIT_CONFIG_GLOBAL;
+    if (ownerConfig) process.env.GIT_CONFIG_GLOBAL = ownerConfig;
+    try {
+      assert.equal(await up.publishOnce(), undefined, how);
+    } finally {
+      process.env.GIT_CONFIG_GLOBAL = global;
+    }
     const tag = tagFor(new Date(committed + 2 * SETTLE_MS));
     assert.equal(git(w.mike, 'tag', '--list', tag), '', `${how}: the bad tag is deleted`);
     assert.equal(git(w.mike, 'ls-remote', 'origin', `refs/tags/${tag}`), '', `${how}: and never pushed`);

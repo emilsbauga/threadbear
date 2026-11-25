@@ -85,6 +85,9 @@ final class AppModel {
     private(set) var backendProblem: String?
     /// The backend's API version once phone:me has answered (nil before).
     private(set) var apiVersion: Int?
+    /// The website's address as phone:me says it, for share links (nil
+    /// before it answers, and from a backend that doesn't say).
+    private var siteSaid: String?
     /// Whether threads read phone:messages (API 2) rather than phone:thread's
     /// newest 20 plus the runner's paging.
     var hasMessagePages: Bool { (apiVersion ?? 0) >= BackendCompatibility.messagePagesAPIVersion }
@@ -138,6 +141,12 @@ final class AppModel {
     /// `-ThreadbearDraft <text>` (Debug only): start the open thread's reply
     /// box with this typed in ("/co" shows the slash command palette).
     var draftText: String?
+    /// `-ThreadbearClip <text>` (Debug only): plays starting a thread, for
+    /// filming, as nothing can tap the simulator. New thread opens, the words
+    /// type in, then Start; each step prints "CLIP <step> <time>" so taps can
+    /// be drawn where they happened. NewThreadView follows these two.
+    var clipTyped: String?
+    var clipStartTaps = 0
     /// `-ThreadbearSearch <text>` (Debug only): start with this in the
     /// inbox's search, for the screenshots.
     var searchText: String?
@@ -151,6 +160,10 @@ final class AppModel {
 
     /// Whether this backend takes photos. The demo does, so App Review sees it.
     var canStar: Bool { isFake || (apiVersion ?? 0) >= BackendCompatibility.starsAPIVersion }
+    /// Whether a thread can be shared by link from here (backend API 8, phone:share).
+    var canShare: Bool { isFake || (apiVersion ?? 0) >= BackendCompatibility.shareAPIVersion }
+    /// Where a shared thread's link goes: the website (ThreadSharing.site).
+    var shareSite: URL? { ThreadSharing.site(said: siteSaid, deploymentURL: pairing?.deploymentURL) }
     var canSendPhotos: Bool { isFake || (apiVersion ?? 0) >= BackendCompatibility.photosAPIVersion }
     /// Whether a secret card can be answered here (backend API 35, phone:secret).
     var canAnswerSecrets: Bool { isFake || (apiVersion ?? 0) >= BackendCompatibility.secretsAPIVersion }
@@ -419,13 +432,14 @@ final class AppModel {
             // -ThreadbearPictures: and a thread with pictures, "pics".
             // -ThreadbearLoginNote: and one whose login ran out and moved, "moved".
             // -ThreadbearDiagrams: and one with a mermaid diagram and an html block.
+            // -ThreadbearCode: and one with sql, ts and untagged code blocks, "code".
             // -ThreadbearLong: and a very long thread, "long".
             // -ThreadbearSecret: and a thread waiting on a secret card, "secret".
             // -ThreadbearRunners: the Mac asleep and two more runners, for the runner picker.
             // -ThreadbearOffline: the Mac's been asleep for hours, so messages wait, and a3 has two waiting.
             let offline = args.contains("-ThreadbearOffline")
             // -ThreadbearManyThreads: and a long inbox, a few more running and starred, to scroll.
-            let fake = FakeBackend(runnerOnline: !offline, listDelay: args.contains("-ThreadbearSlowLoad") ? .seconds(6) : .zero, pictures: args.contains("-ThreadbearPictures"), long: args.contains("-ThreadbearLong"), secret: args.contains("-ThreadbearSecret"), diagrams: args.contains("-ThreadbearDiagrams"), runners: args.contains("-ThreadbearRunners"), queued: offline, many: args.contains("-ThreadbearManyThreads"), loginMoved: args.contains("-ThreadbearLoginNote"))
+            let fake = FakeBackend(runnerOnline: !offline, listDelay: args.contains("-ThreadbearSlowLoad") ? .seconds(6) : .zero, pictures: args.contains("-ThreadbearPictures"), long: args.contains("-ThreadbearLong"), secret: args.contains("-ThreadbearSecret"), diagrams: args.contains("-ThreadbearDiagrams"), code: args.contains("-ThreadbearCode"), runners: args.contains("-ThreadbearRunners"), queued: offline, many: args.contains("-ThreadbearManyThreads"), loginMoved: args.contains("-ThreadbearLoginNote"))
             // -ThreadbearSlowStart: a new thread takes a minute to start, so its Starting row stays.
             if args.contains("-ThreadbearSlowStart") { fake.startDelay = .seconds(60) }
             // -ThreadbearShortInbox: one thread in the inbox, one running, one of each put away.
@@ -444,6 +458,12 @@ final class AppModel {
             // -ThreadbearNeverTaken: the "runner" never takes them, as with the Mac asleep, to see them time out.
             if args.contains("-ThreadbearNeverTaken") { fake.holdsCommands = true }
             if args.contains("-ThreadbearFinishSoon") { fake.finishRunningThread(after: .seconds(14)) }
+            // -ThreadbearNewReply <text> -ThreadbearNewTurn <seconds>: what a new thread's first turn says and how long it works, for filming one.
+            if let reply = UserDefaults.standard.string(forKey: "ThreadbearNewReply") { fake.newThreadReply = reply }
+            // -ThreadbearRunnersAwake: with -ThreadbearRunners, the MacBook Pro's online too.
+            if args.contains("-ThreadbearRunnersAwake") { fake.wakeRunners() }
+            let newTurn = UserDefaults.standard.double(forKey: "ThreadbearNewTurn")
+            if newTurn > 0 { fake.newThreadTurn = .seconds(newTurn) }
             connect(fake, pairing: nil)
         } else if let saved = PairingStore.load() {
             connect(ConvexBackend(deploymentURL: saved.deploymentURL, token: saved.token), pairing: saved)
@@ -469,6 +489,7 @@ final class AppModel {
                 started(commandId: id, message: text, draft: NewThreadDraft(text: text, photos: []))
             }
         }
+        if let i = args.firstIndex(of: "-ThreadbearClip"), i + 1 < args.count { playClip(args[i + 1]) }
         // `-ThreadbearDo "star <threadId>"` (or press <threadId> <buttonId>, stop <threadId>):
         // taps it a moment after launch, for shots of a control on its way,
         // as nothing can tap the simulator.
@@ -520,15 +541,24 @@ final class AppModel {
         if commands[.star(id)].holdsChange, let on = commands.value(.star(id)) {
             t.starredAt = on == "on" ? (t.starredAt ?? now) : nil
         }
+        // Read here: it stops wanting Mike unless asks are still open, as
+        // the runner will say. Woken or brought back: the runner's wait
+        // state is from before, so the phone's own rule draws it until the
+        // runner sends the new one (InboxSections.legacySection).
         if commands[.markSeen(id)].holdsChange {
             t.unread = false
             t.needsYou = false
+            if t.wait == .needsYou, !t.waitingOnMike { t.waitState = WaitState.done.rawValue }
         }
         if commands[.wake(id)].holdsChange {
             t.snoozedUntil = nil
             t.snoozedUntilRestart = nil
+            t.waitState = nil
         }
-        if commands[.unarchive(id)].holdsChange { t.archivedAt = nil }
+        if commands[.unarchive(id)].holdsChange {
+            t.archivedAt = nil
+            t.waitState = nil
+        }
         if commands[.rename(id)].holdsChange, let title = commands.value(.rename(id)) { t.title = title }
         return t
     }
@@ -561,6 +591,24 @@ final class AppModel {
             self?.said(state, failing: "The runner couldn't \(verb) that thread.")
         }
         if started { UISelectionFeedbackGenerator().selectionChanged() }
+    }
+
+    /// Shares a thread by link, stops sharing it, or gives it a new link: the
+    /// share sheet shows it at once (ThreadSharing.shown) and puts it back
+    /// with why if the runner refuses.
+    func share(_ thread: PhoneThread, _ request: ShareRequest) {
+        let threadId = thread.threadId
+        let value = ThreadSharing.value(request, replacing: thread.share?.slug)
+        let started = commands.start(.share(threadId), value: value, send: { try await $0.share(threadId: threadId, request: request) }) { [weak self] state in
+            self?.said(state, failing: "The Mac couldn't change how this thread is shared.")
+        }
+        if started { UISelectionFeedbackGenerator().selectionChanged() }
+    }
+
+    /// The share sheet's state for a thread: its row with the tap made here on top.
+    func sharing(_ thread: PhoneThread) -> SharingState {
+        let key = CommandKey.share(thread.threadId)
+        return ThreadSharing.shown(thread.share, site: shareSite, command: commands[key], value: commands.value(key))
     }
 
     /// Where a command ended, said where he's looking: a refusal always, and a
@@ -889,6 +937,26 @@ final class AppModel {
     // MARK: Pairing
 
     #if DEBUG
+    /// `-ThreadbearClip`'s steps: about 4 s on the inbox first, so people
+    /// can see where they are, and a beat on the words before Start.
+    private func playClip(_ text: String) {
+        let clock = { (step: String) in print("CLIP \(step) \(Date.now.timeIntervalSince1970)") }
+        Task {
+            clock("launch")
+            try? await Task.sleep(for: .seconds(4))
+            clock("compose")
+            composeText = ""
+            try? await Task.sleep(for: .seconds(1.2))
+            clock("type")
+            for end in text.indices.dropFirst() + [text.endIndex] {
+                clipTyped = String(text[..<end])
+                try? await Task.sleep(for: .milliseconds(Int.random(in: 45...110)))
+            }
+            try? await Task.sleep(for: .seconds(1.6))
+            clock("start")
+            clipStartTaps += 1
+        }
+    }
     private static let allowLocalPairing = true // the simulator against `npx convex dev` on this Mac
     #else
     private static let allowLocalPairing = false
@@ -1023,6 +1091,7 @@ final class AppModel {
         authProblem = nil
         backendProblem = nil
         apiVersion = nil
+        siteSaid = nil
         runners = []
         projects = [:]
         accounts = []
@@ -1122,6 +1191,7 @@ final class AppModel {
             if !Task.isCancelled, let self { self.followWakes(backend, small: (identity.apiVersion ?? 0) >= BackendCompatibility.wakesAPIVersion) }
             self?.backendProblem = BackendCompatibility.problem(identity)
             self?.apiVersion = identity.apiVersion ?? 0
+            self?.siteSaid = identity.site
             // The inbox started before this was known: over to following its
             // changes. The list on screen stays until the new one answers.
             if (identity.apiVersion ?? 0) >= BackendCompatibility.threadChangesAPIVersion, !Task.isCancelled, let self {

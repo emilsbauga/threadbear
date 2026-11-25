@@ -116,6 +116,18 @@ Feature: Files opened in the side pane
     Then the pane is showing the file "screens/hero-walkthrough.mp4"
     And the pane shows a video 1600 by 1058
 
+  # A sound file plays in the same player, its controls a bar across the
+  # middle of the pane (Mike, 24 Nov: "You should be able to play these
+  # inside of Threadbear"). On Windows and Linux it opens in its own app.
+  @file.video @swift-pending @windows-pending @linux-pending
+  Scenario: A sound file plays in the pane
+    When I open the thread "Rebuild the three landing pages"
+    And I open "recordings/standup-note.wav" in the thread's folder in the pane
+    Then the pane is showing the file "recordings/standup-note.wav"
+    And the pane shows a sound player
+    When I press play on the sound in the pane
+    Then the sound in the pane is playing
+
   # A panel in a window of its own can't place the player yet, so the video
   # stops and goes with the pane, and says it shows in the main window
   # (Codex's review, 12 Nov: it stayed up, unplaced, for good).

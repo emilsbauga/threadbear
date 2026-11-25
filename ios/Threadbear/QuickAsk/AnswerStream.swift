@@ -219,7 +219,7 @@ final class AnswerStream {
         } catch let error as URLError where error.code == .cancelled {
             return
         } catch let error as URLError {
-            Log.net.error("Ask failed: \(error.localizedDescription, privacy: .public)")
+            Log.net.error("Ask failed: \(error: error)")
             emit(receivedText ? .cutOff : .failed(AskFailure.from(error)))
         } catch {
             emit(receivedText ? .cutOff : .failed(.network(error.localizedDescription)))

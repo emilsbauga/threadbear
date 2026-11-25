@@ -977,6 +977,25 @@ impl TranscriptModel {
                         self.runner_turns
                             .entry(turn.clone())
                             .or_insert_with(|| wake_reason.clone().unwrap_or_default());
+                        // Another Mac's relay starts the turn before the
+                        // runner's message, so its divider is already drawn
+                        // without the reason: put it there (23 Nov). Only
+                        // straight after it: one sent into a turn already
+                        // running didn't wake it (Codex's review).
+                        let gap_id = format!("gap:{turn}");
+                        let last = self.items.len().checked_sub(1);
+                        let bare = self.item_index.get(&gap_id).is_some_and(|&k| {
+                            Some(k) == last
+                                && matches!(&self.items[k].content, RowContent::Gap(g) if g.runner_wake.is_none())
+                        });
+                        if bare {
+                            let reason = wake_reason.clone().unwrap_or_default();
+                            self.update(&gap_id, |content| {
+                                if let RowContent::Gap(gap) = content {
+                                    gap.runner_wake = Some(reason);
+                                }
+                            });
+                        }
                     } else {
                         self.messaged_turns.insert(turn.clone());
                     }

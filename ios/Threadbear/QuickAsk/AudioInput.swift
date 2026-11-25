@@ -26,7 +26,7 @@ nonisolated final class AudioInput: @unchecked Sendable {
         var firstBuffer: (@Sendable (Double) -> Void)?
     }
 
-    enum Failure: Error {
+    nonisolated enum Failure: Error, QuickAskLogCategorized {
         case noMicrophone
         /// The audio hardware is between formats (a route or configuration change).
         case formatChanging
@@ -39,6 +39,15 @@ nonisolated final class AudioInput: @unchecked Sendable {
             case .formatChanging: "The microphone was busy changing. Tap the mic to try again."
             case .session(let detail): "Couldn't start the audio session: \(detail)"
             case .engine(let detail): "Couldn't start the microphone: \(detail)"
+            }
+        }
+
+        var logCategory: String {
+            switch self {
+            case .noMicrophone: "noMicrophone"
+            case .formatChanging: "formatChanging"
+            case .session: "session"
+            case .engine: "engine"
             }
         }
     }
@@ -94,7 +103,7 @@ nonisolated final class AudioInput: @unchecked Sendable {
                 engine.prepare()
                 Log.audio.info("Prewarmed (session active: \(self.sessionActive))")
             } catch {
-                Log.audio.error("Prewarm failed: \(error.localizedDescription, privacy: .public)")
+                Log.audio.error("Prewarm failed: \(error: error)")
             }
         }
     }
@@ -125,9 +134,9 @@ nonisolated final class AudioInput: @unchecked Sendable {
             do {
                 try startEngineIfNeeded(requestedAt: requestedAt, early: true)
             } catch let error as Failure {
-                Log.audio.error("Early start failed (it'll try again when listening starts): \(error.message, privacy: .public)")
+                Log.audio.error("Early start failed (it'll try again when listening starts): \(error: error)")
             } catch {
-                Log.audio.error("Early start failed: \(error.localizedDescription, privacy: .public)")
+                Log.audio.error("Early start failed: \(error: error)")
             }
         }
     }
@@ -152,7 +161,7 @@ nonisolated final class AudioInput: @unchecked Sendable {
             do {
                 try startEngineIfNeeded(requestedAt: requestedAt, early: false)
             } catch let error as Failure {
-                Log.audio.error("Start failed: \(error.message, privacy: .public)")
+                Log.audio.error("Start failed: \(error: error)")
                 failure(error)
             } catch {
                 failure(.engine(error.localizedDescription))
@@ -184,7 +193,7 @@ nonisolated final class AudioInput: @unchecked Sendable {
                 do {
                     try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
                 } catch {
-                    Log.audio.error("Deactivate failed: \(error.localizedDescription, privacy: .public)")
+                    Log.audio.error("Deactivate failed: \(error: error)")
                 }
                 sessionActive = false
             }
@@ -294,7 +303,7 @@ nonisolated final class AudioInput: @unchecked Sendable {
             lastEngineStartAt = Stopwatch.now
             lock.withLock { engineStartedAt = lastEngineStartAt }
         } catch {
-            Log.audio.error("Restart after route change failed: \(error.localizedDescription, privacy: .public)")
+            Log.audio.error("Restart after route change failed: \(error: error)")
         }
     }
 

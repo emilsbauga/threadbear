@@ -14,6 +14,11 @@ test('end_turn input: nothing, you with asks, and junk falls back', () => {
     { needs: 'you', asks: [{ action: 'Paste the key', where: 'Settings › Models', reply: 'done' }, { action: 'Pick a budget' }] },
   );
   assert.deepEqual(needsFromTool({ needs: 'you' }), { needs: 'you' });
+  // askWhen "jobsEnd": the asks wait for the thread's own shell jobs.
+  assert.deepEqual(needsFromTool({ needs: 'you', askWhen: 'jobsEnd' }), { needs: 'you', afterJobs: true });
+  assert.deepEqual(needsFromTool({ asks: [{ question: 'Ship it?' }], askWhen: 'jobsEnd' }), { needs: 'you', asks: [{ action: 'Ship it?' }], afterJobs: true });
+  assert.deepEqual(needsFromTool({ needs: 'you', askWhen: 'now' }), { needs: 'you' });
+  assert.deepEqual(needsFromTool({ needs: 'nothing', askWhen: 'jobsEnd' }), { needs: 'nothing' });
   assert.equal(needsFromTool({ needs: 'maybe' }), undefined);
   // archive only counts with needs "nothing": a thread that asks for something stays in the inbox.
   assert.equal(archiveFromTool({ needs: 'nothing', archive: true }), true);

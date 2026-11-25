@@ -4,6 +4,8 @@ import path from 'node:path';
 import type { Clock } from './clock.ts';
 import type { Logger } from './log.ts';
 import type { Runner } from './runner.ts';
+import type { PermissionMode } from './protocol.ts';
+import { ceilingMode } from './access.ts';
 
 // Telling a thread when the Mac app has restarted onto a new build
 // (docs/protocol/updates.md, "App restarts"). An agent that changed the app asks
@@ -24,6 +26,11 @@ export type AppKind = 'mac' | 'desktop';
 type Watch = {
   threadId: string;
   text?: string;
+  // `text` is the thread's agent's own words, sent back to it later: the
+  // most access it may have then (runner/ceiling.ts). One from before
+  // ceilings is bound at the thread's mode as the runner starts
+  // (bindOldCeilings); one bound to nothing counts as Ask.
+  ceiling?: PermissionMode;
   requestedAt: string;
   fromTree?: string;
   fromShort?: string;
@@ -127,7 +134,7 @@ export class AppRestarts {
   // connected, `build` alone was the frozen Swift app's (13 Nov).
   // `commit`: what the new build must contain, by default main's HEAD in
   // the thread's folder (a thread's worktree shares its refs).
-  watch(threadId: string, text?: string, commit?: string): { build?: AppBuild; running?: string; waitingFor?: string } {
+  watch(threadId: string, text?: string, commit?: string, ceiling?: PermissionMode): { build?: AppBuild; running?: string; waitingFor?: string } {
     const state = this.read();
     state.watching = state.watching.filter((w) => w.threadId !== threadId);
     let want: Watch['want'];
@@ -141,7 +148,7 @@ export class AppRestarts {
     }
     state.watching.push({
       threadId,
-      ...(text?.trim() ? { text: text.trim() } : {}),
+      ...(text?.trim() ? { text: text.trim(), ceiling: ceilingMode(ceiling ?? 'ask') } : {}),
       requestedAt: new Date(this.deps.clock.now()).toISOString(),
       ...(state.build ? { fromTree: state.build.tree, fromShort: state.build.short } : {}),
       ...(state.desktopBuild ? { fromDesktopTree: state.desktopBuild.tree, fromDesktopShort: state.desktopBuild.short } : {}),
@@ -187,6 +194,20 @@ export class AppRestarts {
       if (t) trees[app] = t;
     }
     return { commit: full, short: full.slice(0, 9), repo, ...(Object.keys(trees).length ? { trees } : {}) };
+  }
+
+  // Watches with words from before ceilings (22 Nov 2026), bound at each
+  // thread's saved mode as this runner starts, as schedules from before
+  // are (schedules.ts, "Ceilings").
+  bindOldCeilings(modeOf: (threadId: string) => PermissionMode | undefined): void {
+    const state = this.read();
+    let changed = false;
+    for (const w of state.watching) {
+      if (!w.text || w.ceiling !== undefined) continue;
+      w.ceiling = ceilingMode(modeOf(w.threadId) ?? 'ask');
+      changed = true;
+    }
+    if (changed) this.write(state);
   }
 
   isWatching(threadId: string): boolean {
@@ -312,7 +333,7 @@ export class AppRestarts {
       runner.note(w.threadId, note);
       if (why) return;
       const head = `The ${appName(app)} has restarted onto ${build.short} (${build.commit}), as you asked to hear.`;
-      runner.send(w.threadId, w.text ? `${head}\n\n${w.text}` : `${head} Check your change in the running app.`, [], { origin: 'runner', wakeReason: `The ${appName(app)} restarted onto ${build.short}` });
+      runner.send(w.threadId, w.text ? `${head}\n\n${w.text}` : `${head} Check your change in the running app.`, [], { origin: 'runner', wakeReason: `The ${appName(app)} restarted onto ${build.short}`, ...(w.text ? { ceiling: ceilingMode(w.ceiling ?? 'ask') } : {}) });
       log.info('told a thread the app restarted', { threadId: w.threadId, build: build.short, app });
     } catch (e) {
       log.warn('could not tell a thread the app restarted', { threadId: w.threadId, error: String(e) });

@@ -42,7 +42,7 @@ async function setup(memoryMb = 2048) {
   let cursor = s.scheduled.length;
   // Bigger than Fly can pause: a virtual runner from before setRunnerService refused that.
   if (memoryMb > 2048) s.rows('runnerServices')[0].box = { cpus: 2, memoryMb };
-  else await call(s.ctx, boxes.setRunnerService, { key: OWNER, serviceId: s.serviceId, name: 'Cloud (Fly)', provider: 'fly', image: 'registry.fly.io/threadbear-box:1', box: { cpus: 2, memoryMb } });
+  else await call(s.ctx, boxes.setRunnerService, { key: OWNER, serviceId: s.serviceId, name: 'Cloud (Fly)', provider: 'fly', image: 'registry.fly.io/threadbear-box@sha256:1111111111111111111111111111111111111111111111111111111111111111', box: { cpus: 2, memoryMb } });
   // Runs the service's scheduled steps as Convex's scheduler would, in order (delays aside), until none are left. Returns their names.
   // once: only what's scheduled so far (a trial's later retry stays pending).
   const run = async (once = false): Promise<string[]> => {
@@ -135,7 +135,7 @@ test('a thread starts on a virtual runner: its runner, its box and its create, t
   // One machine, of the virtual runner's image and size, its boot token, the deployment's address and the name of its machine-id variable in its environment and nothing else.
   assert.equal(s.fly.live().length, 1);
   const m = s.fly.live()[0]!;
-  assert.equal(m.config.image, 'registry.fly.io/threadbear-box:1');
+  assert.equal(m.config.image, 'registry.fly.io/threadbear-box@sha256:1111111111111111111111111111111111111111111111111111111111111111');
   assert.deepEqual(m.config.guest, { cpu_kind: 'shared', cpus: 2, memory_mb: 2048 });
   assert.deepEqual(Object.keys(m.config.env).sort(), ['THREADBEAR_BOX_BOOT', 'THREADBEAR_MACHINE_ID_ENV', 'THREADBEAR_SYNC_URL']);
   assert.equal(m.config.env.THREADBEAR_MACHINE_ID_ENV, 'FLY_MACHINE_ID');
@@ -274,7 +274,7 @@ test("a message while it's saving keeps it up, and a box gone silent that the pr
 test('a virtual runner past maxBoxes refuses a new thread at once, saying so, and writes nothing', async () => {
   const s = await setup();
   // The helper's own box is creating: one of two.
-  await call(s.ctx, boxes.setRunnerService, { key: OWNER, serviceId: s.serviceId, name: 'Cloud (Fly)', provider: 'fly', image: 'registry.fly.io/threadbear-box:1', box: { cpus: 2, memoryMb: 2048 }, limits: { maxBoxes: 2 } });
+  await call(s.ctx, boxes.setRunnerService, { key: OWNER, serviceId: s.serviceId, name: 'Cloud (Fly)', provider: 'fly', image: 'registry.fly.io/threadbear-box@sha256:1111111111111111111111111111111111111111111111111111111111111111', box: { cpus: 2, memoryMb: 2048 }, limits: { maxBoxes: 2 } });
   await s.start('T2');
   const before = { runners: s.rows('runners').length, boxes: s.rows('boxes').length, commands: s.rows('commands').length };
   const err = await s.start('T3').catch((e: { data?: { kind: string; message: string } }) => e);
@@ -443,7 +443,7 @@ test("a box past its day's hours is asked to save even with a turn running and a
   const { runnerId } = await s.start('T2');
   await s.run();
   await s.boot('T2', s.fly.live()[0]!.id);
-  await call(s.ctx, boxes.setRunnerService, { key: OWNER, serviceId: s.serviceId, name: 'Cloud (Fly)', provider: 'fly', image: 'registry.fly.io/threadbear-box:1', box: { cpus: 2, memoryMb: 2048 }, limits: { maxAwakeHoursPerDay: 1, idleSleepMinutes: 600 } });
+  await call(s.ctx, boxes.setRunnerService, { key: OWNER, serviceId: s.serviceId, name: 'Cloud (Fly)', provider: 'fly', image: 'registry.fly.io/threadbear-box@sha256:1111111111111111111111111111111111111111111111111111111111111111', box: { cpus: 2, memoryMb: 2048 }, limits: { maxAwakeHoursPerDay: 1, idleSleepMinutes: 600 } });
   const t = s.rows('threads').find((r) => r.threadId === 'T2')!;
   t.status = 'running';
   await s.send(runnerId, 'T2');
@@ -526,8 +526,8 @@ test("the phone never picks a box's runner for a new thread, and can't name one"
 test('only the owner makes, changes and lists virtual runners, and the values are checked', async () => {
   const s = await setup();
   // Fly can't pause a box over 2 GB, so for now none is made.
-  assert.equal(await outcome(call(s.ctx, boxes.setRunnerService, { key: OWNER, name: 'Huge', provider: 'fly', image: 'img:1', box: { cpus: 4, memoryMb: 8192 } })), 'badArgs');
-  const made = await call(s.ctx, boxes.setRunnerService, { key: OWNER, name: 'Big', provider: 'fly', image: 'img:1', box: { cpus: 4, memoryMb: 2048 }, region: 'syd', limits: { maxBoxes: 3 } });
+  assert.equal(await outcome(call(s.ctx, boxes.setRunnerService, { key: OWNER, name: 'Huge', provider: 'fly', image: 'registry.fly.io/img@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', box: { cpus: 4, memoryMb: 8192 } })), 'badArgs');
+  const made = await call(s.ctx, boxes.setRunnerService, { key: OWNER, name: 'Big', provider: 'fly', image: 'registry.fly.io/img@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', box: { cpus: 4, memoryMb: 2048 }, region: 'syd', limits: { maxBoxes: 3 } });
   const listed = await call(s.ctx, boxes.runnerServices, { key: OWNER });
   const big = listed.find((x: { serviceId: string }) => x.serviceId === made);
   assert.deepEqual(big.limits, { maxBoxes: 3, idleSleepMinutes: 10, maxAwakeHoursPerDay: 8, deleteAfterDays: 14 });
@@ -549,8 +549,8 @@ test('only the owner makes, changes and lists virtual runners, and the values ar
     if (was === undefined) delete process.env.FLY_APP; else process.env.FLY_APP = was;
   }
   await call(s.ctx, boxes.setRunnerService, { key: OWNER, serviceId: made, name: 'Big', provider: 'fly', box: { cpus: 4, memoryMb: 2048 } });
-  assert.equal(await imageOf(made), 'img:1');
-  const bad =(a: Record<string, unknown>) => outcome(call(s.ctx, boxes.setRunnerService, { key: OWNER, name: 'X', provider: 'fly', image: 'img:1', box: { cpus: 1, memoryMb: 1024 }, ...a }));
+  assert.equal(await imageOf(made), 'registry.fly.io/img@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  const bad =(a: Record<string, unknown>) => outcome(call(s.ctx, boxes.setRunnerService, { key: OWNER, name: 'X', provider: 'fly', image: 'registry.fly.io/img@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', box: { cpus: 1, memoryMb: 1024 }, ...a }));
   assert.equal(await bad({ provider: 'aws' }), 'badArgs');
   assert.equal(await bad({ box: { cpus: 1, memoryMb: 1000 } }), 'badArgs');
   // Under 1024 MB, a box may not have the memory to restore its thread's save (box-save.ts).
@@ -558,6 +558,10 @@ test('only the owner makes, changes and lists virtual runners, and the values ar
   assert.equal(await bad({ box: { cpus: 1, memoryMb: 256 } }), 'badArgs');
   assert.equal(await bad({ box: { cpus: 0, memoryMb: 1024 } }), 'badArgs');
   assert.equal(await bad({ image: 'has space' }), 'badArgs');
+  // Daybreak 171: a tag, which a registry push can move, is never a box's image.
+  for (const image of ['img:1', 'registry.fly.io/tb-boxes:latest', 'registry.fly.io/tb-boxes:0123456789abcdef0123456789abcdef01234567', `registry.fly.io/tb-boxes@sha256:${'a'.repeat(63)}`, `registry.fly.io/tb-boxes:latest@sha256:${'a'.repeat(64)}`]) {
+    assert.equal(await bad({ image }), 'badArgs', image);
+  }
   assert.equal(await bad({ limits: { maxBoxes: 0 } }), 'badArgs');
   assert.equal(await bad({ region: 'SYD!' }), 'badArgs');
   // The box key, and a runner key, can't.
@@ -1328,7 +1332,7 @@ test("a moving box isn't slept, idle or past its hours, and a later move step wa
 test('the reaper and the waiting-wake sweep reach every virtual runner, a page at a time', async () => {
   const s = await setup();
   const ids = [s.serviceId];
-  for (let i = 0; i < 3; i++) ids.push(await call(s.ctx, boxes.setRunnerService, { key: OWNER, name: `V${i}`, provider: 'fly', image: 'img:1', box: { cpus: 1, memoryMb: 1024 } }));
+  for (let i = 0; i < 3; i++) ids.push(await call(s.ctx, boxes.setRunnerService, { key: OWNER, name: `V${i}`, provider: 'fly', image: 'registry.fly.io/img@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', box: { cpus: 1, memoryMb: 1024 } }));
   for (const [i, id] of ids.entries()) s.fly.machines.push({ id: `orphan${i}`, name: `o${i}`, state: 'started', config: { metadata: { tb_box: 'boxes:999', tb_attempt: '1', tb_service: id } } });
   s.skip();
   await call(s.a, service.reapBoxes, { numItems: 1 });
@@ -2807,4 +2811,58 @@ test('a condemned mark is cleared only by its delete or a listing taken after it
   // One asked for after: they're gone, unmarked.
   await later(1000, () => call(s.ctx, service.driftPage, { serviceId: s.serviceId, listed: rows, cursor: null, listedAt: Date.now() }));
   assert.equal(s.rows('boxCondemned').length, 0);
+});
+
+// Daybreak 171: the image a box boots gets its boot token, which trades for
+// the login's Claude token and the thread's key, so it's only ever a digest:
+// a virtual runner that follows main boots what main's workflow promoted,
+// and never the tag anyone who can push to the registry can move.
+const boxImage = load('boxImage');
+const PROMOTED = `registry.fly.io/tb-boxes@sha256:${'b'.repeat(64)}`;
+
+test("a virtual runner that follows main makes no box until main's image is promoted, then boots exactly that digest", async () => {
+  const s = await setup();
+  s.rows('runnerServices')[0].image = 'registry.fly.io/tb-boxes:latest';
+  await s.start('T2');
+  assert.deepEqual(await s.run(), ['createBox']);
+  assert.equal(s.fly.live().length, 0, 'nothing booted from the tag');
+  assert.ok(!s.fly.seen.some((r) => r.method === 'POST' && r.path.endsWith('/machines')), 'Fly was never asked');
+  assert.equal(s.stateOf('T2'), 'failed');
+
+  assert.deepEqual(await call(s.ctx, boxImage.promote, { app: 'tb-boxes', image: PROMOTED, commit: 'c'.repeat(40), issuedAt: 2000 }), { ok: true });
+  await s.start('T3');
+  assert.deepEqual(await s.run(), ['createBox']);
+  assert.equal(s.fly.live().length, 1);
+  assert.equal(s.fly.live()[0]!.config.image, PROMOTED, 'the promoted digest, not :latest');
+
+  // An older promotion (a replayed token) doesn't put another image back.
+  const older = `registry.fly.io/tb-boxes@sha256:${'d'.repeat(64)}`;
+  assert.equal((await call(s.ctx, boxImage.promote, { app: 'tb-boxes', image: older, commit: 'e'.repeat(40), issuedAt: 2000 })).ok, false);
+  assert.equal((await call(s.ctx, boxImage.promote, { app: 'tb-boxes', image: older, commit: 'e'.repeat(40), issuedAt: 1000 })).ok, false);
+  await s.start('T4');
+  await s.run();
+  assert.deepEqual(s.fly.live().map((m) => m.config.image), [PROMOTED, PROMOTED]);
+});
+
+test("a virtual runner left with a tag from before (another app's :latest, a release tag) makes no box", async () => {
+  for (const image of ['registry.fly.io/other-app:latest', 'registry.fly.io/tb-boxes:release-2026-11-20', 'registry.fly.io/tb-boxes:0123456789abcdef0123456789abcdef01234567']) {
+    const s = await setup();
+    await call(s.ctx, boxImage.promote, { app: 'tb-boxes', image: PROMOTED, commit: 'c'.repeat(40), issuedAt: 2000 });
+    s.rows('runnerServices')[0].image = image;
+    await s.start('T2');
+    await s.run();
+    assert.equal(s.fly.live().length, 0, image);
+    assert.equal(s.stateOf('T2'), 'failed', image);
+  }
+});
+
+test('a pinned image goes through the claim to Fly exactly as given', async () => {
+  const s = await setup();
+  const pinned = `registry.fly.io/tb-boxes@sha256:${'f'.repeat(64)}`;
+  await call(s.ctx, boxes.setRunnerService, { key: OWNER, serviceId: s.serviceId, name: 'Cloud (Fly)', provider: 'fly', image: pinned, box: { cpus: 2, memoryMb: 2048 } });
+  // A promotion for main changes nothing for a runner pinned to its own digest.
+  await call(s.ctx, boxImage.promote, { app: 'tb-boxes', image: PROMOTED, commit: 'c'.repeat(40), issuedAt: 2000 });
+  await s.start('T2');
+  await s.run();
+  assert.equal(s.fly.live()[0]!.config.image, pinned);
 });

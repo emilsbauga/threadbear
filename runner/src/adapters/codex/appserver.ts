@@ -11,6 +11,7 @@ import type { Account } from '../../protocol.ts';
 import type { Logger } from '../../log.ts';
 import { groupSpawner, groupAlive, killGroup, type ProcessRegistry } from '../../proc.ts';
 import { RUNNER_VERSION } from '../../config.ts';
+import { asAgent } from '../../background.ts';
 import { codexBeside, exeName } from '../../platform.ts';
 import { cliEnv } from '../claude/adapter.ts';
 import { refusal } from './approvals.ts';
@@ -383,9 +384,11 @@ export class AppServerProcess {
     this.abort = new AbortController();
     this.stderrTail = [];
     const spawn = groupSpawner(opts.registry, opts.log, (line) => this.stderr(line), opts.label);
+    // At the job priority, so the builds and tests it runs are too (asAgent).
+    const [command, args] = asAgent('codex', bin.command, [...bin.args, 'app-server', ...(opts.args ?? [])]);
     const child = spawn({
-      command: bin.command,
-      args: [...bin.args, 'app-server', ...(opts.args ?? [])],
+      command,
+      args,
       cwd: opts.cwd,
       env,
       signal: this.abort.signal,

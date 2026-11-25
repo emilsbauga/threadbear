@@ -216,9 +216,12 @@ stop() {
 trap stop INT TERM HUP
 
 # Inside a thread these name the live runner and that thread; the dev
-# runner sets its own for the CLIs it starts.
+# runner sets its own for the CLIs it starts. THREADBEAR_THREAD_KEY and
+# THREADBEAR_THREAD_ID stay: they're how the dev runner knows the thread
+# that started it, the only one whose tb it takes as its owner (src/peer.ts,
+# ownThreadMarks), and it takes them out of its own environment once read.
 while :; do
-  env -u THREADBEAR_DATA_DIR -u THREADBEAR_URL -u THREADBEAR_THREAD_ID -u THREADBEAR_RUNNER_VERSION -u THREADBEAR_RUNNER_HOME \
+  env -u THREADBEAR_DATA_DIR -u THREADBEAR_URL -u THREADBEAR_RUNNER_VERSION -u THREADBEAR_RUNNER_HOME -u THREADBARE_RUNNER_HOME \
     THREADBEAR_HOME="$DATA_HOME" THREADBEAR_PORT="$PORT" THREADBEAR_LOG="$LOG" THREADBEAR_LOG_STDERR=1 THREADBEAR_CLI_UPDATES=off THREADBEAR_DEV_RUNNER=1 THREADBEAR_TOKEN_TALLY=off \
     "$NODE" src/main.ts &
   CHILD=$!

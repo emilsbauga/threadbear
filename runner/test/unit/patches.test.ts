@@ -555,6 +555,28 @@ test('live state: when hides, badge counts, label retitles, a shared command run
   assert.equal(readPatchModule('x', 'project', '/x.ts', { actions: [{ title: 'A', run: 'x', when: true }] }).info.error, 'actions[0] ("A") has a when that isn\'t a function.');
 });
 
+test("live state: a hidden item's failing badge isn't a problem, a failing when is", async () => {
+  // The app-store patch's badge asks Apple through a script only Mike has,
+  // and every fork's check-up said the patch wouldn't load (discussions/85).
+  const { applyLive } = await import('../../src/patches.ts');
+  const home = tmpDir();
+  const app = project(home, 'dev/app', { 'package.json': '{}' });
+  writePatch(path.join(app, '.threadbear/patches'), 'store.ts', `
+    const ask = ({ sh }) => sh("exit 1");
+    export default {
+      panels: [{ title: "Store", url: "https://x.dev", when: async (ctx) => { try { await ask(ctx); return true; } catch { return false; } }, badge: async (ctx) => (await ask(ctx)).length }],
+    };
+  `);
+  writePatch(path.join(app, '.threadbear/patches'), 'broken.ts', `
+    export default { actions: [{ title: "B", run: "true", when: () => { throw new Error("no when") }, label: () => { throw new Error("no label") } }] };
+  `);
+  const ctx = { cwd: app, threadId: 't1', timeoutMs: 120_000, run: (command: string, cwd: string) => runCommand(command, { cwd, env: process.env }) };
+  const set = await applyLive(await loadPatchSet(app, home), ctx);
+  assert.deepEqual([set.panels.length, set.actions.length], [0, 0]);
+  assert.equal(set.patches.find((p) => p.id === 'store')?.liveError, undefined);
+  assert.equal(set.patches.find((p) => p.id === 'broken')?.liveError, 'no when');
+});
+
 test('live state and list panels see the thread: its title and projects, so a patch can show in only some threads', async () => {
   const { applyLive, renderListPanel } = await import('../../src/patches.ts');
   const home = tmpDir();

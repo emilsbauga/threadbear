@@ -5,7 +5,7 @@ import Markdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { go } from './route';
 import { escapeDestinations, findStep, readLink } from './thread-links';
-import { pictureNumber, remarkPictureChips } from './picture-chips';
+import { isNotionCard, pictureNumber, remarkPictureChips } from './picture-chips';
 import { hostOf, pictureSrc } from './picture-src';
 import { OutLink } from './link-confirm';
 import * as Icon from './icons';
@@ -251,6 +251,16 @@ export function MessageText({
                   <Icon.Photo />
                   Picture {picture}
                 </span>
+              );
+            }
+            // A Notion card in Mike's own words: a chip, as the Mac and the
+            // phones draw it (nightly parity run, 23 Nov).
+            if (pictureChips && href && isNotionCard(href)) {
+              return (
+                <OutLink className="card-chip" href={href} title="Open this card in Notion">
+                  <Icon.Card />
+                  {children}
+                </OutLink>
               );
             }
             const link = href ? readLink(href) : undefined;

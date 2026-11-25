@@ -259,6 +259,11 @@ fn summary(row: &Value) -> Option<ThreadSummary> {
         // of a thread it's watching (relay.ts `overlay`): the sidebar's own
         // rows don't carry them, and this summary replaces the last one.
         loose_ends: row.get("looseEnds").filter(|v| v.is_object()).cloned(),
+        // What it's waiting on, as its runner worked it out (API 99).
+        wait_state: row["waitState"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 32)
+            .map(str::to_owned),
         ..Default::default()
     })
 }

@@ -16,6 +16,12 @@ written, or a patch file the agent has just saved, shows up within
 seconds. A patch file that appears, loads again, breaks or is waiting
 to be trusted after the first read is said in the transcript as a
 `system.note`.
+`tb patch-check <file.ts>...` loads patch files in tb's own process and
+prints each one's load error (a duplicate id, a bad field, a syntax
+error) in the runner's words, or the ids it gives, without waiting for
+the runner to read the folder again. It runs the file's top-level code,
+as the runner's import does, but no command in it, and skips the trust
+check, so a project's patch still waits to be trusted in the app.
 
 Patches are found by walking up from the thread's folder to the home
 folder (so a thread in a package of a monorepo gets the project's), plus

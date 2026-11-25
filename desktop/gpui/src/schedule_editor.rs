@@ -203,6 +203,18 @@ impl Threadbear {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.new_schedule_from_composer_at(composer, None, window, cx);
+    }
+
+    /// The same, set to send once at `at_ms` (Send's quick times,
+    /// composer_send.rs); None leaves the editor as Schedule… opens it.
+    pub(crate) fn new_schedule_from_composer_at(
+        &mut self,
+        composer: &Entity<crate::composer::Composer>,
+        at_ms: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (text, images, thread_id) = {
             let c = composer.read(cx);
             let (text, images) = c.schedule_draft(cx);
@@ -216,7 +228,8 @@ impl Threadbear {
         let state = EditorState {
             text,
             draft_images: images,
-            at_ms: rules::default_once_ms(now_ms()),
+            once: at_ms.is_some(),
+            at_ms: at_ms.unwrap_or_else(|| rules::default_once_ms(now_ms())),
             thread_id: thread.as_ref().map(|t| t.id.clone()),
             from_thread_id: thread.as_ref().map(|t| t.id.clone()),
             cwd: settings.cwd.clone(),
@@ -1709,6 +1722,7 @@ impl ScheduleEditor {
             "isNew": self.state.is_new(),
             "text": self.message_text(cx),
             "once": self.state.once,
+            "at": iso_time(self.state.at_ms),
             "cron": if self.state.once { Value::Null } else { json!(self.state.repeat.cron()) },
             "preview": match &self.preview { Some(Ok(p)) => json!(p.when_text), Some(Err(e)) => json!(format!("error: {e}")), None => Value::Null },
             "canSave": self.can_save(cx),

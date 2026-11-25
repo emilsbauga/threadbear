@@ -17,14 +17,18 @@ const relay = load('relay');
 
 const BAD = [NaN, Infinity, -Infinity, 1.5, -1, 2 ** 53, Number.MAX_SAFE_INTEGER, MAX_SEQ + 1];
 
-async function setup() {
+// The thread is the key's own runner's: the main key writes only a thread
+// of a runner with no key of its own (sync.ts ownThread, Daybreak 178).
+const LAPTOP = 'laptop000001';
+
+async function setup(key = MINI_KEY) {
   process.env.RUNNER_KEY = OWNER;
   delete process.env.RUNNER_KEY_NEXT;
   process.env.CONVEX_SITE_URL = 'https://site.example';
   const b = memoryBackend();
   await b.ctx.db.insert('runnerKeys', { runnerId: MINI, keyHash: await sha256(MINI_KEY), name: 'mac-mini', createdAt: 1 });
   await b.ctx.db.insert('runners', { runnerId: MINI, name: 'mac-mini', version: 'v', startedAt: 'x', draining: false, threadCount: 1, lastSeenAt: Date.now() });
-  await call(b.ctx, sync.upsertThreads, { key: MINI_KEY, threads: [{ threadId: 'T', runnerId: MINI, ...THREAD_BASICS, title: 'T', view: 'inbox', needsYou: false }] });
+  await call(b.ctx, sync.upsertThreads, { key, threads: [{ threadId: 'T', runnerId: key === OWNER ? LAPTOP : MINI, ...THREAD_BASICS, title: 'T', view: 'inbox', needsYou: false }] });
   return b;
 }
 
@@ -33,7 +37,7 @@ for (const [who, key] of [
   ['the main key', OWNER],
 ] as const) {
   test(`${who}'s messages and tool bodies under a bad seq are dropped, and the rest of the batch goes in`, async () => {
-    const s = await setup();
+    const s = await setup(key);
     const messages = [...BAD.map((seq) => ({ threadId: 'T', seq, role: 'assistant', text: `bad ${seq}`, at: 'now' })), { threadId: 'T', seq: 0, role: 'user', text: 'first', at: 'now' }, { threadId: 'T', seq: MAX_SEQ, role: 'assistant', text: 'last', at: 'now' }];
     await call(s.ctx, sync.appendMessages, { key, messages });
     assert.deepEqual(s.rows('messages').map((m) => [m.seq, m.text]), [[0, 'first'], [MAX_SEQ, 'last']]);

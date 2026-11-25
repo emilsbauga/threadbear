@@ -18,12 +18,14 @@
 # still waiting, and it only runs when something it checks changed (the paths
 # below: the runner, Convex, the website, the relay and scripts/ that the
 # runner's tests cover, check.sh that runs them, the root packages, and
-# this file).
+# this file). The runner tests that guard files outside these paths
+# (workflows, desktop/, app/, ios/) run on every push in guards.yml too.
 #
-# tb land holds a landing that changes what this checks while its last run
-# on main failed (runner/src/land-gate.ts, docs/thread-worktrees.md "Red on
-# GitHub"), and main's runs aren't cancelled by newer pushes, so each one
-# finishes and says something (only a pull request's are). From 16 to 19
+# When its last run on main failed (or a job ran into its timeout), tb
+# red-watch starts a thread to fix it and tb land says so (runner/src/
+# red-watch.ts, docs/thread-worktrees.md "Red on GitHub"), and main's runs
+# aren't cancelled by newer pushes, so each one finishes and says something
+# (only a pull request's are). From 16 to 19
 # Nov this workflow was red on Windows while landings went on top, and
 # with every workflow having to pass on one commit for the daily release,
 # none went out (runner/src/upstream.ts).
@@ -77,7 +79,10 @@ jobs:
     if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
     name: ${{ matrix.os }}, Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # GitHub's Macs took 21 to 29 minutes on 24 Nov with 364 runner test files,
+    # steadily (check.sh's progress lines there name any file that sticks), and
+    # one run was stopped at 30 with 357 done. A hang still ends here.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -143,16 +148,26 @@ jobs:
         # THREADBEAR_* from outside) and its second run of a few files that
         # failed, for tests with real timeouts on a slow machine. --local
         # keeps it here; THREADBEAR_NODE is the Node set up above.
+        #
+        # The Mac jobs took 17 to 20 of their 30 minutes until 22 Nov 2026,
+        # then ran out of them on 18 pushes in a row (one new test file took
+        # 17 minutes there and 21 s on Linux), and a job stopped at its limit
+        # is "cancelled" to GitHub, not failed. With that file fixed they
+        # took 19 to 26 minutes on 23 Nov (four runs), so the limit is close.
+        # So here check.sh prints a line a minute with the test files still
+        # running, and the slowest at the end
+        # (runner/test/helpers/progress-reporter.mjs), and the logs below
+        # are kept for a job that was stopped too.
         run: THREADBEAR_NODE="$(command -v node)" ./check.sh --runner --local
 
       - name: Keep check.sh's logs
-        if: failure()
+        if: failure() || cancelled()
         run: |
           mkdir -p "$RUNNER_TEMP/check-logs"
           cp -R "${TMPDIR:-/tmp}"/threadbear-check.* "$RUNNER_TEMP/check-logs/" 2>/dev/null || true
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: check-logs-${{ matrix.os }}-node-${{ matrix.node }}
           path: ${{ runner.temp }}/check-logs
@@ -163,6 +178,9 @@ jobs:
   # scripts/test-windows.mjs: every unit test file except those in
   # runner/test/windows-known-failing.txt must pass, and those are run as a
   # report. Take a file off the list once it passes; the list only shrinks.
+  # The report times out long before it reaches most of the list, so a test
+  # that must hold on Windows (a security one) goes in a file that isn't on
+  # it, as trust-windows-paths.test.ts did (23 Nov).
   windows:
     if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
     name: windows-latest, Node 24

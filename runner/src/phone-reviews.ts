@@ -53,7 +53,7 @@ export function phoneReview(review: DesignReview, noPreview: ReadonlySet<string>
         return {
           src,
           ...(shot.title ? { title: shot.title } : {}),
-          kind: shot.media?.mediaType === 'text/html' ? 'page' : shot.media ? 'video' : 'image',
+          kind: shot.media?.mediaType === 'text/html' ? 'page' : shot.media?.mediaType.startsWith('audio/') ? 'audio' : shot.media ? 'video' : 'image',
           ...(noPreview.has(src) ? { preview: false } : {}),
         };
       }),

@@ -609,3 +609,40 @@ test("a linked checkout of one of this runner's repos outside the home is found 
     fs.rmSync(outside, { recursive: true, force: true });
   }
 });
+
+// Codex's review, 23 Nov 2026: T now asks for a claim again after placing,
+// for up to the move's thirty minutes, so a restart in that time places the
+// thread again. Placing emptied the staging folder first, and with it the
+// only record of what the earlier placing made (a worktree, a transcript),
+// which stayed and could block the new one. Now that's undone first.
+test('a move placed whole is known after a restart, and placing again after a partway one undoes what it made first', async () => {
+  const work = tmpDir('tb-move-work-');
+  const s = machine([{ id: 'claude-main', provider: 'claude', title: 'S', configDir: tmpDir() }]);
+  const tHome = tmpDir('tb-move-home-');
+  const t = makeHarness(tHome, {}, { accounts: new FakeAccounts([{ id: 'claude-1', provider: 'claude', title: 'T', configDir: tmpDir() }]) });
+  const id = s.runner.create({ text: 'hello', accountId: 'claude-main', cwd: work }).thread.id;
+  s.adapter.last.init();
+  s.adapter.last.result('completed');
+  await tick();
+  const r = row(id, { info: (await s.runner.describeForMove(id, 0))!, expect: 'binding-1' });
+  const plan = await t.runner.planMove(r);
+  assert.ok(!('problem' in plan));
+  r.plan = plan as Exclude<typeof plan, { problem: string }>;
+  const entries = (await s.runner.packForMove(id, r)).entries;
+  assert.equal(t.runner.movePlaced(r), false, 'nothing placed yet');
+  await t.runner.placeMove(r, entries);
+  assert.equal(t.runner.movePlaced(r), true, 'placed whole: a restarted runner only asks for the claim');
+  assert.equal(t.runner.movePlaced({ ...r, expect: 'binding-2' }), false, 'a row whose binding changed places afresh');
+  assert.equal(t.runner.movePlaced({ ...r, threadId: 'f'.repeat(36) }), false, 'nor one naming another thread');
+  // An earlier placing that stopped partway, and what it left, as its
+  // placed.json records it.
+  const placedFile = path.join(tHome, 'moves', r.moveId, 'placed.json');
+  const earlier = path.join(tmpDir('tb-move-transcript-'), 'earlier.jsonl');
+  fs.writeFileSync(earlier, '{}\n');
+  const { whole: _whole, ...partway } = JSON.parse(fs.readFileSync(placedFile, 'utf8'));
+  fs.writeFileSync(placedFile, JSON.stringify({ ...partway, transcript: [earlier] }));
+  assert.equal(t.runner.movePlaced(r), false);
+  await t.runner.placeMove(r, entries);
+  assert.equal(fs.existsSync(earlier), false, "the earlier placing's transcript went");
+  assert.equal((await t.runner.adoptMoved(r)).adopted, true, 'placed again, whole');
+});

@@ -465,8 +465,8 @@ name the same thread:
   thread.
 - **The environment.** `THREADBEAR_THREAD_ID`, `THREADBEAR_HOME`,
   `THREADBEAR_RUNNER_HOME` and `THREADBEAR_RUNNER_VERSION` (what each is
-  for is in `docs/protocol/tools.md`), with the runner's own `bin/` at the front
-  of `PATH`, so `tb self`, `tb restart` and the deploy script know which
+  for is in `docs/protocol/tools.md`), with the runner's `tb` at the front
+  of `PATH` (the current release's, docs/protocol/tools.md), so `tb self`, `tb restart` and the deploy script know which
   thread and runner they're in.
 
 Neither the tools nor `tb` will delete, interrupt, snooze or archive the

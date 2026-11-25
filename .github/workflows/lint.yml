@@ -1,0 +1,94 @@
+# ESLint over the repo's TypeScript and JavaScript, the same lint ./check.sh
+# runs for tb land: eslint.config.mjs (mikecann-lint's rules) with the per-file
+# counts in eslint-suppressions.json, all of it, as check.sh does on main.
+# On 22 Nov 2026 PR #95 had every check here green and was merged, though it
+# went past convex/push.ts's suppressed count and added an `any` to a runner
+# test: only check.sh linted, so the next tb land failed lint on main and held
+# ten landings until it was fixed by hand.
+#
+# Its own workflow rather than a job in runner.yml, as it covers more than
+# that one's paths (features/'s steps, shared/'s JavaScript, the lint setup)
+# and a spec change shouldn't run the runner's tests on four machines.
+# One standard Linux runner, so it costs nothing (runner.yml says why that
+# matters); the type-aware rules need the packages check.sh's check hosts
+# have (the root's, runner/'s and features/'s), or imported types read as
+# errors. About 3 GB of memory, which GitHub's runners have.
+#
+# tb land: hold while red
+name: TypeScript lint
+
+on:
+  push:
+    branches: [main]
+    # What eslint.config.mjs lints (everything its ignores leave), the lint
+    # setup and the packages its rules and types come from.
+    paths:
+      - 'runner/**'
+      - 'convex/**'
+      - 'web/**'
+      - 'relay/**'
+      - 'features/**'
+      - 'shared/**'
+      - 'eslint.config.mjs'
+      - 'eslint-suppressions.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/lint.yml'
+  pull_request:
+    # The same list as push's, kept in step by hand.
+    paths:
+      - 'runner/**'
+      - 'convex/**'
+      - 'web/**'
+      - 'relay/**'
+      - 'features/**'
+      - 'shared/**'
+      - 'eslint.config.mjs'
+      - 'eslint-suppressions.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/lint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A held workflow's runs on main finish one at a time, never cancelled
+# (docs/thread-worktrees.md, "Red on GitHub"); a pull request's newer push
+# replaces its older run.
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    # Only in Mike's repo or when started by hand, as runner.yml says.
+    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
+    name: ESLint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            runner/package-lock.json
+            features/package-lock.json
+
+      - name: Packages
+        run: |
+          npm ci --no-audit --no-fund
+          (cd runner && npm ci --no-audit --no-fund)
+          (cd features && npm ci --no-audit --no-fund)
+
+      - name: ESLint
+        # check.sh's full lint, word for word (its "lint" step).
+        run: |
+          NODE_OPTIONS="--max-old-space-size=4096" npm run lint:files -- . || {
+            echo "::error::ESLint found problems (eslint.config.mjs, with the counts in eslint-suppressions.json). To see them: npm run lint:files -- <the files you changed>, or ./check.sh --quick. A file over its suppressed count lists every old problem of that rule in it: fix the one your change added (git diff shows which). Never hand-edit eslint-suppressions.json: npx eslint <file> --suppress-rule <rule> records one that must stay."
+            exit 1
+          }

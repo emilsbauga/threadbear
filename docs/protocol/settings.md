@@ -104,6 +104,26 @@ where it installs (Antigravity: an `agy_acp_server.par` on the PATH).
   its MCP calls say `_meta.mcp: { server, tool }`. Keys for Google's API in
   the runner's environment are blanked, so its Google sign-in is what's used.
   It has no updater, so Update does nothing for it.
+- **Gemini's plan usage** (since 23 Nov 2026). Antigravity's turns carry no
+  usage reading, so the runner reads the Google plan's quota itself with the
+  server's own `/usage` command, which it answers in its ACP layer with no
+  model turn and no quota spent: a short-lived process in an empty temp folder
+  (`session/new`, then `session/prompt` with the text `/usage` only if the
+  session's `available_commands_update` lists `usage`, then `session/close`).
+  It's read a minute after the runner starts, whenever its last reading or
+  try is 10 minutes old (`LIMITS_POLL_MS`), and 5 seconds after a Gemini turn
+  ends, at most every 2 minutes (`runner/src/limit-recheck.ts`). The answer
+  is markdown, not a contract (`runner/src/adapters/acp/agy-usage.ts`): the
+  "Gemini Models" group's weekly and 5-hour lines become the login's
+  `weekly` and `five_hour` windows (remaining percent, resets read only when
+  they say UTC), which decide its room as Claude's and Codex's do, with
+  `blocked` when either is under 1%. Any other group ("Claude and GPT
+  models") adds a `weekly_model` window, `Weekly <group>`, and an `other`
+  one, `5-hour <group>`, which never decide it: nor when a block ends, nor
+  whether a login a turn ran dry is back. `plan` is session/new's
+  `_meta.antigravity.tier.name` ("Google AI Ultra"), sent only with a reading. An answer that doesn't
+  read, or no Gemini group (or two), is no reading: nothing is recorded and
+  nothing is shown as an error. The login's token is never read.
 - **Cards for ACP tools.** Every frame of a tool call (its updates and its
   permission requests) is kept by id for the session, and a call is judged
   on all of them: what it said earlier can't be washed out by a later
@@ -255,6 +275,10 @@ type StandingInstructions = {
   message, not in a fresh session's instructions, can fade in a compaction, as a
   project's joined line can.
 
+With the `recipes` experiment on, the habits of the recipes the user has
+switched on are given after these, in the same message and the same note
+when either changes (projects.md, "Habits").
+
 ## Shared memory
 
 `runner/src/memory-sync.ts`, `convex/memorySync.ts` (API 84). The
@@ -351,6 +375,75 @@ happened, not when it's planned or talked about, and the thread wakes
 runner message giving the agent a turn to check for itself and snooze again
 with the same words if it hasn't. That message names the other thread's id
 only when send_message would let it without a card.
+
+**A check is quiet.** Both wakes that give the agent a turn to check (the
+librarian's, above, and one at a wait's latest time, below) go through
+`Runner.wakeToCheck`. The wake doesn't mark the thread unread (no `woke`
+on its summary, no notification or push): on 20 Nov 2026 a wrong guess by
+the librarian woke a thread for 26 seconds and pinged Mike's phone. How
+the check's turn ends says whether he's needed. Back to sleep (a snooze,
+`waitFor`, an archive): nothing. Anything else leaves it in the inbox,
+unread and with its "Woke up", whatever `needs` it ended with, as the
+thing has happened or the agent wants him; so does a snooze that doesn't
+take, and a turn that ends with the check still owed (it failed, or was
+stopped as it finished). Not while the runner is about to carry the turn
+on (a full login, a lost network), nor after a turn Mike's own message
+was in, and a helper thread that archives itself (A quiet inbox) is marked
+only if it stays. A mark left from before the thread slept is cleared as
+the check wakes it. A check that can't start (behind a queued message or a move, or
+held for Mike because the thread has more access than when it wrote its
+words, `runner/src/runner/ceiling.ts`) is unread at once, as any wake is. Until the check's
+turn completes, the record keeps why it woke as a line for the agent
+(`wakeNews`, with `check`: the check's message id), which goes in front of
+any other message: one that runs ahead of a check still queued is told the
+check comes next, and one after a check that never reached the agent (its
+folder gone, a restart while it was queued, Stop) is told to do the check
+then.
+
+**The latest time passing.** A wait in words with a time as well wakes at
+that time if nothing else woke it first (`Runner.wakeAtTime`; the words
+and numbers are in `wake-when.ts`):
+
+- **Mike's own** comes back as it always has, in the inbox with no turn,
+  but its `system.note` says why ("Woke up after 2 days: you haven't
+  talked about woodworking, and this was the latest it would wait
+  (Saturday 31 October, 9 am).").
+- **Its agent's** gets a turn to check for itself, as when the librarian
+  thinks it has happened: a note ("Woke up after 18 hours: still no sign
+  that …, and this was the latest it would wait (…). Its agent is checking
+  for itself.") and a runner message (`wakeReason` "The latest it would
+  wait passed") that says the time ran out with nothing seen, to check the
+  work itself, to snooze again with the same words if it hasn't happened,
+  or to end the turn with no snooze and `needs: "you"` if it never will or
+  Mike should chase it. It's quiet, as above. No check starts while the runner is still
+  starting, handing its threads over or waiting to restart: the thread
+  sleeps on, its time passed, and the next runner (or this one, a minute
+  on) gives it. The record counts these (`lateChecks: { n, waitedMs,
+  since, backOff? }`, never in a `ThreadSummary`) until Mike next writes to
+  the thread, whatever words the agent snoozes with. A snooze in words at
+  the end of the check's own turn (or of one the runner carried it on
+  with) has a latest time at least twice as far off as the last sleep was
+  meant to be, a week at most (the model's own when that is later). While
+  checks are counted a wait in words always has a latest time, even when
+  the model gives none, and a snooze that doesn't take leaves the thread
+  unread. After three checks in a row the next latest time runs no turn:
+  the thread lands in the inbox, its note adding how long it has waited
+  and that it's Mike's to decide.
+- A wake at a latest time that ran no turn is kept as a line for the agent
+  (`wakeNews`, "Note from Threadbear: this thread woke by itself on …"),
+  which goes in front of the thread's next message as news of a button
+  press does, is told again if that turn doesn't complete or the thread
+  moves to a fresh session within three days, and is dropped when the
+  thread next sleeps. A check keeps one too until its turn completes, so a
+  check that never reached the agent (its folder gone, a restart while it
+  was queued, Stop) is said with the next message, which asks for the
+  check then; a message that runs ahead of a check still queued is told
+  the check comes next.
+
+A thread archived while it slept ends its sleep quietly, as before. A
+runner that was down at the latest time gives the check once it's
+listening. A time alone (a preset, "2h", words read as only a time) wakes
+as before.
 
 The thread gets a `system.note` saying what was worked out ("Hibernating
 until Saturday 31 October, 9 am. You said "at the weekend"."). A model
@@ -643,9 +736,41 @@ thread to another login when the one it's on runs out of room.
   reads each login whose reading says blocked or under 1% again, if that
   reading is 10 minutes old or more and its provider can read without a
   turn (Codex: `account/rateLimits/read` in a short-lived app-server;
-  `runner/src/limit-recheck.ts`). The answer goes into the usage store
+  Grok: `_x.ai/billing` in a short-lived `grok agent`, since 24 Nov 2026;
+  `runner/src/limit-recheck.ts`). Gemini is read this way all the time, not
+  only when it's out (ACP agents, "Gemini's plan usage"). The answer goes into the usage store
   like a turn's, so room lifts the block and threads waiting for room
-  carry on by themselves. Signed-out and plan-ended logins aren't read.
+  carry on by themselves. A recheck that finds room in every window it
+  names (but Gemini's other groups, which never decide: "Gemini's plan
+  usage") also ends the block a turn that ran dry put on the login, and a
+  pool thread waiting on that same login carries on there before the reset
+  its wait named (a top-up, or a reset used outside Threadbear). A turn's
+  own reading never does: one from another session can say the login has
+  room while the model that ran out still has none. A turn's reading is
+  recorded under the login its CLI runs on, even if the thread was moved
+  meanwhile. While a login is held out after a turn ran it dry, the store
+  keeps it blocked whatever a turn's reading says, and it's rechecked every
+  10 minutes from the last recheck, however fresh the turns' readings are.
+  A login counts as back only with more room than it read as when it ran
+  dry (so a 402 while Grok still reads room doesn't send threads back to be
+  refused), or when Grok says a prepaid or on-demand balance is carrying it.
+  Signed-out and plan-ended logins aren't read. A login with no reading at
+  all is read once, so a Grok login shows its room before its first turn.
+- **Grok's readings** (`runner/src/adapters/acp/grok-billing.ts`). Grok's
+  `_x.ai/billing` gives the share of the plan's period used
+  (`creditUsagePercent`) and the period (`USAGE_PERIOD_TYPE_WEEKLY`, its
+  end): one `weekly` window (`monthly`, `daily` or `other` for other
+  periods), `blocked` when it's used up and no prepaid balance or on-demand
+  room is left, and the tier as `plan`. A Grok thread reads it on its own
+  process after a turn that ran out of usage, and at
+  most every 5 minutes after completed turns, just after the turn's result
+  (recorded under the login the CLI ran on). A Grok turn that fails with
+  HTTP 402 or Grok's words for running out ("usage balance exhausted", "out
+  of credits", "spending limit", "usage limit reached") ends `failed` with
+  `errorKind: "usageLimit"`, and its `error` names the login and Grok's
+  own reason, read from the JSON-RPC error's `data.message` (or Grok's
+  `retry_state` and `turn_completed` notes) rather than its bare "Internal
+  error" (`runner/src/adapters/acp/connection.ts`, `AcpRpcError`).
 - **Carrying on by itself is Mike's to turn off**, per thread:
   `threads.update { carryOnAtReset: false }` ends any wait for room (with
   a note) and stops later limits starting one; pool moves to a login with

@@ -3,9 +3,7 @@
 // (a thread in two projects is under both) and its archived ones folded away a
 // few at a time, its parts nested under it; then the threads in no project,
 // and the archived projects folded away at the foot. A heading opens the
-// project's page. With the projectDecisions experiment each project is one
-// row instead, folded until its chevron opens it, saying how many decisions
-// wait in it (`ProjectFoldRow`).
+// project's page.
 //
 // A thread's row is the inbox's own (sidebar.rs), leaving out the project
 // whose heading it's under, as the Swift row's `heading` does.
@@ -26,7 +24,7 @@ use crate::style::px;
 use serde_json::{json, Value};
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::nested::{self, Nesting};
-use threadbear_core::projects::{self as rules, Project, Section, Sections, UNFILED_ID};
+use threadbear_core::projects::{Project, Section, Sections, UNFILED_ID};
 use threadbear_core::sidebar::RowLook;
 
 /// How far a part sits in under its parent, with its threads.
@@ -40,14 +38,6 @@ enum Item {
     Heading {
         project: Project,
         count: usize,
-        part: bool,
-    },
-    Fold {
-        id: String,
-        title: String,
-        project: Option<Project>,
-        count: usize,
-        decisions: usize,
         part: bool,
     },
     Unfiled,
@@ -80,7 +70,6 @@ impl Item {
     fn key(&self) -> String {
         match self {
             Item::Heading { project, .. } => format!("heading:{}", project.id),
-            Item::Fold { id, .. } => format!("fold:{id}"),
             Item::Unfiled => "unfiled".into(),
             Item::Row { thread, group, .. } => format!("row:{group}:{}", thread.id),
             Item::ArchivedFold { project, .. } => format!("archived:{project}"),
@@ -108,83 +97,38 @@ impl Threadbear {
     fn projects_list_items(
         &self,
         sections: &Sections,
-        folding: bool,
         nesting: Option<&Nesting>,
         now: i64,
     ) -> Vec<Item> {
-        let open = &self.projects.open_rows;
-        let shows = |id: &str| !folding || open.contains(id);
         let mut items = Vec::new();
         for top in sections.top_level() {
-            // A parent's row counts its parts' threads and decisions too.
-            let all = sections.threads_with_parts(top);
-            if folding {
-                items.push(Item::Fold {
-                    id: top.id().to_owned(),
-                    title: top.project.title.clone(),
-                    project: Some(top.project.clone()),
-                    count: all.len(),
-                    decisions: rules::decision_count(&all),
-                    part: false,
-                });
-            } else {
-                items.push(Item::Heading {
-                    project: top.project.clone(),
-                    count: top.threads.len(),
-                    part: false,
-                });
-            }
-            if !shows(top.id()) {
-                continue;
-            }
+            items.push(Item::Heading {
+                project: top.project.clone(),
+                count: top.threads.len(),
+                part: false,
+            });
             self.push_section_rows(&mut items, top, false, nesting, now);
-            // Its parts nest under it, indented, folding with it.
+            // Its parts nest under it, indented.
             for part in sections.parts_of(top.id()) {
-                if folding {
-                    items.push(Item::Fold {
-                        id: part.id().to_owned(),
-                        title: part.project.title.clone(),
-                        project: Some(part.project.clone()),
-                        count: part.threads.len(),
-                        decisions: rules::decision_count(&part.threads),
-                        part: true,
-                    });
-                } else {
-                    items.push(Item::Heading {
-                        project: part.project.clone(),
-                        count: part.threads.len(),
-                        part: true,
-                    });
-                }
-                if shows(part.id()) {
-                    self.push_section_rows(&mut items, part, true, nesting, now);
-                }
+                items.push(Item::Heading {
+                    project: part.project.clone(),
+                    count: part.threads.len(),
+                    part: true,
+                });
+                self.push_section_rows(&mut items, part, true, nesting, now);
             }
         }
         if !sections.unfiled.is_empty() {
-            if folding {
-                items.push(Item::Fold {
-                    id: UNFILED_ID.to_owned(),
-                    title: "Not in a project".to_owned(),
-                    project: None,
-                    count: sections.unfiled.len(),
-                    decisions: rules::decision_count(&sections.unfiled),
-                    part: false,
-                });
-            } else {
-                items.push(Item::Unfiled);
-            }
-            if shows(UNFILED_ID) {
-                self.push_rows(
-                    &mut items,
-                    &sections.unfiled,
-                    UNFILED_ID,
-                    false,
-                    nesting,
-                    now,
-                    |t| (*t).clone(),
-                );
-            }
+            items.push(Item::Unfiled);
+            self.push_rows(
+                &mut items,
+                &sections.unfiled,
+                UNFILED_ID,
+                false,
+                nesting,
+                now,
+                |t| (*t).clone(),
+            );
         }
         if sections.sections.is_empty() && sections.unfiled.is_empty() {
             items.push(Item::Empty);
@@ -320,7 +264,6 @@ impl Threadbear {
         let p = palette(cx);
         let now = now_ms();
         let clock = threadbear_core::sidebar::local_now();
-        let folding = self.project_decisions_on();
         // Worked out once for the count and the rows: it sorts every
         // project's threads.
         let items = {
@@ -338,7 +281,7 @@ impl Threadbear {
             });
             (
                 sections.top_level().len(),
-                self.projects_list_items(&sections, folding, nesting.as_ref(), now),
+                self.projects_list_items(&sections, nesting.as_ref(), now),
             )
         };
         let (top_count, items) = items;
@@ -364,23 +307,6 @@ impl Threadbear {
                         count,
                         part,
                     } => self.render_project_heading(&project, count, part, &p, cx),
-                    Item::Fold {
-                        id,
-                        title,
-                        project,
-                        count,
-                        decisions,
-                        part,
-                    } => self.render_project_fold(
-                        &id,
-                        &title,
-                        project.as_ref(),
-                        count,
-                        decisions,
-                        part,
-                        &p,
-                        cx,
-                    ),
                     Item::Unfiled => self.section_heading(
                         "projects-unfiled",
                         "Not in a project",
@@ -620,175 +546,6 @@ impl Threadbear {
             .into_any_element()
     }
 
-    /// `ProjectFoldRow` (the projectDecisions experiment): the chevron shows or
-    /// hides its threads under it, the rest of the row opens its page. On the
-    /// right, its decisions in the needs-you orange when it has any, else a
-    /// quiet count of its threads. Not in a project folds the same way, and
-    /// having no page, its whole row folds.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
-    )]
-    fn render_project_fold(
-        &mut self,
-        id: &str,
-        title: &str,
-        project: Option<&Project>,
-        count: usize,
-        decisions: usize,
-        part: bool,
-        p: &Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let open = self.projects.open_rows.contains(id);
-        let key = format!("fold:{id}");
-        let hovering = self.projects.hovered.as_deref() == Some(key.as_str());
-        let is_page =
-            project.is_some_and(|pr| self.projects.open.as_deref() == Some(pr.id.as_str()));
-        let chevron_color = if hovering { p.secondary } else { p.faint };
-        let toggle_id = id.to_owned();
-        // 20 by 22 with 6 over and under, as the Swift chevron's frame, which
-        // makes the row 34 tall.
-        let chevron = tipped!(
-            div().flex_none().w(px(20.)).py(px(6.)),
-            ElementId::Name(format!("fold-chevron-{id}").into()),
-            if open {
-                "Hide its threads"
-            } else {
-                "Show its threads"
-            }
-        )
-        .on_click(
-            cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_project_row(&toggle_id, cx)),
-        )
-        .child(
-            div()
-                .h(px(22.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(
-                    if open {
-                        "chevron.down"
-                    } else {
-                        "chevron.right"
-                    },
-                    9.,
-                    chevron_color,
-                )),
-        );
-        let mark: AnyElement = match project {
-            Some(pr) => project_icon(Some(pr), "", 16., cx),
-            None => div()
-                .size(px(16.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon("square.dashed", 12., p.secondary))
-                .into_any_element(),
-        };
-        let trailing: Option<AnyElement> = if decisions > 0 {
-            Some(
-                div()
-                    .flex_none()
-                    .text_size(px(style::size::SIDEBAR_META))
-                    .line_height(px(14.))
-                    .font_medium()
-                    .text_color(style::needs_you(cx))
-                    .child(rules::decision_label(decisions))
-                    .into_any_element(),
-            )
-        } else if count > 0 {
-            Some(
-                div()
-                    .flex_none()
-                    .text_size(px(style::size::SIDEBAR_META))
-                    .line_height(px(14.))
-                    .text_color(p.faint)
-                    .child(count.to_string())
-                    .into_any_element(),
-            )
-        } else {
-            None
-        };
-        let tip = match project {
-            None if open => "Hide the threads in no project".to_owned(),
-            None => "Show the threads in no project".to_owned(),
-            Some(pr) if decisions > 0 => format!(
-                "Open {} to answer its {}",
-                pr.title,
-                rules::decision_label(decisions)
-            ),
-            Some(pr) => format!("Open {}", pr.title),
-        };
-        let (click_id, page_id) = (id.to_owned(), project.map(|pr| pr.id.clone()));
-        let main = tipped!(
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .gap(px(7.))
-                .pr(px(TRAILING))
-                .py(px(6.)),
-            ElementId::Name(format!("fold-row-{id}").into()),
-            tip
-        )
-        .on_click(
-            cx.listener(move |this, _: &ClickEvent, _, cx| match &page_id {
-                Some(page) => this.open_project_page(page, cx),
-                None => this.toggle_project_row(&click_id, cx),
-            }),
-        )
-        .child(mark)
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(px(style::size::SIDEBAR_TITLE))
-                .line_height(px(17.))
-                .font_semibold()
-                .text_color(p.fg)
-                .child(title.to_owned()),
-        )
-        .children(trailing);
-        let menu_id = project.map(|pr| pr.id.clone());
-        let row = h_flex()
-            .id(ElementId::Name(format!("fold-{id}").into()))
-            .w_full()
-            .items_stretch()
-            .rounded(px(CORNER))
-            .when(is_page, |s| s.bg(p.selected))
-            .when(!is_page && hovering, |s| s.bg(p.hover))
-            .on_hover(self.hover_listener(key, cx))
-            .when_some(menu_id, |s, menu_id| {
-                s.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
-                        this.open_project_menu(&menu_id, ev.position, window, cx)
-                    }),
-                )
-            })
-            .child(chevron)
-            .child(main);
-        div()
-            .pt(px(2.))
-            .when(part, |d| d.pl(px(PART_INDENT)))
-            .child(row)
-            .into_any_element()
-    }
-
-    /// Opens or folds a project's row, remembered between launches.
-    pub(crate) fn toggle_project_row(&mut self, id: &str, cx: &mut Context<Self>) {
-        if !self.projects.open_rows.remove(id) {
-            self.projects.open_rows.insert(id.to_owned());
-        }
-        let mut rows: Vec<String> = self.projects.open_rows.iter().cloned().collect();
-        rows.sort();
-        self.settings.saved.projects_open_rows = Some(rows);
-        self.save_settings_soon(cx);
-        cx.notify();
-    }
-
     /// `ArchivedFold`: under a project's open threads, how many it has
     /// archived, a click showing the newest few.
     fn render_archived_fold(
@@ -963,8 +720,6 @@ impl Threadbear {
 
     /// The Projects view in the dump, as the Swift app's has it: a section
     /// per project (parts too) in the sidebar's order, then Not in a project.
-    /// With the projectDecisions experiment a folded one lists no threads and
-    /// says how many it has.
     #[cfg(feature = "automation")]
     pub(crate) fn projects_sidebar_dump(&self) -> Value {
         let sections = Sections::build(
@@ -972,7 +727,6 @@ impl Threadbear {
             self.threads.values().map(|t| &**t),
             now_ms(),
         );
-        let folding = self.project_decisions_on();
         let thread = |t: &ThreadSummary| {
             let look = RowLook::of(t, None);
             json!({
@@ -980,51 +734,18 @@ impl Threadbear {
                 "hovered": self.sidebar.hover_override.as_deref() == Some(t.id.as_str()), "place": t.place(), "bold": look.emphasised,
             })
         };
-        let section = |id: &str, name: &str, threads: &[&ThreadSummary]| {
-            let folded = folding && !self.projects.open_rows.contains(id);
+        let section = |name: &str, threads: &[&ThreadSummary]| {
             json!({
                 "name": name,
-                "threads": if folded { vec![] } else { threads.iter().map(|t| thread(t)).collect::<Vec<_>>() },
-                "collapsed": folding.then_some(folded),
-                "count": folding.then_some(threads.len()),
+                "threads": threads.iter().map(|t| thread(t)).collect::<Vec<_>>(),
             })
         };
         let mut out: Vec<Value> = sections
             .sections
             .iter()
-            .map(|s| section(s.id(), &s.project.title, &s.threads))
+            .map(|s| section(&s.project.title, &s.threads))
             .collect();
-        out.push(section(UNFILED_ID, "Not in a project", &sections.unfiled));
+        out.push(section("Not in a project", &sections.unfiled));
         Value::Array(out)
     }
-}
-
-/// `expand` and `collapse` with `projectRow`: a project's folded row (the
-/// projectDecisions experiment), by title or id, as its chevron does; "-" or
-/// "Not in a project" for the threads in none.
-#[cfg(feature = "automation")]
-pub(crate) fn fold_automation(
-    app: &Entity<Threadbear>,
-    cmd: &Value,
-    cx: &mut App,
-) -> Result<Value, String> {
-    let key = cmd["projectRow"].as_str().unwrap_or("");
-    let id = if key == "Not in a project" || key == UNFILED_ID {
-        UNFILED_ID.to_owned()
-    } else {
-        app.read(cx)
-            .projects
-            .list
-            .iter()
-            .find(|p| p.id == key || p.title == key)
-            .map(|p| p.id.clone())
-            .ok_or_else(|| format!("no project {key}"))?
-    };
-    let open = cmd["cmd"] == "expand";
-    app.update(cx, |t, cx| {
-        if open != t.projects.open_rows.contains(&id) {
-            t.toggle_project_row(&id, cx);
-        }
-    });
-    Ok(json!("ok"))
 }

@@ -1160,6 +1160,25 @@
       }
     },
     {
+      "name": "message row: why the runner sent its own message (API 98)",
+      "input": {
+        "kind": "message",
+        "row": {
+          "seq": 18,
+          "role": "user",
+          "text": "For everyone: Codex answered.",
+          "origin": "runner",
+          "wakeReason": "Codex answered",
+          "turn": "bbbb2222",
+          "at": "2026-11-20T01:00:00.000Z"
+        }
+      },
+      "expect": {
+        "origin": "runner",
+        "wakeReason": "Codex answered"
+      }
+    },
+    {
       "name": "message row: a login's note (API 79)",
       "input": {
         "kind": "message",
@@ -1588,6 +1607,55 @@
       },
       "differs": {
         "android": "Android reads only phone:wakes for its Hibernating section, never phone:schedules, so it has no schedule row."
+      }
+    },
+    {
+      "name": "thread row: shared by link (API 8), for the share sheet",
+      "input": {
+        "kind": "thread",
+        "row": {
+          "threadId": "th-2",
+          "runnerId": "mac",
+          "title": "Shared write-up",
+          "cwd": "/Users/alex/dev/app",
+          "accountId": "claude-main",
+          "provider": "claude",
+          "status": "idle",
+          "needsYou": false,
+          "unread": false,
+          "preview": "Done.",
+          "lastActivityAt": "2026-11-20T01:00:00.000Z",
+          "share": {
+            "access": "link",
+            "slug": "abcDEF-_12"
+          }
+        }
+      },
+      "expect": {
+        "share.access": "link",
+        "share.slug": "abcDEF-_12"
+      },
+      "differs": {
+        "android": "Android's PhoneThread reads share (Models.kt PhoneShare), but its WireRowsTest doesn't list share fields yet."
+      }
+    },
+    {
+      "name": "identity (phone:me) with the website's address, for share links",
+      "input": {
+        "kind": "identity",
+        "row": {
+          "name": "iphone",
+          "expiresAt": "2027-02-18T00:00:00.000Z",
+          "apiVersion": 97,
+          "site": "https://threadbear-site.example.com"
+        }
+      },
+      "expect": {
+        "name": "iphone",
+        "site": "https://threadbear-site.example.com"
+      },
+      "differs": {
+        "android": "Android's PhoneIdentity reads site, but its WireRowsTest doesn't list it yet."
       }
     }
   ]

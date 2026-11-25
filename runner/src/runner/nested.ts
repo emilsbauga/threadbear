@@ -17,6 +17,7 @@ import type { RunnerPart } from './part.ts';
 import type { ImageRef } from '../protocol.ts';
 import { AGENT_MESSAGE_PREFIX } from '../protocol.ts';
 import { experimentOn } from '../experiments.ts';
+import { lowerMode } from '../access.ts';
 
 export const NESTED_THREADS = 'nestedThreads';
 
@@ -68,7 +69,13 @@ export const nestedPart = {
     // In a turn already: it goes into it, as any message would, at no cost.
     if (st.rt.turn || st.rec.queue.length || st.rt.deleted) return false;
     if (!this.nestedChildren(st).some((t) => this.stillWorking(t))) return false;
-    (st.rec.heldReports ??= []).push({ from: child.rec.id, text, at: this.isoNow() });
+    // Its ceiling (runner/ceiling.ts): send_message let it reach the starter
+    // as it is now (with no card, the starter had no more than the sender;
+    // with one, Mike allowed it at the starter's access). Raised above that
+    // before it's passed on, Mike reads it instead, unless its sender has
+    // been raised as far (Daybreak finding 164).
+    const ceiling = opts.ceiling ? lowerMode(opts.ceiling, this.agentCeiling(st)) : this.agentCeiling(st);
+    (st.rec.heldReports ??= []).push({ from: child.rec.id, text, at: this.isoNow(), ceiling });
     this.markDirty(st);
     this.log.info('nested threads: held a report for the thread that started it', { threadId: st.rec.id, from: child.rec.id });
     return true;
@@ -100,20 +107,40 @@ export const nestedPart = {
     this.deliverHeld(st);
   },
 
-  // The held reports, taken off the record, as one message's text.
+  // The held reports, taken off the record, as one message's text: those
+  // the starter may still hear (runner/ceiling.ts, mayPassOn), whose
+  // ceiling it hasn't been raised above since, or whose sender has as much
+  // access as it has now. The rest are Mike's to read, with a note. One
+  // saved before ceilings (22 Nov 2026) has only the second.
   takeHeld(this: Runner, st: ThreadState): string | undefined {
     const held = st.rec.heldReports;
     if (!held?.length) return undefined;
     delete st.rec.heldReports;
     this.markDirty(st);
-    return `${HELD_HEAD}\n\n${held.map((h) => h.text).join('\n\n')}`;
+    const me = this.authorityNow(st.rec.id);
+    const pass = held.filter((h) => this.mayPassOn(me, h.ceiling, h.from));
+    const kept = held.filter((h) => !pass.includes(h));
+    if (kept.length) {
+      const names = [...new Set(kept.map((h) => this.threads.get(h.from)?.rec.title ?? h.from.slice(0, 8)))].map((t) => `"${t}"`).join(', ');
+      const one = kept.length === 1;
+      this.withhold(
+        st,
+        'the threads it started reported back',
+        `${one ? 'A report' : `${kept.length} reports`} from ${names}, a thread it started, ${one ? "wasn't" : "weren't"} passed to this thread's agent: this thread has more access now than it had when ${one ? 'it was' : 'they were'} sent. Read ${one ? 'it' : 'them'} in that thread, and send a message here to carry on.`,
+      );
+      this.log.info('nested threads: held back reports from threads with less access', { threadId: st.rec.id, from: kept.map((h) => h.from) });
+    }
+    if (!pass.length) return undefined;
+    return `${HELD_HEAD}\n\n${pass.map((h) => h.text).join('\n\n')}`;
   },
 
   deliverHeld(this: Runner, st: ThreadState): void {
     const text = this.takeHeld(st);
     if (!text) return;
     this.log.info('nested threads: passed on held reports', { threadId: st.rec.id });
-    this.sendTo(st, text, [], { origin: 'runner', queue: true, wakeReason: 'The threads it started reported back' });
+    // Checked against its access now (takeHeld): raised again while this
+    // waits in the queue, it's held back as it leaves.
+    this.sendTo(st, text, [], { origin: 'runner', queue: true, wakeReason: 'The threads it started reported back', ceiling: this.authorityNow(st.rec.id).mode });
   },
 
   // At a start: anything held while the runner was down, whose threads

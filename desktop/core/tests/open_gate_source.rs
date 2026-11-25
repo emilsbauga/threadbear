@@ -106,6 +106,12 @@ const ALLOWED_LINES: &[(&str, &str, usize)] = &[
     // The setup cards ask GitHub's CLI who it's signed in as, once, from
     // fixed places with fixed arguments, and read only its words (hello.rs).
     ("gpui/src/hello.rs", "if let Ok(out) = std::process::Command::new(gh).args([\"auth\", \"status\", \"--hostname\", \"github.com\"]).output() {", 1),
+    // A picture's SVG is drawn in this same app binary started again with
+    // its fixed argument, the SVG on its stdin (svg_worker.rs, Daybreak
+    // 170): never a program a link, a file or the runner names. Its test
+    // starts that binary the same way.
+    ("gpui/src/svg_worker.rs", "let mut command = std::process::Command::new(exe);", 1),
+    ("gpui/tests/svg_worker.rs", "let mut command = Command::new(env!(\"CARGO_BIN_EXE_threadbear-gpui\"));", 1),
     ("gpui/src/swift_import.rs", "let out = Command::new(\"/usr/bin/defaults\").args([\"export\", \"com.mikerosoft.threadbear\", \"-\"]).stderr(Stdio::null()).output().map_err(|e| format!(\"couldn't run defaults: {e}\"))?;", 1),
 ];
 

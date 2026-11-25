@@ -224,20 +224,35 @@ data class PhoneThread(
     val review: PhoneLabReview? = null,
     /** The turn the done card's fields (review, looseEnds) are from, as message rows name turns (API 76). */
     val cardTurn: String? = null,
+    /** Its sharing by link (API 8), null for one never shared. */
+    val share: PhoneShare? = null,
+    /**
+     * What it's waiting on, as the runner worked it out (WaitState.kt). Null
+     * from a runner before 23 Nov 2026, which leaves the app's own rule.
+     */
+    val waitState: WaitState? = null,
 ) {
     val id get() = threadId
     val isBusy get() = status == ThreadStatus.RUNNING || status == ThreadStatus.STARTING
 
     /** A design review waits on Mike and the thread has finished working. */
-    val reviewWaiting get() = (pendingReviews ?: 0.0) > 0 && !isBusy && working == null
+    val reviewWaiting get() = waitState?.let { it == WaitState.REVIEW } ?: ((pendingReviews ?: 0.0) > 0 && !isBusy && working == null)
 
     /** The last turn ended asking Mike for something he hasn't done yet. */
     val waitingOnMike: Boolean
         get() {
-            if (needs != "you" || isBusy) return false
+            if (needs != "you") return false
             val asks = asks ?: emptyList()
-            return asks.isEmpty() || asks.any { it.ticked != true }
+            val open = asks.isEmpty() || asks.any { it.ticked != true }
+            return waitState?.let { it == WaitState.NEEDS_YOU && open } ?: (!isBusy && open)
         }
+
+    /**
+     * Background work (a shell job, sub-agent or workflow) going with no turn
+     * holding it up for Mike: the runner's job state, or, from an older
+     * runner, any working line.
+     */
+    val jobGoing get() = waitState?.let { it == WaitState.JOB } ?: (working != null)
 
     fun hasEarlier(oldestSeq: Int?): Boolean {
         val earliest = earliestSeq ?: return false
@@ -296,6 +311,8 @@ data class PhoneThread(
             // Lenient field by field: a ledger in a shape this phone doesn't know never stops the thread loading.
             review = o.obj("review")?.let { runCatching { PhoneLabReview.read(it) }.getOrNull() },
             cardTurn = o.str("cardTurn"),
+            share = PhoneShare.read(o.obj("share")),
+            waitState = WaitState.of(o.str("waitState")),
         )
     }
 }
@@ -388,6 +405,8 @@ data class PhoneMessage(
     val at: Instant,
     /** A Plan first plan in full (backend API 72): drawn as a plan card, never folded into the turn's working. */
     val plan: Boolean = false,
+    /** Why the runner sent its own message, in a few words (backend API 98): "Codex answered". */
+    val wakeReason: String? = null,
 ) {
     companion object {
         fun read(o: JsonObject): PhoneMessage = PhoneMessage(
@@ -411,6 +430,7 @@ data class PhoneMessage(
             },
             at = o.needDate("at"),
             plan = o.bool("plan") ?: false,
+            wakeReason = o.str("wakeReason"),
         )
     }
 }
@@ -487,7 +507,8 @@ data class PhoneRunner(
     }
 }
 
-data class PhoneIdentity(val name: String, val expiresAt: Instant?, val apiVersion: Int? = null, val pushOff: Boolean? = null) {
+/** phone:me's answer. `site` is the website's address, from a backend that says it (ShareLinks.site). */
+data class PhoneIdentity(val name: String, val expiresAt: Instant?, val apiVersion: Int? = null, val pushOff: Boolean? = null, val site: String? = null) {
     val sendsNotifications get() = pushOff != true
 
     companion object {
@@ -496,6 +517,7 @@ data class PhoneIdentity(val name: String, val expiresAt: Instant?, val apiVersi
             expiresAt = o.date("expiresAt"),
             apiVersion = o.num("apiVersion")?.wholeCount(),
             pushOff = o.bool("pushOff"),
+            site = o.str("site"),
         )
     }
 }
@@ -511,6 +533,8 @@ object BackendApi {
     const val WAITING_SENDS = 57
     const val STOP = 69
     const val STARS = 27
+    /** From 8 a thread can be shared by link from the phone (phone:share). */
+    const val SHARING = 8
     /** From 3 each phone chooses when it's notified (phone:setNotifications). */
     const val NOTIFICATION_SETTING = 3
     /** From 16 phone:search looks through archived threads past the newest 100. */

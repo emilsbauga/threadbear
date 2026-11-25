@@ -38,8 +38,8 @@ import Testing
         #expect(MarkdownBlock.parse("~~~ HTML title=x\n<b>hi</b>\n~~~") == [.rich(kind: .html, source: "<b>hi</b>")])
         #expect(MarkdownBlock.parse("```Mermaid\npie\n```") == [.rich(kind: .mermaid, source: "pie")])
         // Anything else, or a word that only starts the same, stays code.
-        #expect(MarkdownBlock.parse("```swift\nlet a = 1\n```") == [.code("let a = 1")])
-        #expect(MarkdownBlock.parse("```htmlx\n<b>\n```") == [.code("<b>")])
+        #expect(MarkdownBlock.parse("```swift\nlet a = 1\n```") == [.code("let a = 1", language: "swift")])
+        #expect(MarkdownBlock.parse("```htmlx\n<b>\n```") == [.code("<b>", language: "htmlx")])
         #expect(MarkdownBlock.parse("```\nmermaid\n```") == [.code("mermaid")])
     }
 
@@ -53,31 +53,31 @@ import Testing
         #expect(MarkdownBlock.parse("~~~Email to=x\nHi,\nBye\n~~~") == [.draft(DraftBlock(kind: .email, source: "Hi,\nBye"))])
         #expect(MarkdownBlock.parse("```draft\nhi\n```") == [.draft(DraftBlock(kind: .draft, source: "hi"))])
         // Still streaming in, empty, or only starting the same: code.
-        #expect(MarkdownBlock.parse("```slack\n*Update*\n• one") == [.code("*Update*\n• one")])
-        #expect(MarkdownBlock.parse("```slack\n\n```") == [.code("")])
-        #expect(MarkdownBlock.parse("```slackbot\nhi\n```") == [.code("hi")])
+        #expect(MarkdownBlock.parse("```slack\n*Update*\n• one") == [.code("*Update*\n• one", language: "slack")])
+        #expect(MarkdownBlock.parse("```slack\n\n```") == [.code("", language: "slack")])
+        #expect(MarkdownBlock.parse("```slackbot\nhi\n```") == [.code("hi", language: "slackbot")])
     }
 
     @Test func aDraftNeedsItsOwnClosingFence() {
         // Only a fence on its own closes it, at any indent.
-        #expect(MarkdownBlock.parse("```slack\nhello\n> ```") == [.code("hello\n> ```")])
+        #expect(MarkdownBlock.parse("```slack\nhello\n> ```") == [.code("hello\n> ```", language: "slack")])
         #expect(MarkdownBlock.parse("```slack\nhello\n   ```") == [.draft(DraftBlock(kind: .slack, source: "hello"))])
         #expect(MarkdownBlock.parse("```slack\nhello\n    ```") == [.draft(DraftBlock(kind: .slack, source: "hello"))])
-        #expect(MarkdownBlock.parse("```slack\nhello\n``` x") == [.code("hello\n``` x")])
+        #expect(MarkdownBlock.parse("```slack\nhello\n``` x") == [.code("hello\n``` x", language: "slack")])
         // A fence opening on a list item's own line: the block, in the item.
         #expect(MarkdownBlock.parse("- ```slack\n  hello\n  ```") == [.draft(DraftBlock(kind: .slack, source: "hello"))])
         #expect(MarkdownBlock.parse("- Run:\n1. ```sh\n   tb land\n   ```") == [
-            .listItem(text: "Run:", marker: "•", depth: 0, task: nil), .code("tb land"),
+            .listItem(text: "Run:", marker: "•", depth: 0, task: nil), .code("tb land", language: "sh"),
         ])
         // A different fence character, or a shorter run, doesn't close it.
-        #expect(MarkdownBlock.parse("```slack\nhello\n~~~") == [.code("hello\n~~~")])
-        #expect(MarkdownBlock.parse("````slack\nhello\n```") == [.code("hello\n```")])
+        #expect(MarkdownBlock.parse("```slack\nhello\n~~~") == [.code("hello\n~~~", language: "slack")])
+        #expect(MarkdownBlock.parse("````slack\nhello\n```") == [.code("hello\n```", language: "slack")])
         #expect(MarkdownBlock.parse("````slack\nhello\n````") == [.draft(DraftBlock(kind: .slack, source: "hello"))])
         #expect(MarkdownBlock.parse("```slack\r\nhi\r\nthere\r\n```\r\n") == [.draft(DraftBlock(kind: .slack, source: "hi\nthere"))])
         #expect(MarkdownBlock.parse("> ```slack\n> hello\n> ```") == [.quote([.draft(DraftBlock(kind: .slack, source: "hello"))])])
         // Too big to be a message: code.
         let big = String(repeating: "a", count: DraftBlock.maxSource + 1)
-        #expect(MarkdownBlock.parse("```slack\n\(big)\n```") == [.code(big)])
+        #expect(MarkdownBlock.parse("```slack\n\(big)\n```") == [.code(big, language: "slack")])
     }
 
     // Cross-lab review, round three (6 Nov).
@@ -111,20 +111,20 @@ import Testing
             .listItem(text: "root", marker: "•", depth: 0, task: nil),
             .listItem(text: "middle", marker: "•", depth: 1, task: nil),
             .listItem(text: "child", marker: "•", depth: 2, task: nil),
-            .code("let x = 1"),
+            .code("let x = 1", language: "swift"),
             .paragraph("After."),
         ])
         #expect(MarkdownBlock.parse("- item\n\n# Heading\n\n  ```swift\n  let x = 1\n```\n\nAfter.") == [
             .listItem(text: "item", marker: "•", depth: 0, task: nil),
             .heading(level: 1, text: "Heading"),
-            .code("let x = 1"),
+            .code("let x = 1", language: "swift"),
             .paragraph("After."),
         ])
     }
 
     @Test func aFencedItemKeepsTheListsDepths() {
         #expect(MarkdownBlock.parse("- ```sh\n  echo hi\n  ```\n  - child\n- sibling") == [
-            .code("echo hi"),
+            .code("echo hi", language: "sh"),
             .listItem(text: "child", marker: "•", depth: 1, task: nil),
             .listItem(text: "sibling", marker: "•", depth: 0, task: nil),
         ])
@@ -136,17 +136,17 @@ import Testing
             .listItem(text: "two", marker: "•", depth: 1, task: nil),
             .listItem(text: "three", marker: "•", depth: 0, task: nil),
         ])
-        #expect(MarkdownBlock.parse("```swift\nlet a = 1\n```\nafter") == [.code("let a = 1"), .paragraph("after")])
+        #expect(MarkdownBlock.parse("```swift\nlet a = 1\n```\nafter") == [.code("let a = 1", language: "swift"), .paragraph("after")])
         #expect(MarkdownBlock.parse("````\n```\ninner\n```\n````") == [.code("```\ninner\n```")])
         #expect(MarkdownBlock.parse("Use `a` and ``b``") == [.paragraph("Use `a` and ``b``")])
     }
 
     @Test func aFenceStillStreamingInOrTooBigStaysCode() {
         // The reply so far, its fence not closed yet: drawn once it is.
-        #expect(MarkdownBlock.parse("```mermaid\nflowchart TD\n  A -->") == [.code("flowchart TD\n  A -->")])
+        #expect(MarkdownBlock.parse("```mermaid\nflowchart TD\n  A -->") == [.code("flowchart TD\n  A -->", language: "mermaid")])
         let big = String(repeating: "a", count: MarkdownBlock.maxRichSource + 1)
-        #expect(MarkdownBlock.parse("```html\n\(big)\n```") == [.code(big)])
-        #expect(MarkdownBlock.parse("```mermaid\n\n```") == [.code("")])
+        #expect(MarkdownBlock.parse("```html\n\(big)\n```") == [.code(big, language: "html")])
+        #expect(MarkdownBlock.parse("```mermaid\n\n```") == [.code("", language: "mermaid")])
     }
 
     @Test func aRichBlockInAListKeepsItsSource() {
@@ -259,7 +259,7 @@ import Testing
         """)
         #expect(blocks == [
             .listItem(text: "Run it:", marker: "1.", depth: 0, task: nil),
-            .code("tb land\n  --dry-run"),
+            .code("tb land\n  --dry-run", language: "sh"),
             .code("| not a table |\n|---|"),
         ])
     }
@@ -269,6 +269,38 @@ import Testing
             .paragraph("one two\nthree\nfour"),
             .paragraph("next"),
         ])
+    }
+
+    @Test func aCodeBlockKeepsItsLanguage() {
+        #expect(MarkdownBlock.parse("```sql\nselect 1\n```") == [.code("select 1", language: "sql")])
+        // Only the first word of the info string, as written.
+        #expect(MarkdownBlock.parse("```TS title=\"a.ts\" {1,3}\nlet a = 1\n```") == [.code("let a = 1", language: "TS")])
+        #expect(MarkdownBlock.parse("~~~\tpython\nx = 1\n~~~") == [.code("x = 1", language: "python")])
+        #expect(MarkdownBlock.parse("```{.rust}\nfn main() {}\n```") == [.code("fn main() {}", language: "rust")])
+        // None, or only spaces: no language.
+        #expect(MarkdownBlock.parse("```\nplain\n```") == [.code("plain", language: nil)])
+        #expect(MarkdownBlock.parse("```   \nplain\n```") == [.code("plain")])
+        // Still streaming in: the language is known from the first line.
+        #expect(MarkdownBlock.parse("```go\nfunc") == [.code("func", language: "go")])
+    }
+
+    @Test func languageNamesAreTheUsualOnes() {
+        let names: [String: String] = [
+            "ts": "TypeScript", "typescript": "TypeScript", "tsx": "TSX", "js": "JavaScript",
+            "javascript": "JavaScript", "jsx": "JSX", "sql": "SQL", "bash": "Bash", "sh": "Shell",
+            "shell": "Shell", "zsh": "Zsh", "json": "JSON", "yaml": "YAML", "yml": "YAML",
+            "toml": "TOML", "rust": "Rust", "rs": "Rust", "swift": "Swift", "kotlin": "Kotlin",
+            "kt": "Kotlin", "python": "Python", "py": "Python", "go": "Go", "html": "HTML",
+            "css": "CSS", "md": "Markdown", "markdown": "Markdown", "diff": "Diff",
+        ]
+        for (word, name) in names {
+            #expect(MarkdownBlock.languageName(word) == name)
+        }
+        // In any case; anything else as written.
+        #expect(MarkdownBlock.languageName("SQL") == "SQL")
+        #expect(MarkdownBlock.languageName("Ts") == "TypeScript")
+        #expect(MarkdownBlock.languageName("elixir") == "elixir")
+        #expect(MarkdownBlock.languageName("GraphQL") == "GraphQL")
     }
 
     @Test func anUnclosedFenceWhileStreamingIsStillCode() {

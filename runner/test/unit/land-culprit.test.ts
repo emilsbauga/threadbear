@@ -377,7 +377,7 @@ test('a landing set aside is never in anyone else\'s group, and its own tb check
   for (const n of ['b', 'c', 'd']) assert.ok(fs.existsSync(path.join(main, `${n}.txt`)), n);
 });
 
-for (const inCheck of [false, true]) test(`a tb land stopped while it waits ${inCheck ? 'in the running group says it may still land' : 'leaves the line and says so'}`, async () => {
+for (const inCheck of [false, true]) test(`a tb land stopped while it waits ${inCheck ? 'in the running group stays in the line and says so' : 'leaves the line and says so'}`, async () => {
   const { root, main } = makeRepo();
   const [b] = branches(main, ['b']);
   const common = path.join(main, '.git');
@@ -404,8 +404,11 @@ for (const inCheck of [false, true]) test(`a tb land stopped while it waits ${in
     assert.equal(await exited, 143, text);
     const entries = fs.readdirSync(queueDir(common)).filter((n) => n.endsWith('.json'));
     if (inCheck) {
-      assert.match(text, /while it waited in the landing queue: thread\/b0000000 is out of the line, but it was in the group being checked, which may still land it/);
-      assert.equal(entries.length, 1, 'left for the holder to write its result into');
+      assert.match(text, /while it waited in the landing queue: thread\/b0000000 stays in the line, as it was in a group check: the landings after it carry it and land it once a check with it passes/);
+      assert.equal(entries.length, 1, 'left for the holders to land');
+      // Marked, so the line keeps it once its tb has gone.
+      assert.equal(typeof readEntry(common, entries[0].replace(/\.json$/, ''))?.inCheckAt, 'number');
+      assert.equal(waiting(common).length, 1);
     } else {
       assert.match(text, /tb land was stopped \(SIGTERM\) while it waited in the landing queue: thread\/b0000000 is out of the line and nothing of it landed\. Run tb land again to rejoin/);
       assert.deepEqual(entries, []);

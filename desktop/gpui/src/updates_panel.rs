@@ -362,7 +362,7 @@ impl Threadbear {
                 match res.map(|v| serde_json::from_value::<ThreadSummary>(v["thread"].clone())) {
                     Ok(Ok(thread)) if !thread.id.is_empty() => {
                         let id = thread.id.clone();
-                        t.threads.insert(id.clone(), std::sync::Arc::new(thread));
+                        t.store_reply_summary(thread);
                         t.open(id, window, cx);
                     }
                     Ok(_) => {
@@ -835,11 +835,13 @@ impl Threadbear {
             && launcher.is_none()
             && not_following.is_empty()
             && runner.web_runtime_problem.is_none()
+            && runner.web_runtime_note.is_none()
         {
             out.push(line("The runner is up to date.".to_owned()));
         }
         out.extend(not_following.into_iter().map(line));
         out.extend(runner.web_runtime_problem.clone().map(line));
+        out.extend(runner.web_runtime_note.clone().map(line));
         out.extend(build.map(line));
         if let Some(old) = old {
             out.push(line(old));
@@ -1270,7 +1272,7 @@ impl Threadbear {
         let mut bottom = h_flex().items_center().gap(px(8.));
         // A menu, not a segmented control: two rows of three buttons were
         // most of the popover's noise, and the choice is set once and left.
-        if !cli.can_update_now {
+        if rules::has_policy(cli) {
             bottom = bottom.child(self.render_policy_menu(cli, cx));
         }
         bottom = bottom.child(div().flex_1());
@@ -1413,11 +1415,13 @@ impl Threadbear {
                     && launcher.is_none()
                     && not_following.is_empty()
                     && runner.web_runtime_problem.is_none()
+                    && runner.web_runtime_note.is_none()
                 {
                     lines.push("The runner is up to date.".to_owned());
                 }
                 lines.extend(not_following);
                 lines.extend(runner.web_runtime_problem.clone());
+                lines.extend(runner.web_runtime_note.clone());
                 lines.extend(build);
                 if let Some(old) = old {
                     lines.push(old);
@@ -1508,7 +1512,11 @@ impl Threadbear {
                 checked.map_or_else(|| "[Check now]".to_owned(), |c| format!("{c} [Check now]")),
             );
         }
-        json!({ "shown": self.activity_panel_showing(shell::UPDATES, cx), "lines": lines })
+        json!({
+            "shown": self.activity_panel_showing(shell::UPDATES, cx),
+            "docked": self.dock.read(cx).layout().contains(shell::UPDATES),
+            "lines": lines
+        })
     }
 }
 

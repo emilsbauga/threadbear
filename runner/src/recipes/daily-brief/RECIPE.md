@@ -9,30 +9,50 @@ color: #e0884a
 
 ## About
 
-A very short note each morning, so you start the day knowing what needs you
-without opening five apps. It reads today's calendar and the last day of email,
-lists only what needs you today, then any thread that's waiting on you, then a
-few headlines worth knowing. A section with nothing in it is left out.
+Every morning I used to check my calendar, then my email, then Threadbear to
+see what was waiting on me. Now an agent does that before I'm up and leaves me
+a short note: what's on today, the emails that actually need me, and any
+threads waiting on me.
 
-Mike's first version was long and he stopped reading it. The short one has run
-every morning since 27 Oct 2026, so this one stays under about fifteen lines.
+My first version was way too long and I stopped reading it, so this one stays
+short, about fifteen lines at most. It's run every morning since late October.
 
 ## Example
 
-**Friday 20 November**
+Title: Daily brief
+
+**Thursday 3 December**
 
 **Today**
-- 10:00 dentist, 14:30 call with Sam (bring the Q4 numbers)
+- 9:30 design review with Priya (she wants the onboarding mockups)
+- 15:00 dentist, so leave by 14:30
 
 **Needs you**
-- Ana asked for the invoice by Friday ([email](https://mail.google.com/))
-- The flight change wants confirming today
+- Tom asked if the launch can move to the 14th. He needs an answer by Friday ([email](https://mail.example.com/))
+- The domain renewal fails on Saturday, the card on file has expired
 
 **Waiting on you**
-- "Pick a colour for the Share button", since Wednesday
+- "Pick a name for the export button", since Tuesday
+
+Card: 2 emails need you today
+Options: Done | Remind me at 2
+
+## Example 2
+
+Title: Daily brief
+
+**Saturday 5 December**
+
+Nothing on the calendar, and nothing in your email needs you today.
+
+**Waiting on you**
+- "Garden shed plans": the agent has the timber list ready for you to check
 
 **Worth knowing**
-- The new Node release drops support for the old test runner flags
+- The new Node release is out, and it drops the old test runner flags your CI uses ([release notes](https://nodejs.org/en/blog))
+
+Card: A quiet one today
+Options: Thanks
 
 ## Setting it up
 

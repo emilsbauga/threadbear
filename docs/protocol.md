@@ -35,18 +35,18 @@ It was all this one file once. Work made on that comes across by itself in `tb l
 
 | File | Sections |
 | --- | --- |
-| this page | Ordering and reconnects, Older and newer clients, Fork integration behaviour (release 2026-11-20) |
+| this page | Ordering and reconnects, Older and newer clients, Fork integration behaviour (release 2026-11-20), Fork integration behaviour (release 2026-11-25) |
 | [connection.md](protocol/connection.md) | Auth, Configured Pi profiles, Pi RPC adapter lifecycle, External message intake, File intake (backend API 96), Intake to Backlog (backend API 96), Backlog, Composer skills, Requests (app to runner), Warm start, Models and effort across providers, Notifications (runner to app) |
 | [types.md](protocol/types.md) | Types |
-| [events.md](protocol/events.md) | Events, Design reviews, Reviews on the phone, Reply buttons |
-| [needs-you.md](protocol/needs-you.md) | Needs you, The reply phase |
+| [events.md](protocol/events.md) | Events, Design reviews, Marks: the canvas (the `reviewCanvas` experiment), Reviews on the phone, Reply buttons |
+| [needs-you.md](protocol/needs-you.md) | Needs you, The reply phase, Wait state |
 | [updates.md](protocol/updates.md) | Runner updates, Mike's releases, Your changes to the old app, Restarts, App restarts, Handovers, Stopped background work, Stuck background jobs, Background wait loops, A thread's CLI, Frozen CLIs, A dialog on a Mac's screen |
 | [settings.md](protocol/settings.md) | ACP agents, Settings and models, Standing instructions, Shared memory, Explain, Hibernate in words, Usage history, Sandboxed threads (taken out), Pools |
-| [threads.md](protocol/threads.md) | Pictures in a message, Queued calls, Plan first, Slash commands, Context breakdown, Editing a message, Who started a thread, Who archived a thread, Search, The recap box, What Mike last asked, What Mike first asked, Loose ends, Nested threads, A quiet inbox, Inbox guess, Secrets |
+| [threads.md](protocol/threads.md) | Pictures in a message, Queued calls, Plan first, Slash commands, Context breakdown, Editing a message, Who started a thread, Who archived a thread, Search, The recap box, Searching Agent Archive, What Mike last asked, What Mike first asked (taken out), Loose ends, Nested threads, A quiet inbox, Inbox guess, Secrets |
 | [patches.md](protocol/patches.md) | Patches, The Convex panel |
 | [trust.md](protocol/trust.md) | Trusting a folder's patches, What changed, Trusting a folder's Claude Code hooks |
 | [panels.md](protocol/panels.md) | Highlights, Worktrees, Showing panels, The Browser panel, Pull requests, Connectors |
-| [projects.md](protocol/projects.md) | Projects, Project tasks, Schedules, Recipes |
+| [projects.md](protocol/projects.md) | Projects, Project tasks, Schedules, Recipes, Habits |
 | [runners.md](protocol/runners.md) | Other runners' threads, Other runners' threads through the backend, Asking another runner, Sharing |
 | [moves.md](protocol/moves.md) | Moving a thread to another runner, Sync, Devices |
 | [keys.md](protocol/keys.md) | Runner keys, Virtual runners |
@@ -117,3 +117,10 @@ The unified composer palette keeps skill title ranking, multiword search and
 Codex `$` mentions at the cursor. Choosing a skill inserts it without sending;
 commands can run immediately. Pi exposes only implemented controls and keeps
 its isolated profiles and compact tool context.
+
+## Fork integration behaviour (release 2026-11-25)
+
+Combined backend API 100 retains Pi, Backlog, external intake and recap with
+upstream 99. This fork sends message `wakeReason` and thread `waitState` only
+to API 100 or later: its earlier API 98 did not accept those fields.
+Queued sends retain upstream permission ceilings with intake attachments.

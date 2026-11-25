@@ -54,6 +54,7 @@ Given('the thread {string} works in a folder of its own', async function (this: 
 });
 
 When('I press ⌘J', async function (this: ThreadbearWorld) {
+  this.dockBefore = (await this.app.dump()).dock;
   await this.app.do({ cmd: 'menu-key', key: 'j', modifiers: ['cmd'] });
 });
 

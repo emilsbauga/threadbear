@@ -9,6 +9,7 @@
  */
 
 import type * as boxHooks from "../boxHooks.js";
+import type * as boxImage from "../boxImage.js";
 import type * as boxMachine from "../boxMachine.js";
 import type * as boxProviders_fly from "../boxProviders/fly.js";
 import type * as boxProviders_types from "../boxProviders/types.js";
@@ -63,6 +64,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   boxHooks: typeof boxHooks;
+  boxImage: typeof boxImage;
   boxMachine: typeof boxMachine;
   "boxProviders/fly": typeof boxProviders_fly;
   "boxProviders/types": typeof boxProviders_types;

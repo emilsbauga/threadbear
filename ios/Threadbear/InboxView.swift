@@ -671,19 +671,19 @@ struct ThreadRow: View {
 
     /// The Mac's ThreadRowLook, as far as the phone's row knows: unread
     /// with nothing waiting on Mike is "done" (a tick); needing him, a dot.
-    private var done: Bool { RowStatus.kind(thread) == .time && thread.unread && !thread.needsYou }
+    private var done: Bool { RowStatus.kind(thread) == .time && thread.unread && !RowStatus.wantsYou(thread) }
     private var unread: Bool {
         let kind = RowStatus.kind(thread)
-        return kind == .needsYou || (thread.needsYou && kind != .working) || done
+        return kind == .needsYou || (RowStatus.wantsYou(thread) && kind != .working) || done
     }
-    private var emphasised: Bool { thread.needsYou || RowStatus.kind(thread) == .needsYou || done }
+    private var emphasised: Bool { RowStatus.wantsYou(thread) || RowStatus.kind(thread) == .needsYou || done }
 
     private var line2: String {
         var parts = [thread.placeText]
         // What a hibernating thread waits for, before where it is.
         if let wake = InboxSections.wakeLine(thread, now: model.now) { parts.insert(wake, at: 0) }
         if let runner = model.runnerName(thread.runnerId) { parts.append(runner) }
-        if let working = thread.working, thread.isBusy || (thread.pendingApproval == nil && !thread.waitingOnMike) { parts.append(working) }
+        if let working = thread.working, RowStatus.showsWorkingLine(thread) { parts.append(working) }
         return parts.joined(separator: " · ")
     }
 

@@ -14,6 +14,7 @@
 //! sessions, no machine name. The GPUI app's crash_reporting.rs sends them.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::path::Path;
 
 /// A public client key (it ships in every Sentry client); fine to commit.
 /// The Swift app's and the runner's.
@@ -442,6 +443,28 @@ pub fn is_panic(crash: &NativeCrash) -> bool {
         .any(|f| f.contains("panicking") || f.contains("rust_panic") || f.contains("panic_abort"))
 }
 
+/// Whether a crash report's program is `exe`. macOS writes a path in the home
+/// folder anonymised, "/Users/USER/*/Threadbear GPUI.app/Contents/MacOS/
+/// threadbear-gpui", keeping only the bundle and what's inside it, so one of
+/// those matches an `exe` in `home` on that tail. Comparing whole paths
+/// dropped every native crash of the installed app (the CEF one of 17 Nov).
+/// A bare binary (a dev build in target/) has no bundle, so never matches.
+pub fn same_program(reported: &str, exe: &Path, home: &Path) -> bool {
+    if Path::new(reported) == exe {
+        return true;
+    }
+    let Some(tail) = reported.strip_prefix("/Users/USER/*/") else {
+        return false;
+    };
+    let tail = Path::new(tail);
+    tail.components().next().is_some_and(|bundle| {
+        Path::new(bundle.as_os_str())
+            .extension()
+            .is_some_and(|e| e == "app")
+    }) && exe.starts_with(home)
+        && exe.ends_with(tail)
+}
+
 /// "0x00005a2aec4600a8" to "0x…".
 fn mask_addresses(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -696,6 +719,42 @@ mod tests {
 
     const IPS: &str = r#"{"app_name":"threadbear-gpui","timestamp":"2026-11-11 13:09:25.00 +0800","name":"threadbear-gpui","bug_type":"309"}
 {"procPath":"\/Users\/me\/Applications\/Threadbear GPUI.app\/Contents\/MacOS\/threadbear-gpui","captureTime":"2026-11-11 13:09:22.0574 +0800","exception":{"type":"EXC_BAD_ACCESS","signal":"SIGSEGV","subtype":"KERN_INVALID_ADDRESS at 0x00005a2aec4600a8"},"faultingThread":0,"asi":{"libsystem_c.dylib":["secret words"]},"threads":[{"triggered":true,"frames":[{"imageOffset":31740,"symbol":"objc_release","symbolLocation":16,"imageIndex":1},{"imageOffset":4000,"symbol":"threadbear_gpui::web_runtime::start::h0123456789abcdef","imageIndex":0},{"imageOffset":12,"imageIndex":0}]}],"usedImages":[{"name":"threadbear-gpui","path":"\/Users\/me\/x"},{"name":"libobjc.A.dylib"}]}"#;
+
+    #[test]
+    fn the_installed_app_is_known_by_its_anonymised_path() {
+        // As macOS really writes it (the CEF crash of 17 Nov).
+        let reported = "/Users/USER/*/Threadbear GPUI.app/Contents/MacOS/threadbear-gpui";
+        let home = Path::new("/Users/mike");
+        let exe = Path::new(
+            "/Users/mike/Applications/Threadbear GPUI.app/Contents/MacOS/threadbear-gpui",
+        );
+        assert!(same_program(reported, exe, home));
+        assert!(
+            same_program(exe.to_str().unwrap(), exe, home),
+            "an unanonymised path"
+        );
+        assert!(
+            !same_program("/Users/USER/*/threadbear-gpui", exe, home),
+            "a dev build run from target/, no bundle"
+        );
+        assert!(
+            !same_program(
+                "/Users/USER/*/Other.app/Contents/MacOS/threadbear-gpui",
+                exe,
+                home
+            ),
+            "another bundle"
+        );
+        assert!(
+            !same_program(
+                reported,
+                Path::new("/Applications/Threadbear GPUI.app/Contents/MacOS/threadbear-gpui"),
+                home
+            ),
+            "an app outside home is never anonymised"
+        );
+        assert!(!same_program("", exe, home));
+    }
 
     #[test]
     fn a_crash_report_gives_its_exception_and_frames_and_nothing_else() {

@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
+import { SessionNotFoundError } from '../../src/adapters/types.ts';
 import { CACHE_LIFETIME_MS, COLD_COMPACT_MIN_TOKENS, COLD_MARGIN_MS, coldWake } from '../../src/runner/cold-compact.ts';
 
 const HOUR = 60 * 60_000;
@@ -37,9 +38,6 @@ test('a long thread woken after its cache expired compacts first, then gets the 
   assert.match(compact.text, /^\/compact /);
   assert.match(compact.text, /decided/);
   assert.ok(!cli.sent.some((m) => m.text.includes('Carry on with the port')), 'the message waits for the compaction');
-  // While it compacts, a message waits for the next turn rather than going in.
-  h.runner.send(id, 'Also check the tests');
-  assert.ok(!cli.sent.some((m) => m.text.includes('Also check the tests')));
   // The CLI's own line is reworded to say why.
   cli.out({ kind: 'event', event: { type: 'system.note', text: 'Compacted the conversation' } });
   cli.result('completed', 4.2);
@@ -55,6 +53,121 @@ test('a long thread woken after its cache expired compacts first, then gets the 
   assert.equal(done.length, 1);
   // The turn's cost has the compaction in it.
   assert.equal((done[0] as { costUsd?: number }).costUsd, 2);
+});
+
+// Thread c3f5af7d, 22 Nov 2026: three corrections sent during a cold
+// compaction each showed a clock and waited out the whole turn.
+test("Mike's messages sent while it compacts go into the same turn after the held one, in order", async () => {
+  const { h, id, s } = setup();
+  finish(s, 450_000);
+  h.clock.advance(3 * HOUR);
+  const { turnId } = h.runner.send(id, 'Carry on with the port');
+  await tick(8);
+  const cli = last(h);
+  // While it compacts nothing goes into the CLI: they queue.
+  const queued = h.runner.send(id, 'Also check the tests').turnId;
+  h.runner.send(id, 'And the docs', [], { origin: 'phone' });
+  const st = h.runner.mustGet(id);
+  assert.ok(!cli.sent.some((m) => /Also check the tests|And the docs/.test(m.text)));
+  assert.equal(st.rec.queue.length, 2);
+  cli.result('completed');
+  await tick(8);
+  const order = ['Carry on with the port', 'Also check the tests', 'And the docs'].map((t) => cli.sent.findIndex((m) => m.text.includes(t)));
+  assert.ok(order[0]! > 0 && order[0]! < order[1]! && order[1]! < order[2]!, `in order after the held one: ${order.join(',')}`);
+  assert.equal(st.rec.queue.length, 0, 'taken out of the queue');
+  assert.equal(st.rt.turn?.turnId, turnId, 'still the same turn');
+  // Shown in the running turn, which is how the app drops their clocks.
+  const shown = h.events(id).filter((e) => e.type === 'user.message' && /Also check the tests|And the docs/.test((e as { text: string }).text));
+  assert.deepEqual(shown.map((e) => e.turnId), [turnId, turnId]);
+  // Naming the id send gave it, which tb send --wait follows.
+  assert.equal((shown[0] as { sentAs?: string }).sentAs, queued);
+  // The turn ends once all three are answered, and nothing is left to start another.
+  const ids = cli.sent.slice(order[0]!).map((m) => m.id!);
+  cli.text('m1', 'Done.');
+  cli.result('completed', undefined, undefined, { answered: ids });
+  await tick(8);
+  assert.equal(st.rt.turn, undefined);
+  assert.equal(h.events(id).filter((e) => e.type === 'turn.started').length, 2);
+});
+
+test('after the compaction, what has to wait keeps its place in the queue', async () => {
+  const { h, id, s } = setup();
+  finish(s, 450_000);
+  h.clock.advance(3 * HOUR);
+  h.runner.send(id, 'Carry on');
+  await tick(8);
+  const cli = last(h);
+  // A reminder doesn't hold his up, and stays for the next turn; a slash
+  // command waits for the turn to end, and what came after it stays behind it.
+  h.runner.send(id, 'A reminder', [], { origin: 'schedule', queue: true });
+  h.runner.send(id, 'First fix');
+  // A report that came in after his message isn't older than it.
+  h.runner.send(id, 'A later report', [], { origin: 'runner', queue: true });
+  h.runner.send(id, '/cost');
+  h.runner.send(id, 'Second fix');
+  cli.result('completed');
+  await tick(8);
+  const st = h.runner.mustGet(id);
+  assert.ok(cli.sent.some((m) => m.text.includes('First fix')));
+  assert.ok(!cli.sent.some((m) => /A reminder|A later report|\/cost|Second fix/.test(m.text)));
+  // (Automatic ones go behind his messages in the queue, as always.)
+  const auto = new Set(['A reminder', 'A later report']);
+  assert.deepEqual(st.rec.queue.map((q) => q.text).filter((t) => !auto.has(t)), ['/cost', 'Second fix']);
+  assert.equal(st.rec.queue.find((q) => q.text === 'A reminder')?.beforeMessage, true, 'queued before First fix');
+  assert.equal(st.rec.queue.find((q) => q.text === 'A later report')?.beforeMessage, undefined, 'queued after it');
+});
+
+test('a message asked to wait, or one queued before the compaction, is not steered', async () => {
+  const { h, id, s } = setup();
+  finish(s, 450_000);
+  h.clock.advance(3 * HOUR);
+  h.runner.send(id, 'Carry on');
+  await tick(8);
+  const cli = last(h);
+  h.runner.send(id, 'After this turn', [], { queue: true });
+  h.runner.send(id, 'Later fix');
+  cli.result('completed');
+  await tick(8);
+  const st = h.runner.mustGet(id);
+  assert.ok(!cli.sent.some((m) => /After this turn|Later fix/.test(m.text)));
+  assert.deepEqual(st.rec.queue.map((q) => q.text), ['After this turn', 'Later fix']);
+});
+
+test('a failed compaction, or Stop while it compacts, leaves the queue as it is', async () => {
+  for (const how of ['failed', 'stop'] as const) {
+    const { h, id, s } = setup();
+    finish(s, 450_000);
+    h.clock.advance(3 * HOUR);
+    h.runner.send(id, 'Carry on');
+    await tick(8);
+    const cli = last(h);
+    h.runner.send(id, 'A fix');
+    if (how === 'stop') {
+      await h.runner.interrupt(id);
+      cli.result('interrupted');
+    } else cli.result('failed', undefined, 'Compaction failed');
+    await tick(8);
+    const st = h.runner.mustGet(id);
+    assert.ok(!cli.sent.some((m) => m.text.includes('A fix')), how);
+    if (how === 'failed') assert.deepEqual(st.rec.queue.map((q) => q.text), ['A fix'], how);
+  }
+});
+
+test("a session that can't be found while it compacts: the fresh one gets the held message, then Mike's sent meanwhile", async () => {
+  const { h, id, s } = setup();
+  finish(s, 450_000);
+  h.clock.advance(3 * HOUR);
+  h.runner.send(id, 'Carry on');
+  await tick(8);
+  const cli = last(h);
+  h.runner.send(id, 'A fix');
+  cli.sink.exited(new SessionNotFoundError('gone'));
+  await tick(8);
+  const fresh = last(h);
+  assert.notEqual(fresh, cli);
+  const at = ['Carry on', 'A fix'].map((t) => fresh.sent.findIndex((m) => m.text.includes(t)));
+  assert.ok(at[0]! >= 0 && at[0]! < at[1]!, `in order: ${at.join(',')}`);
+  assert.equal(h.runner.mustGet(id).rec.queue.length, 0);
 });
 
 test('a warm thread is never compacted', async () => {

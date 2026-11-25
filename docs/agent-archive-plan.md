@@ -60,7 +60,7 @@ nothing to do with this.
   The cloud runner has no daemon, so its threads aren't archived. (Tinker
   Desk runs no Threadbear and isn't part of this.)
 - **The host** (`server/`, 26k lines): one Node process on Bruce since
-  24 Oct, at `https://bruce.tail9ef766.ts.net:9443` (tailnet only). 27 GB
+  24 Oct, at `https://bruce.<tailnet>.ts.net:9443` (tailnet only). 27 GB
   on 20 Nov: `archive.db` 6 GB, files 12 GB, vectors 8.6 GB (LanceDB and
   `vectors.db`). Hybrid search, the indexer (embeddings through Mike's
   OpenRouter key), the reader, Quick Ask. Its own LaunchAgent and deployer.
@@ -87,7 +87,7 @@ nothing to do with this.
 | Sync | a daemon LaunchAgent on the M5 and Bruce, updated by hand on the M5 | the same service on every runner's machine (cloud too), kept on main and watched by Threadbear |
 | Host | Bruce, its own LaunchAgent and deployer | Bruce, started by Bruce's runner, updated with Threadbear's releases |
 | Agents' tools | the agent-archive MCP server, global config | the same seven tools, same names, from the runner's release |
-| Reader | `bruce.tail9ef766.ts.net:9443` | the same, plus an Archive panel in Threadbear and links both ways |
+| Reader | `bruce.<tailnet>.ts.net:9443` | the same, plus an Archive panel in Threadbear and links both ways |
 | Quick Ask | the host's `/api/quick/ask` | unchanged |
 | The 27 GB | on Bruce | stays on Bruce. Nothing is copied |
 | Code | the agent-archive repo | Threadbear's repo, once Mike makes it public (stage 4) |
@@ -194,29 +194,51 @@ each other.
   folders from the file (`claudeRoots`, `codexRoots`).
 - The archive's tools and reader say "Threadbear thread: <title>" with a
   `threadbear://thread/<id>` link, and search can filter by project.
+- The app's thread search searches the archive too (built 23 Nov). Mike
+  was shown three ways to bring the archive into the app (review
+  4ead0306): earlier work in a panel beside each thread, the search box
+  searching the archive, and an Ask panel. He picked the search box: "I
+  don't think it makes sense to have a separate panel", and asking is a
+  thread's job, as "the agent should always have access to it". Hits
+  come after the app's own threads; one opens its Threadbear thread, or
+  else read-only in the thread's place, with New thread from this. The
+  runner runs the archive's own `search --json` and `read --json`
+  (agent-archive #96) with its read-only key, so it still holds no
+  credential (docs/protocol/threads.md, "Searching Agent Archive").
+- Every thread gets the archive's MCP server while the experiment's on
+  (built 23 Nov): the cloud box's Threadbear login had no `agent-archive`
+  in its config, so threads there couldn't search it.
 - Threadbear can then use the archive: "Threads already on it" (the
   `sameWork` experiment) could look past open threads, and the thread
   digests idea (6eecd8a8) that concluded "ask Bruce" has somewhere to ask.
 - `archivedMediaDays` can wait for the host to have a thread before
   clearing its pictures, instead of trusting that it does.
 
-### 3. Threadbear looks after the host
+### 3. Threadbear looks after the host (built 24 Nov)
 
 The archive server on Bruce stays a LaunchAgent of its own, for the same
-reason as the sync (runner restarts must never stop it), but Threadbear
-installs, updates and watches it instead of the server's own deployer.
+reason as the sync (runner restarts must never stop it), and its own
+deployer keeps doing the builds until stage 4. Threadbear watches it and
+starts it again when it has stopped. Mike chose this step on 24 Nov
+(thread 1ac3962f), without the Archive panel he'd passed over.
 
-- A runner setting, `archive.host`: the URL its machine's sync sends to,
-  or `"here"` when this machine is the host (Bruce). The sync's config
-  takes its URL from it.
-- The server keeps its data folder (`~/Library/Application Support/Agent
-  Archive Server/data`), its `server.json`, its backups and its Tailscale
-  address. Bruce has 8 GB and already swaps, so this adds no process: the
-  same server, started by something else.
-- Until stage 4 the server's deployer keeps doing the builds, and the
-  runner watches its health (`/api/health`) for `tb status`.
-- A Threadbear panel, Archive, opens the host's reader for this thread's
-  project. It's a URL panel, so no reader is rebuilt.
+- **Watching, on every runner.** Each tick, after the sync's status, the
+  runner asks `/api/health` at the sync's own `archiveUrl` (so no new
+  setting: the sync already knows its host). `tb status` adds a sentence:
+  healthy on its release, or what's wrong (a failed deploy, a deployer that
+  can't reach the repo, a failed backup or one over two days old, a failed
+  restore test, under 10 GB of disk), or "isn't answering, for ..." with
+  the error. Going down and coming back are logged once each.
+- **Starting it again, on Bruce.** On the machine with the server's folder,
+  a server that hasn't answered two checks running (one could be a deploy
+  swapping releases) and that `launchctl print` shows without a pid is
+  started with `launchctl kickstart`, never `-k`, so a running server is
+  never stopped; at most once an hour. A running server that doesn't
+  answer, or a service that isn't loaded (taken out on purpose), is only
+  reported. Its LaunchAgent has `KeepAlive`, so this is for when launchd
+  has given up on it.
+- The server keeps its data folder, `server.json`, backups and Tailscale
+  address. Bruce has 8 GB and already swaps, so this adds no process.
 
 ### 4. The code moves into Threadbear
 
@@ -271,8 +293,8 @@ tokens stay what they are, and their checkpoints carry on. In order:
 3. The cloud box enrolled; its first runs backfill whatever its CLI
    folders still hold (older history on them is gone where the CLIs
    cleaned it up).
-4. Stage 3 on Bruce: the runner takes the server's updates over from its
-   deployer, Quick Ask and the reader checked from the phone and the M5.
+4. Stage 3 on Bruce: the runner watches the server and starts it again when
+   it stops (its deployer keeps the updates until stage 4), Quick Ask and the reader checked from the phone and the M5.
 
 Each step goes back by turning the experiment off (the services carry on
 as they are), or for a bad build, the archive's own rollback to its

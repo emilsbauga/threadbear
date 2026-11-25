@@ -215,7 +215,7 @@ impl ThreadPane {
                             )
                         })
                         .child(
-                            img(bytes)
+                            img(ImageSource::Render(bytes))
                                 .w(px(frame.w))
                                 .h(px(frame.h))
                                 .rounded(px(8.))

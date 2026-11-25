@@ -145,7 +145,7 @@ cd threadbear
 Setup checks your Mac, logs you in to Convex, makes a Convex project in your
 account and deploys the backend and website to it, then builds and installs
 the runner and the Mac app (the first build takes 20 to 40 minutes and needs
-about 5 GB free; it installs Rust if you haven't got it). The app opens on a
+about 5 GB free; it fetches the exact Rust it needs, without rustup). The app opens on a
 few setup cards. Messages go to that deployment; tool output stays on
 your Mac unless you turn on full sync (`tb settings full on`), which sends that
 too (scrubbed first, not a guarantee) so your phone and other machines can show it. If something goes wrong, fix it and run setup

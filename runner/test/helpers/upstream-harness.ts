@@ -86,8 +86,10 @@ export function asGitHub(repo: string, root: string): void {
   git(repo, 'config', `url.${path.join(root, 'mike.git')}.insteadOf`, 'https://github.com/mikecann/threadbear.git');
 }
 
+// localRemotes: the test repos' remotes are folders, which a real check
+// never fetches from (upstream.ts fetchableUrl).
 export function upstreamFor(checkout: string, home: string, clock = new FakeClock(LATER), extra = {}) {
-  return new Upstream({ home, checkout, clock, log: nullLogger, ...extra });
+  return new Upstream({ home, checkout, clock, log: nullLogger, localRemotes: true, ...extra });
 }
 
 // A stand-in for gpg (or gpgsm) that signs with made-up armor and says any
@@ -154,7 +156,9 @@ export function objectsIn(repo: string): Set<string> {
 
 // A remote that never answers, standing in for one that's hijacked or down:
 // git's upload-pack swapped for a script that hangs, with a child of its own.
-export function hangingUpstream(w: ReturnType<typeof world>, when: 'list' | 'fetch') {
+// The runner names git's own upload-pack whatever the checkout's config says,
+// so it's handed to Upstream (its uploadPack) rather than set there.
+export function hangingUpstream(w: ReturnType<typeof world>, when: 'list' | 'fetch'): { pids: () => number[]; uploadPack: string } {
   const script = path.join(w.root, 'hang.sh');
   const count = path.join(w.root, 'calls');
   if (IS_WINDOWS) {
@@ -175,9 +179,8 @@ if (${when === 'list' ? 1 : 2} <= n) {
   process.exit(spawnSync('git', ['upload-pack', ...process.argv.slice(2)], { stdio: 'inherit' }).status ?? 1);
 }
 `);
-    git(w.theirs, 'config', 'remote.upstream.uploadpack', `"${shPath(process.execPath)}" "${shPath(js)}"`);
     git(w.theirs, 'config', 'protocol.version', '2');
-    return () => fs.readFileSync(path.join(w.root, 'pids'), 'utf8').trim().split('\n').map(Number);
+    return { pids: () => fs.readFileSync(path.join(w.root, 'pids'), 'utf8').trim().split('\n').map(Number), uploadPack: `"${shPath(process.execPath)}" "${shPath(js)}"` };
   }
   fs.writeFileSync(script, `#!/bin/bash
 n=$(( $(cat "${count}" 2>/dev/null || echo 0) + 1 )); echo $n >"${count}"
@@ -187,9 +190,8 @@ exec git-upload-pack "$@"
   // Read by bash rather than run itself: macOS checks a new executable the
   // first time it runs, which took over 4 s on a busy Mac (artz-cyber's fork,
   // 12 Nov 2026), so the deadline came before the hang did.
-  git(w.theirs, 'config', 'remote.upstream.uploadpack', `/bin/bash '${script}'`);
   git(w.theirs, 'config', 'protocol.version', '2');
-  return () => fs.readFileSync(path.join(w.root, 'pids'), 'utf8').trim().split('\n').map(Number);
+  return { pids: () => fs.readFileSync(path.join(w.root, 'pids'), 'utf8').trim().split('\n').map(Number), uploadPack: `/bin/bash '${script}'` };
 }
 
 // A git alias that starts a long sleep of its own, writes the sleep's pid to

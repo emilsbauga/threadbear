@@ -46,6 +46,17 @@ Feature: Acting on a thread from its sidebar row
     When I press the row button "Unarchive"
     Then the "Archived" section doesn't list "Write the Quick Ask README"
 
+  # Another Mac's thread is deleted through Convex, which has no delete
+  # (runner/src/parity.ts), so its Delete is greyed out and names that Mac.
+  @sidebar.row.hoverbuttons @remote-threads @swift-pending
+  Scenario: Another Mac's archived row greys out Delete and names that Mac
+    When I hover the row "Tidy the media drive"
+    And I press the row button "Archive"
+    And the "archived" section is unfolded
+    And the "inbox" section is folded away
+    And I hover the row "Tidy the media drive"
+    Then the row "Tidy the media drive" offers the buttons "Unarchive, Delete it on mac-mini"
+
   @sidebar.newthread
   Scenario: The compose button leaves the open thread for a new one
     Given I open the thread "Morning brief"

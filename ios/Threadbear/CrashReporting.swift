@@ -24,7 +24,7 @@ enum CrashReporting {
         let build = info["CFBundleVersion"] as? String ?? "0"
         SentrySDK.start { options in
             options.dsn = dsn
-            // TestFlight builds (the nightly one on Mike's phone, nightly-testflight.sh) have a
+            // TestFlight builds have a
             // sandbox receipt; App Store ones don't.
             let testFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
             options.environment = testFlight ? "testflight" : "production"

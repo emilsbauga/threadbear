@@ -17,7 +17,15 @@ sealed class MarkdownBlock {
 
     /** `marker` is "•" or "3."; `task` is null, or whether its box is ticked. */
     data class ListItem(val text: String, val marker: String, val depth: Int, val task: Boolean?) : MarkdownBlock()
-    data class Code(val text: String) : MarkdownBlock()
+
+    /**
+     * A fenced block drawn as code. `language` is the first word of the
+     * fence's info string as written ("ts" for ```ts title=x), null for a
+     * bare fence; the header strip shows its `languageName`.
+     */
+    data class Code(val text: String, val language: String? = null) : MarkdownBlock() {
+        val languageName: String? get() = language?.let(::codeLanguageName)
+    }
 
     /**
      * A ```mermaid or ```html block, drawn as the diagram or page it
@@ -48,8 +56,7 @@ sealed class MarkdownBlock {
         companion object {
             /** The fence's info string: its first word, in any case. */
             fun of(info: String): RichKind? {
-                val word = info.split(' ', '\t', '{').firstOrNull { it.isNotEmpty() } ?: return null
-                val lower = word.lowercase()
+                val lower = fenceLanguage(info)?.lowercase() ?: return null
                 return entries.firstOrNull { it.wire == lower }
             }
         }
@@ -103,6 +110,26 @@ sealed class MarkdownBlock {
             MarkdownParser(text.replace("\r\n", "\n").split("\n").toMutableList(), depth, cells).run()
     }
 }
+
+/** A fence's language: the first word of its info string, as written; null when there's none. */
+fun fenceLanguage(info: String): String? = info.split(' ', '\t', '{').firstOrNull { it.isNotEmpty() }
+
+/**
+ * What a code block's header calls its fence word: a friendly name for the
+ * common ones (in any case), otherwise the word as written. The Mac's
+ * header bar uses the same names.
+ */
+fun codeLanguageName(word: String): String = LANGUAGE_NAMES[word.lowercase()] ?: word
+
+private val LANGUAGE_NAMES = mapOf(
+    "ts" to "TypeScript", "typescript" to "TypeScript", "tsx" to "TSX",
+    "js" to "JavaScript", "javascript" to "JavaScript", "jsx" to "JSX",
+    "sql" to "SQL", "bash" to "Bash", "sh" to "Shell", "shell" to "Shell", "zsh" to "Zsh",
+    "json" to "JSON", "yaml" to "YAML", "yml" to "YAML", "toml" to "TOML",
+    "rust" to "Rust", "rs" to "Rust", "swift" to "Swift", "kotlin" to "Kotlin", "kt" to "Kotlin",
+    "python" to "Python", "py" to "Python", "go" to "Go", "html" to "HTML", "css" to "CSS",
+    "md" to "Markdown", "markdown" to "Markdown", "diff" to "Diff",
+)
 
 /** Table cells a reply can still have (MarkdownBlock.MAX_TABLE_CELLS), shared by its quotes. */
 internal class Cells(var left: Int)
@@ -207,7 +234,7 @@ private class MarkdownParser(
                     draft != null -> MarkdownBlock.Draft(draft)
                     closed && body.length <= MarkdownBlock.MAX_RICH_SOURCE && body.isNotBlank() && kind != null ->
                         MarkdownBlock.Rich(kind, body)
-                    else -> MarkdownBlock.Code(body)
+                    else -> MarkdownBlock.Code(body, fenceLanguage(info))
                 }
                 continue
             }

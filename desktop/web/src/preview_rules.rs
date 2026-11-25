@@ -194,6 +194,17 @@ pub fn own_path(url: &str, origin: &str) -> Option<String> {
     threadbear_core::local_preview::percent_decode(path)
 }
 
+/// What `url` asks for on `origin` as the browser spelled it, query and all
+/// but without a fragment (which never reaches a request): the key the
+/// preview's budget counts by (`Site::serve_asked`). None for another origin.
+pub fn asked_address(url: &str, origin: &str) -> Option<String> {
+    let rest = url.strip_prefix(origin)?;
+    if !rest.starts_with('/') {
+        return None;
+    }
+    Some(rest.split('#').next().unwrap_or(rest).to_owned())
+}
+
 /// Run in the page's own world in every frame before its scripts, while they
 /// run: no Clipboard API, and no `execCommand('copy')` or `'cut'`, either of
 /// which a script can use on any click to put what it read on the clipboard;
@@ -238,19 +249,16 @@ pub const COPY_GUARD: &str = r#"(() => {
 mod tests {
     use super::*;
 
+    // Local previews are unix only (Site::new is None elsewhere), so are
+    // the tests that need one: requests_stay_on_its_origin, without the
+    // mark, failed main's Windows run (22 Nov).
+    #[cfg(unix)]
     fn preview(scripts: bool) -> PreviewSite {
         let dir =
             std::env::temp_dir().join(format!("preview-rules-{}-{}", std::process::id(), token()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("my page.html"), "<p>hi</p>").unwrap();
-        let site = Site::new(&dir.join("my page.html"), None);
-        #[cfg(unix)]
-        let site = site.expect("a site");
-        #[cfg(not(unix))]
-        let site: Site = match site {
-            Some(s) => s,
-            None => panic!("no sites off unix"),
-        };
+        let site = Site::new(&dir.join("my page.html"), None).expect("a site");
         PreviewSite::new(Arc::new(site), scripts)
     }
 
@@ -312,6 +320,29 @@ mod tests {
             ),
             "another token"
         );
+    }
+
+    #[cfg(unix)]
+    /// The budget's key keeps the query (Daybreak 168): `big.png?1` and
+    /// `big.png?2` are two requests for one file.
+    #[test]
+    fn the_address_asked_keeps_its_query() {
+        let p = preview(false);
+        let o = &p.origin;
+        assert_eq!(
+            asked_address(&format!("{o}/big.png?1"), o).as_deref(),
+            Some("/big.png?1")
+        );
+        assert_eq!(
+            asked_address(&format!("{o}/big.png?1#top"), o).as_deref(),
+            Some("/big.png?1")
+        );
+        assert_eq!(
+            own_path(&format!("{o}/big.png?1"), o).as_deref(),
+            Some("/big.png")
+        );
+        assert_eq!(asked_address(&format!("{o}.evil/x"), o), None);
+        assert_eq!(asked_address("https://example.com/x", o), None);
     }
 
     #[cfg(unix)]

@@ -4,7 +4,7 @@ name: Email watcher
 title: Email watcher: new emails wake the threads waiting on them, reach the threads they're about, or wait on a twice-daily list
 added: 2026-11-20
 on: false
-reminder: 5bbba1be
+reminder: 5be2180f
 ---
 
 ## What it does

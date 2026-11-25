@@ -556,7 +556,7 @@ final class QuickAskModel {
         guard phase == .listening else { return }
         // SpeechAnalyzer didn't work out: carry on with SFSpeechRecognizer, and stick with it.
         if let failed = transcriber, failed !== classic, transcript.isEmpty {
-            Log.speech.error("\(failed.name, privacy: .public) failed (\(error.message, privacy: .public)); using SFSpeechRecognizer")
+            Log.speech.error("\(failed.name, privacy: .public) failed (\(error: error)); using SFSpeechRecognizer")
             analyzerFailed = true
             failed.end()
             transcriber = classic
@@ -729,7 +729,7 @@ final class QuickAskModel {
     }
 
     private func fail(_ failure: AskFailure) {
-        Log.app.error("Quick ask failed: \(failure.message, privacy: .public)")
+        Log.app.error("Quick ask failed: \(error: failure)")
         cancelAnswer()
         phase = .failed(failure)
         saveTiming()
@@ -755,7 +755,7 @@ final class QuickAskModel {
                 let id = try await keep(record)
                 guard !Task.isCancelled, let self, self.question == record.question else { return }
                 self.threadId = id
-                Log.app.info("Kept as thread \(id ?? "none", privacy: .public)")
+                Log.app.info("Kept as a thread: \(id != nil)")
                 // Into the thread, in voice mode; the answer carries on being spoken.
                 if let id, self.isPresented, self.phase != .listening {
                     self.voiceThreadId = id
@@ -765,7 +765,7 @@ final class QuickAskModel {
             } catch {
                 guard !Task.isCancelled, let self, self.question == record.question else { return }
                 self.keepProblem = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                Log.app.error("Couldn't keep the quick ask: \(error.localizedDescription, privacy: .public)")
+                Log.app.error("Couldn't keep the quick ask: \(error: error)")
             }
         }
     }
@@ -779,7 +779,7 @@ final class QuickAskModel {
         isSpeaking = false
         followUpProblem = nil
         prepare()
-        Log.app.info("Listening for a follow-up to \(threadId, privacy: .public) after seq \(afterSeq)")
+        Log.app.info("Listening for a follow-up after seq \(afterSeq)")
         startListening(trigger: .followUp, pressAt: Stopwatch.now)
         // After startListening, which clears it via stopListening.
         if phase == .listening {
@@ -797,13 +797,13 @@ final class QuickAskModel {
         awaitingReply = (threadId, pendingAfterSeq)
         followUpSending = true
         let started = Stopwatch.now
-        Log.app.info("Sending a follow-up to \(threadId, privacy: .public): \(text, privacy: .public)")
+        Log.app.info("Sending a follow-up (\(text.count) characters)")
         Task { [weak self] in
             do {
                 try await sendFollowUp(threadId, text)
                 Log.app.info("Follow-up sent in \(Int((Stopwatch.now - started) * 1000)) ms")
             } catch {
-                Log.app.error("Follow-up failed: \(error.localizedDescription, privacy: .public)")
+                Log.app.error("Follow-up failed: \(error: error)")
                 self?.awaitingReply = nil
                 self?.followUpProblem = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }

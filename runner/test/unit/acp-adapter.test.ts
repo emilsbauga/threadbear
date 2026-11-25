@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { AcpAdapter, AcpSession, EDIT_RULE, modelChoices } from '../../src/adapters/acp/adapter.ts';
+import { AcpAdapter, AcpSession, EDIT_RULE, LIMITS_POLL_MS, modelChoices } from '../../src/adapters/acp/adapter.ts';
 import { ACP_AGENTS, acpAccounts, antigravityInput, folderPlugins, isCursorBinary, isGoogleSigned, opencodeEnv } from '../../src/adapters/acp/agents.ts';
 import type { AcpAgent } from '../../src/adapters/acp/agents.ts';
 import { AcpMcpServer } from '../../src/adapters/acp/mcp-http.ts';
@@ -1713,4 +1713,42 @@ test('Antigravity: a command allowed by Full access still shows its row and resu
   await turn(r, s, 'exec ls');
   assert.equal(rows(r).length, 1);
   assert.deepEqual(done(r).map((d) => [d.itemId, d.ok]), [[rows(r)[0].itemId, true]]);
+});
+
+// ---- Gemini's plan usage (agy-usage.ts), read with the server's own /usage
+
+test("Antigravity: readLimits reads the plan's usage with /usage in a process of its own, and the plan's name", async () => {
+  const r = agy();
+  assert.equal(r.adapter.limitsPollMs, LIMITS_POLL_MS);
+  const l = await r.adapter.readLimits!(r.account);
+  assert.equal(l?.plan, 'Google AI Ultra');
+  assert.equal(l?.blocked, false);
+  assert.deepEqual(l?.windows.slice(0, 2), [
+    { kind: 'weekly', title: 'Weekly', remainingPercent: 55, resetsAt: '2026-11-28T08:49:00.000Z' },
+    { kind: 'five_hour', title: '5-hour', remainingPercent: 91, resetsAt: '2026-11-23T09:35:00.000Z' },
+  ]);
+  const log = r.log();
+  assert.ok(log.some((x) => x.usageCommand), 'the server answered it itself');
+  assert.deepEqual(log.filter((x) => x.prompt !== undefined).map((x) => x.prompt), ['/usage'], 'one prompt, the command, nothing else');
+  // Its folder, with the skills/ the server writes, is gone.
+  const cwd = (log.find((x) => x.newSession) as { newSession: { cwd: string } }).newSession.cwd;
+  assert.equal(fs.existsSync(cwd), false);
+});
+
+test("Antigravity: a server that doesn't list /usage is never sent it, as it would go to the model", async () => {
+  const r = agy({ env: { FAKE_ACP_NO_USAGE_COMMAND: '1' } });
+  assert.equal(await r.adapter.readLimits!(r.account), null);
+  assert.deepEqual(r.log().filter((x) => x.prompt !== undefined), []);
+});
+
+test("Antigravity: an answer that doesn't read is no reading at all, not even the plan's name", async () => {
+  // A plan-only reading would stamp the login as read now (Codex's review).
+  const r = agy({ env: { FAKE_ACP_USAGE: 'Quota data is not available.' } });
+  assert.equal(await r.adapter.readLimits!(r.account), null);
+});
+
+test('agents without a usage command have no readLimits, so nothing polls them', () => {
+  const r = rig();
+  assert.equal(r.adapter.readLimits, undefined);
+  assert.equal(r.adapter.limitsPollMs, undefined);
 });

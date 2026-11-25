@@ -39,11 +39,13 @@ test('a thread waiting hears when the app comes back on another build', () => {
   assert.equal(h.events(thread.id).filter((e) => e.type === 'user.message' && e.origin === 'runner').length, 1);
 });
 
+// The text is the agent's own words for later, held to its access as it
+// asked (runner/ceiling.ts): these threads are on Full, as the tool says.
 test('the agent\'s own text is sent, and the last request wins', () => {
   const { h, watcher, thread } = setUp();
   watcher.appHello(A);
-  watcher.watch(thread.id, 'Check the dock in the real app.');
-  watcher.watch(thread.id, 'Check the panels move.');
+  watcher.watch(thread.id, 'Check the dock in the real app.', undefined, 'full');
+  watcher.watch(thread.id, 'Check the panels move.', undefined, 'full');
   watcher.appHello(B);
   assert.match(said(h, thread.id).message, /Check the panels move\.$/);
 });
@@ -442,7 +444,7 @@ test('a done turn waiting on the app restart hibernates until it comes, then wak
   const s = h.adapter.last;
   s.init();
   watcher.appHello(D1, 'desktop');
-  watcher.watch(thread.id, 'Check Edit shows beside Copy.');
+  watcher.watch(thread.id, 'Check Edit shows beside Copy.', undefined, 'full');
   s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
   s.text('m1', 'Landed. The app picks it up once it is idle.');
   s.result('completed');

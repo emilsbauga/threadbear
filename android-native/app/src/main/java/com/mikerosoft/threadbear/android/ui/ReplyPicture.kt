@@ -4,7 +4,9 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
+import android.graphics.drawable.Animatable2
 import android.graphics.drawable.AnimatedImageDrawable
+import android.graphics.drawable.Drawable
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
@@ -42,6 +44,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -70,6 +73,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.mikerosoft.threadbear.android.BuildConfig
 import com.mikerosoft.threadbear.android.LocalModel
+import com.mikerosoft.threadbear.kit.AnimationFrames
+import com.mikerosoft.threadbear.kit.AnimationWork
 import com.mikerosoft.threadbear.kit.CappedDownload
 import com.mikerosoft.threadbear.kit.ConcurrencyLimit
 import com.mikerosoft.threadbear.kit.CostLRU
@@ -78,6 +83,7 @@ import com.mikerosoft.threadbear.kit.PictureDownloadError
 import com.mikerosoft.threadbear.kit.PictureFraming
 import com.mikerosoft.threadbear.kit.PictureLimits
 import com.mikerosoft.threadbear.kit.PictureSource
+import com.mikerosoft.threadbear.kit.PlaybackBudget
 import java.io.File
 import java.nio.ByteBuffer
 import java.security.MessageDigest
@@ -97,7 +103,13 @@ class LoadedPicture(
     val image: ImageBitmap,
     val width: Int,
     val height: Int,
-    val moving: AnimatedImageDrawable? = null,
+    /**
+     * A moving picture's cost, once its frames passed AnimationFrames.work:
+     * each place it's shown makes its own AnimatedImageDrawable from `file`,
+     * so two rows of one GIF, or a row and full screen, never stop each
+     * other or share one place in the playback budget (Gemini's review).
+     */
+    val moving: AnimationWork? = null,
     val video: File? = null,
     /** A moving picture's file, which it plays from. */
     val file: File? = null,
@@ -141,6 +153,8 @@ object PictureLoader {
         // An MP4 isn't a picture: its first frame, and the file to play.
         if (data.size > 12 && String(data, 4, 4, Charsets.ISO_8859_1) == "ftyp") return decodeVideo(context, data, url, maxSide)
         var animated = false
+        var source = 0 to 0
+        var shown = 0 to 0
         val listener = ImageDecoder.OnHeaderDecodedListener { decoder, info, _ ->
             val w = info.size.width
             val h = info.size.height
@@ -151,16 +165,23 @@ object PictureLoader {
             decoder.setTargetSize(tw, th)
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             animated = info.isAnimated
+            source = w to h
+            shown = tw to th
         }
         // A moving picture's first frame, or the still.
         val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data)), listener)
-        if (animated) {
+        // Its frames and their times read from the file first: too many,
+        // too many pixels across them (at the file's own size, which the
+        // decoder reads each frame at), or too many a second, and its first
+        // frame stays still (Daybreak 166), as does a moving format whose
+        // frames can't be counted.
+        val work = if (animated) AnimationFrames.work(data, source.first, source.second, shown.first, shown.second) else null
+        if (work != null) {
             // Played from a file, so the bytes go once this returns: a row
             // kept every GIF's whole file in memory on the iPhone (Codex
             // review, Daybreak finding 8).
             val file = runCatching { saved(context, data, url, "anim") }.getOrNull()
-            val drawable = file?.let { runCatching { ImageDecoder.decodeDrawable(ImageDecoder.createSource(it), listener) }.getOrNull() }
-            if (drawable is AnimatedImageDrawable) return LoadedPicture(bitmap.asImageBitmap(), bitmap.width, bitmap.height, moving = drawable, file = file)
+            if (file != null) return LoadedPicture(bitmap.asImageBitmap(), bitmap.width, bitmap.height, moving = work, file = file)
         }
         return LoadedPicture(bitmap.asImageBitmap(), bitmap.width, bitmap.height)
     }
@@ -291,7 +312,7 @@ fun ReplyPicture(
             val picture = loaded
             when {
                 picture == null -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 1.5.dp, color = colors.onSurfaceVariant)
-                picture.moving != null -> MovingImage(picture.moving, Modifier.fillMaxSize())
+                picture.moving != null -> MovingImage(picture, Modifier.fillMaxSize())
                 else -> {
                     Image(picture.image, alt.ifEmpty { "Picture" }, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
                     if (picture.video != null) PlayBadge()
@@ -313,14 +334,83 @@ fun ReplyPicture(
     if (fullScreen) loaded?.let { PictureViewer(url, alt, it) { fullScreen = false } }
 }
 
-/** A moving picture, playing while it's composed. */
+/** The moving pictures playing now, however many are on screen (PlaybackBudget). */
+private val playback = PlaybackBudget()
+
+/**
+ * A moving picture, playing while it's composed if PlaybackBudget has room
+ * for it, otherwise its first frame, still, until it's shown again. Its
+ * own AnimatedImageDrawable, made here from the picture's file at the size
+ * its first frame was decoded at, off the main thread.
+ */
 @Composable
-private fun MovingImage(drawable: AnimatedImageDrawable, modifier: Modifier) {
+private fun MovingImage(picture: LoadedPicture, modifier: Modifier, contentScale: ContentScale = ContentScale.FillBounds) {
+    val work = picture.moving
+    val file = picture.file
+    var drawable by remember(picture) { mutableStateOf<AnimatedImageDrawable?>(null) }
+    // The place in PlaybackBudget, given back once: when this goes, when its
+    // drawable can't be made, or when it has played its last loop (Codex's
+    // and Gemini's reviews: those kept their places with nothing playing).
+    val place = remember(picture) { Place(work?.pixelsPerSecond ?: 0) }
+    DisposableEffect(picture) {
+        if (work != null && file != null) place.take()
+        onDispose { place.give() }
+    }
+    LaunchedEffect(picture) {
+        if (!place.held || file == null) return@LaunchedEffect
+        val made = withContext(Dispatchers.Default) {
+            runCatching {
+                ImageDecoder.decodeDrawable(ImageDecoder.createSource(file)) { decoder, _, _ ->
+                    decoder.setTargetSize(picture.width, picture.height)
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                } as? AnimatedImageDrawable
+            }.getOrNull()
+        }
+        if (made == null) {
+            place.give()
+            return@LaunchedEffect
+        }
+        made.registerAnimationCallback(object : Animatable2.AnimationCallback() {
+            override fun onAnimationEnd(d: Drawable?) = place.give()
+        })
+        drawable = made
+    }
+    val playing = drawable
+    if (playing == null) {
+        Image(picture.image, null, modifier, contentScale = contentScale)
+        return
+    }
+    MovingView(playing, modifier)
+}
+
+/** One moving picture's place in `playback`, taken and given back at most once each. */
+private class Place(private val pixelsPerSecond: Long) {
+    var held = false
+        private set
+
+    @Synchronized
+    fun take() {
+        if (!held) held = playback.take(pixelsPerSecond)
+    }
+
+    @Synchronized
+    fun give() {
+        if (held) playback.give(pixelsPerSecond)
+        held = false
+    }
+}
+
+@Composable
+private fun MovingView(drawable: AnimatedImageDrawable, modifier: Modifier) {
     AndroidView(
         factory = { ImageView(it).apply { scaleType = ImageView.ScaleType.FIT_CENTER } },
+        // Started once: after its last loop its place is given back, and a
+        // later redraw mustn't play it again without one.
         update = { view ->
-            if (view.drawable !== drawable) view.setImageDrawable(drawable)
-            drawable.start()
+            if (view.drawable !== drawable) {
+                view.setImageDrawable(drawable)
+                drawable.start()
+            }
         },
         onRelease = { view -> drawable.stop(); view.setImageDrawable(null) },
         modifier = modifier,
@@ -483,8 +573,7 @@ private fun Zoomable(picture: LoadedPicture) {
                 detectTapGestures(onDoubleTap = { if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 3f })
             },
         ) {
-            val moving = picture.moving
-            if (moving != null) MovingImage(moving, drawn) else Image(picture.image, null, drawn, contentScale = ContentScale.Fit)
+            if (picture.moving != null) MovingImage(picture, drawn, ContentScale.Fit) else Image(picture.image, null, drawn, contentScale = ContentScale.Fit)
         }
     }
 }

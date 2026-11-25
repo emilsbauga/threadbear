@@ -482,11 +482,21 @@ pub(crate) fn text_view(
     base: &str,
 ) -> gpui_kit::base::TextView {
     let base = base.to_owned();
-    gpui_kit::base::TextView::new(state).on_link_click(
-        move |url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App| {
-            clicked(url, event, origin, &base, cx)
-        },
-    )
+    gpui_kit::base::TextView::new(state)
+        .on_link_click(
+            move |url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App| {
+                clicked(url, event, origin, &base, cx)
+            },
+        )
+        .image_source(no_pictures)
+}
+
+/// What a rich text view draws for a picture written in it, unless its
+/// caller draws the thread's own (the transcript's `picture_source`):
+/// nothing. The kit would decode a `data:` URL itself, outside the picture
+/// budget, from text an agent or another Mac wrote (Daybreak 170).
+fn no_pictures(uri: &gpui_kit::SharedUri) -> ImageSource {
+    crate::rows::markdown::picture_source(uri, false)
 }
 
 /// The base kit's markdown text made from a string, for text that takes the
@@ -499,11 +509,13 @@ pub(crate) fn reading_markdown_view(
     base: &str,
 ) -> gpui_kit::base::TextView {
     let base = base.to_owned();
-    gpui_kit::base::TextView::markdown(id, text).on_link_click(
-        move |url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App| {
-            clicked(url, event, origin, &base, cx)
-        },
-    )
+    gpui_kit::base::TextView::markdown(id, text)
+        .on_link_click(
+            move |url: &SharedString, event: &ClickEvent, _: &mut Window, cx: &mut App| {
+                clicked(url, event, origin, &base, cx)
+            },
+        )
+        .image_source(no_pictures)
 }
 
 /// A link in one of those clicked. The kit hands over a release of any
@@ -1074,6 +1086,7 @@ pub(crate) fn show_media(
     let wants = match kind {
         Kind::PaneDocument => Media::Pdf,
         Kind::PaneQuickLook => Media::Office,
+        Kind::PaneAudio => Media::Audio,
         _ => Media::Video,
     };
     let name = threadbear_core::highlights::last_component(path).to_owned();
@@ -1082,6 +1095,7 @@ pub(crate) fn show_media(
             Media::Pdf => "a PDF",
             Media::Office => "an Office or iWork document",
             Media::Video => "a video",
+            Media::Audio => "a sound file",
         };
         return Err(format!(
             "{name} isn't {what}, so Threadbear didn't open it."

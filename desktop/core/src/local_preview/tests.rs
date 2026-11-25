@@ -202,7 +202,7 @@ fn no_symlink_is_followed() {
         site.serve("/hard.png").is_none(),
         "a hard link to a file elsewhere"
     );
-    assert_eq!(site.serve("/pic.png").unwrap().data, b"x");
+    assert_eq!(&*site.serve("/pic.png").unwrap().data, b"x");
     fs::remove_file(f.dir.join("pic.png")).unwrap();
     std::os::unix::fs::symlink(f.dir.join(".env"), f.dir.join("pic.png")).unwrap();
     assert!(
@@ -683,4 +683,271 @@ fn a_live_page_reads_only_itself() {
     // Rewritten after Run: nothing.
     f.write("index.html", "<p>changed</p>");
     assert!(site.serve("index.html").is_none());
+}
+
+// Daybreak 168 (22 Nov 2026): a small page naming one allowed picture under
+// thousands of query strings had each one read and sent in full.
+
+#[cfg(unix)]
+#[test]
+fn query_spellings_of_one_file_are_capped() {
+    let f = Folder::new();
+    let refs: String = (0..2_000)
+        .map(|i| format!("<img src=\"big.png?{i}\">"))
+        .collect();
+    f.write("index.html", &refs);
+    f.write("big.png", "picture");
+    let site = f.site();
+    let mut served = 0;
+    for i in 0..2_000 {
+        if site
+            .serve_asked(&format!("/big.png?{i}"), "/big.png")
+            .is_some()
+        {
+            served += 1;
+        }
+    }
+    assert_eq!(
+        served, MAX_VARIANTS_PER_FILE,
+        "only the first few spellings"
+    );
+    assert!(
+        site.serve_asked("/big.png?0", "/big.png").is_some(),
+        "a spelling already answered still is"
+    );
+    assert!(
+        site.serve_asked("/index.html", "/index.html").is_some(),
+        "the page itself is untouched"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_preview_has_a_request_budget() {
+    let f = Folder::new();
+    f.write("index.html", "<img src=pic.png>");
+    let site = f.site();
+    for _ in 0..MAX_REQUESTS - 2 {
+        site.serve_asked("/nothing.png", "/nothing.png");
+    }
+    assert!(
+        site.serve("/pic.png").is_some(),
+        "the last request in budget"
+    );
+    assert!(site.serve("/pic.png").is_none(), "refused past it");
+    assert!(site.serve("/index.html").is_none(), "the page too");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_preview_has_a_byte_budget() {
+    let f = Folder::new();
+    let pics = MAX_SERVED_BYTES / MAX_BYTES + 2;
+    let refs: String = (0..pics).map(|i| format!("<img src=p{i}.png>")).collect();
+    f.write("index.html", &refs);
+    let site = f.site();
+    // Sparse files: 64 MB each on paper, nothing on disk.
+    for i in 0..pics {
+        let file = fs::File::create(f.dir.join(format!("p{i}.png"))).unwrap();
+        file.set_len(MAX_BYTES).unwrap();
+    }
+    let mut served = 0u64;
+    for i in 0..pics {
+        if let Some(s) = site.serve(&format!("/p{i}.png")) {
+            served += s.data.len() as u64;
+        }
+    }
+    assert!(served <= MAX_SERVED_BYTES, "served {served}");
+    assert!(served >= MAX_SERVED_BYTES - MAX_BYTES, "served {served}");
+    assert!(site.serve(&format!("/p{}.png", pics - 1)).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unchanged_file_is_not_read_again() {
+    let f = Folder::new();
+    f.write("index.html", "<img src=pic.png?a><img src=pic.png?b>");
+    f.write("pic.png", "first");
+    let site = f.site();
+    let a = site.serve_asked("/pic.png?a", "/pic.png").unwrap();
+    let b = site.serve_asked("/pic.png?b", "/pic.png").unwrap();
+    assert!(Arc::ptr_eq(&a.data, &b.data), "the same bytes, read once");
+    // Rewritten in place (same inode): read again.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.write("pic.png", "second!");
+    assert_eq!(
+        &*site.serve_asked("/pic.png?a", "/pic.png").unwrap().data,
+        b"second!"
+    );
+    // Replaced by a link: refused, cache or not.
+    fs::remove_file(f.dir.join("pic.png")).unwrap();
+    std::os::unix::fs::symlink(f.dir.join(".env"), f.dir.join("pic.png")).unwrap();
+    assert!(site.serve_asked("/pic.png?a", "/pic.png").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_ordinary_page_loads_whole() {
+    let f = Folder::new();
+    let site = f.site();
+    for asked in [
+        "/index.html",
+        "/style.css?v=2",
+        "/pic.png",
+        "/assets/pic@2x.png",
+        "/theme.css",
+        "/assets/bg.png",
+        "/assets/font.woff2",
+        "/assets/styled.png",
+    ] {
+        let path = asked.split('?').next().unwrap();
+        assert!(site.serve_asked(asked, path).is_some(), "{asked}");
+    }
+    // Reloaded a few times, and a video seeked: all still served.
+    for _ in 0..20 {
+        assert!(site.serve_asked("/pic.png", "/pic.png").is_some());
+    }
+}
+
+/// Codex's review: on a disk that ignores case (a Mac's, by default) every
+/// spelling of a name is the same file, and each got its own count and read.
+#[cfg(unix)]
+#[test]
+fn spellings_are_counted_by_the_file_they_open() {
+    let f = Folder::new();
+    let names: Vec<String> = (0..64)
+        .map(|i| {
+            "bigpic"
+                .chars()
+                .enumerate()
+                .map(|(k, c)| {
+                    if i >> k & 1 == 1 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect::<String>()
+                + ".png"
+        })
+        .collect();
+    let refs: String = names.iter().map(|n| format!("<img src={n}>")).collect();
+    f.write("index.html", &refs);
+    f.write("bigpic.png", "picture");
+    let site = f.site();
+    let ignores_case = f.dir.join("BIGPIC.png").exists();
+    let served = names
+        .iter()
+        .filter(|n| site.serve(&format!("/{n}")).is_some())
+        .count();
+    if ignores_case {
+        assert_eq!(
+            served, MAX_VARIANTS_PER_FILE,
+            "one file, however it's spelled"
+        );
+    } else {
+        assert_eq!(served, 1, "only the one that exists");
+    }
+}
+
+/// The byte budget counts what's charged from the open file before it's
+/// read, the page's own bytes too.
+#[cfg(unix)]
+#[test]
+fn the_byte_budget_is_charged_before_reading() {
+    let f = Folder::new();
+    let pics = MAX_SERVED_BYTES / MAX_BYTES;
+    let refs: String = (0..pics).map(|i| format!("<img src=p{i}.png>")).collect();
+    f.write("index.html", &refs);
+    let site = f.site();
+    for i in 0..pics {
+        let file = fs::File::create(f.dir.join(format!("p{i}.png"))).unwrap();
+        file.set_len(MAX_BYTES).unwrap();
+    }
+    for i in 0..pics - 1 {
+        assert!(site.serve(&format!("/p{i}.png")).is_some());
+    }
+    // The page's own bytes took a little: the last whole picture doesn't fit.
+    assert!(site.serve(&format!("/p{}.png", pics - 1)).is_none());
+}
+
+/// Gemini's review: the same stylesheet by another spelling, on a disk that
+/// ignores case, still names its assets from the folder it was asked from.
+#[cfg(unix)]
+#[test]
+fn a_stylesheet_by_another_spelling_still_names_its_assets() {
+    let f = Folder::new();
+    fs::create_dir_all(f.dir.join("sub")).unwrap();
+    f.write(
+        "index.html",
+        r#"<link rel=stylesheet href="sub/look.css"><link rel=stylesheet href="SUB/look.css">"#,
+    );
+    f.write("sub/look.css", "body { background: url(bg.png) }");
+    f.write("sub/bg.png", "x");
+    let site = f.site();
+    assert!(site.serve("/sub/look.css").is_some());
+    if f.dir.join("SUB/look.css").exists() {
+        assert!(site.serve("/SUB/look.css").is_some());
+        assert!(site.allows("SUB/bg.png"));
+    }
+}
+
+/// A request refused for the byte budget doesn't use up one of the file's
+/// spellings.
+#[cfg(unix)]
+#[test]
+fn a_refusal_uses_up_no_spelling() {
+    let f = Folder::new();
+    f.write("index.html", "<img src=pic.png>");
+    f.write("pic.png", "x");
+    let site = f.site();
+    site.budget.lock().unwrap().bytes = MAX_SERVED_BYTES;
+    for i in 0..20 {
+        assert!(site
+            .serve_asked(&format!("/pic.png?{i}"), "/pic.png")
+            .is_none());
+    }
+    site.budget.lock().unwrap().bytes = 0;
+    assert!(site.serve_asked("/pic.png?100", "/pic.png").is_some());
+}
+
+/// Gemini's review: making room lets the least recently used go, not
+/// everything.
+#[cfg(unix)]
+#[test]
+fn the_cache_lets_the_least_recently_used_go() {
+    let f = Folder::new();
+    let n = MAX_CACHED_BYTES / (64 * 1024 * 1024) + 1;
+    let refs: String = (0..n).map(|i| format!("<img src=p{i}.png>")).collect();
+    f.write("index.html", &refs);
+    let site = f.site();
+    for i in 0..n {
+        let file = fs::File::create(f.dir.join(format!("p{i}.png"))).unwrap();
+        file.set_len(64 * 1024 * 1024).unwrap();
+    }
+    let first: Vec<_> = (0..n)
+        .map(|i| site.serve(&format!("/p{i}.png")).unwrap().data)
+        .collect();
+    // p0 went to make room for the last; the others are still the same bytes.
+    for (i, data) in first.iter().enumerate().skip(1) {
+        let again = site.serve(&format!("/p{i}.png")).unwrap().data;
+        assert!(Arc::ptr_eq(data, &again), "p{i} kept");
+    }
+}
+
+/// Gemini's review: a stylesheet asked for again and again is read for
+/// names once, not every time.
+#[cfg(unix)]
+#[test]
+fn a_file_asked_for_again_is_read_for_names_once() {
+    let f = Folder::new();
+    f.write("index.html", "<link rel=stylesheet href=look.css>");
+    f.write("look.css", "body { background: url(bg.png) }");
+    let site = f.site();
+    for _ in 0..50 {
+        assert!(site.serve("/look.css").is_some());
+    }
+    let facts = site.facts.lock().unwrap();
+    let scans: usize = facts.values().map(|k| k.scanned.len()).sum();
+    assert_eq!(scans, 2, "the page and the stylesheet, once each");
 }

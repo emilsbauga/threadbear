@@ -65,7 +65,7 @@ function fake(dir = tmpDir('far-reports')) {
 test("each ended turn's reply goes to the starter once, after a second look finds it settled", async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'fa01aaaa-0000', runnerName: 'Pixel', starter: 'starter1' });
+  fr.add({ threadId: 'fa01aaaa-0000', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   f.set('running', '2026-11-20T10:00:00Z', turn(1, [], { tools: true }));
   await f.tick(fr);
   assert.equal(f.sent.length, 0, 'nothing while it works');
@@ -101,7 +101,7 @@ test("each ended turn's reply goes to the starter once, after a second look find
 test('a reply that reached the backend after it was passed on follows', async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
+  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   f.set('idle', '2026-11-20T10:01:00Z', turn(1, [], { tools: true }));
   await f.tick(fr);
   await f.tick(fr);
@@ -119,7 +119,7 @@ test('a reply that reached the backend after it was passed on follows', async ()
 test('a reply that fails to go is tried again; none go while inactive', async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
+  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   f.set('idle', '2026-11-20T10:01:00Z', turn(1, ['Done.']));
   f.s.active = false;
   await f.tick(fr);
@@ -137,7 +137,7 @@ test('a reply that fails to go is tried again; none go while inactive', async ()
 
 test('kept across a restart, waits for a starter not here yet, and a quiet thread is looked at less often', async () => {
   const f = fake();
-  f.make().add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
+  f.make().add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   f.s.here.clear();
   f.set('idle', '2026-11-20T10:01:00Z', turn(1, ['Report.']));
   await f.tick(f.make());
@@ -166,8 +166,8 @@ test('kept across a restart, waits for a starter not here yet, and a quiet threa
 test("a thread already watched keeps its starter, and one gone a month is forgotten", async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
-  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'other' });
+  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
+  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'other', by: 'full' });
   f.set('idle', '2026-11-20T10:01:00Z', turn(1, ['Report.']));
   f.s.here.add('other');
   await f.tick(fr);
@@ -181,7 +181,7 @@ test("a thread already watched keeps its starter, and one gone a month is forgot
 test('a runner ending turns without end is capped at 40 replies a day', async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
+  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   const rows: FarRow[] = [];
   for (let n = 1; n <= 45; n++) {
     rows.push(...turn(n, [`reply ${n}`]));
@@ -206,7 +206,7 @@ test("a turn's reply is its last words before the tool calls that end it", () =>
 test("catching up: every turn after the last one passed on goes, even when that one is off the page", async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
+  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   f.set('idle', '2026-11-20T10:01:00Z', turn(1, ['One.']));
   await f.tick(fr);
   await f.tick(fr);
@@ -221,7 +221,7 @@ test("catching up: every turn after the last one passed on goes, even when that 
 test("a turn whose last reply came only with the next turn's rows follows", async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
+  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   f.set('idle', '2026-11-20T10:01:00Z', turn(1, [], { tools: true }));
   await f.tick(fr);
   await f.tick(fr);
@@ -234,7 +234,7 @@ test("a turn whose last reply came only with the next turn's rows follows", asyn
 test('a thread moved to this Mac is let go; one moved to another runner is followed there', async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'far1', runnerId: 'pixel', runnerName: 'Pixel', starter: 'starter1' });
+  fr.add({ threadId: 'far1', runnerId: 'pixel', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   f.set('idle', '2026-11-20T10:01:00Z', turn(1, ['Report.']));
   f.s.row = { ...f.s.row!, runnerId: 'cloud' } as typeof f.s.row;
   await f.tick(fr);
@@ -249,7 +249,7 @@ test('a thread moved to this Mac is let go; one moved to another runner is follo
 test("a turn's late reply follows even when that turn fills the whole page", async () => {
   const f = fake();
   const fr = f.make();
-  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
+  fr.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   const long = (end: FarRow[]): FarRow[] => [...Array.from({ length: 100 - end.length }, (_, i): FarRow => ({ seq: i, role: 'tool', text: 'Ran it', toolKind: 'command', turn: 't1' })), ...end];
   f.set('idle', '2026-11-20T10:01:00Z', long([]));
   await f.tick(fr);
@@ -264,7 +264,7 @@ test("a turn's late reply follows even when that turn fills the whole page", asy
 test("a handover's old runner, finishing a look late, doesn't undo what the new one passed on", async () => {
   const f = fake();
   const old = f.make();
-  old.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1' });
+  old.add({ threadId: 'far1', runnerName: 'Pixel', starter: 'starter1', by: 'full' });
   f.set('idle', '2026-11-20T10:01:00Z', turn(1, ['Report.']));
   await f.tick(old);
   // The old runner's next look waits on the backend while the new one sends.

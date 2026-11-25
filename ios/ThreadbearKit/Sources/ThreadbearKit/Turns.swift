@@ -105,22 +105,31 @@ public enum Turns {
     }
 
     /// The wait before each turn in a stretch the agent started by itself
-    /// (no message starts it), by the index of its first row: from the row
-    /// before to that one. Rows from before API 26 have no turn, so there
-    /// are none.
+    /// (no message starts it), or the runner's own message did with its
+    /// reason (backend API 98, as the Mac's divider says it), by the index
+    /// of its first row: from the row before to that one. Rows from before
+    /// API 26 have no turn, so there are none.
     static func waits(_ body: [PhoneMessage]) -> [Int: TurnGap] {
         var out: [Int: TurnGap] = [:]
         var i = 1
         while i < body.count {
-            let starts = body[i].turn != nil && body[i].turn != body[i - 1].turn && body[i].role != .user
-            guard starts else { i += 1; continue }
+            let newTurn = body[i].turn != nil && body[i].turn != body[i - 1].turn
+            let why = runnerWake(body[i])
+            guard newTurn, body[i].role != .user || why != nil else { i += 1; continue }
             var end = i + 1
             while end < body.count, body[end].turn == body[i].turn, body[end].role != .user { end += 1 }
             let woke = body[i..<end].lazy.compactMap(\.wokeBy).first ?? []
-            out[i] = TurnGap(seq: body[i].seq, from: body[i - 1].at, to: body[i].at, wokeBy: woke)
+            out[i] = TurnGap(seq: body[i].seq, from: body[i - 1].at, to: body[i].at, wokeBy: woke, runnerWake: why)
             i = end
         }
         return out
+    }
+
+    /// Why the runner sent this message of its own, when it says.
+    static func runnerWake(_ m: PhoneMessage) -> String? {
+        guard m.role == .user, m.origin == "runner" else { return nil }
+        let why = m.wakeReason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return why.isEmpty ? nil : why
     }
 
     /// The waits that get a divider, as the Mac picks them (TranscriptReducer,
@@ -135,7 +144,7 @@ public enum Turns {
         for k in body.indices {
             if let gap = gaps[k], shownBefore {
                 if let earlier = waiting?.gap {
-                    waiting = (k, TurnGap(seq: gap.seq, from: earlier.from, to: gap.to, wokeBy: earlier.wokeBy + gap.wokeBy))
+                    waiting = (k, TurnGap(seq: gap.seq, from: earlier.from, to: gap.to, wokeBy: earlier.wokeBy + gap.wokeBy, runnerWake: gap.runnerWake ?? earlier.runnerWake))
                 } else {
                     waiting = (k, gap)
                 }

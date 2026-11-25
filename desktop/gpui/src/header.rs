@@ -160,6 +160,10 @@ impl Threadbear {
         if let Some(title) = self.render_project_header_title(cx) {
             return title;
         }
+        // An archived session's (archive_search.rs).
+        if let Some(title) = self.render_archive_header_title(cx) {
+            return title;
+        }
         let Some(thread) = self
             .open_thread()
             .cloned()
@@ -782,7 +786,9 @@ impl Threadbear {
                     "arrow.triangle.2.circlepath",
                     "Make a new link. The old one stops working.",
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.set_share(id_for_new.clone(), "link", true, cx)
+                        if !this.share_busy {
+                            this.set_share(id_for_new.clone(), "link", true, cx)
+                        }
                     }),
                     cx,
                 ))
@@ -914,6 +920,11 @@ impl Threadbear {
         new_link: bool,
         cx: &mut Context<Self>,
     ) {
+        // One at a time: a second New link while the first is on its way
+        // made two, and the link shown first stopped working.
+        if self.share_busy {
+            return;
+        }
         let client = self.client.clone();
         let params = json!({ "threadId": id, "access": access, "newLink": new_link });
         self.share_busy = true;
@@ -924,9 +935,11 @@ impl Threadbear {
                 this.share_busy = false;
                 match res {
                     Ok(v) => {
+                        // Another runner's thread stays that runner's,
+                        // shared (the relay answers for it; 23 Nov review).
                         if let Ok(t) = serde_json::from_value::<ThreadSummary>(v["thread"].clone())
                         {
-                            this.threads.insert(t.id.clone(), std::sync::Arc::new(t));
+                            this.store_reply_summary(t);
                         }
                     }
                     Err(e) => this.show_error(e.message, cx),
@@ -1526,8 +1539,10 @@ impl Threadbear {
         // and the line would blame the new login.
         let failed_on_limit = thread.status == "error"
             && self.failed_on_account.get(&thread.id) == Some(&thread.account_id)
+            // This thread's own turn: a box in a panel of its own isn't the
+            // main panel's thread.
             && self
-                .latest_completion(cx)
+                .completion_for(&thread.id, cx)
                 .is_some_and(|c| c.error_kind == Some(TurnErrorKind::UsageLimit));
         // A pinned thread at its limit waits for its own login too.
         let waiting = thread.waiting_for_room_until_ms();
@@ -1704,7 +1719,7 @@ impl Threadbear {
                             >(v["thread"].clone())
                             {
                                 if thread.id == id {
-                                    t.threads.insert(id.clone(), std::sync::Arc::new(thread));
+                                    t.store_reply_summary(thread);
                                 }
                             }
                             // Not from inside this update: opening needs the
@@ -2073,25 +2088,11 @@ impl Threadbear {
         }
     }
 
-    /// A pinned thread's auth failure belongs to its own pane, even while a
-    /// different thread is open in the main panel.
+    /// A thread's last turn's end, from its own pane: a pinned thread's auth
+    /// failure, limit or refusal belongs to it, even while a different
+    /// thread is open in the main panel.
     fn completion_for(&self, thread: &str, cx: &App) -> Option<TurnCompletion> {
         let pane = self.pane_for(thread, cx)?;
-        let p = pane.read(cx);
-        p.feed
-            .model()
-            .rows()
-            .iter()
-            .rev()
-            .take(40)
-            .find_map(|row| match &row.content {
-                RowContent::Footer(c) => Some(c.clone()),
-                _ => None,
-            })
-    }
-
-    pub(crate) fn latest_completion(&self, cx: &App) -> Option<TurnCompletion> {
-        let pane = self.pane.as_ref()?;
         let p = pane.read(cx);
         p.feed
             .model()
@@ -2115,7 +2116,7 @@ impl Threadbear {
         if thread.status != "error" || thread.provider != "claude" {
             return None;
         }
-        let completion = self.latest_completion(cx)?;
+        let completion = self.completion_for(&thread.id, cx)?;
         if completion.outcome != TurnOutcome::Failed {
             return None;
         }
@@ -2151,12 +2152,10 @@ impl Threadbear {
         cx: &App,
     ) -> Option<AnyElement> {
         let t = app.read(cx);
-        let thread = t
-            .threads
-            .get(thread_id)
-            .filter(|_| t.selected.as_deref() == Some(thread_id))?;
+        // Any box's own thread, in the main panel or one of its own.
+        let thread = t.threads.get(thread_id)?;
         let (account, title) = t.refusal_target(thread, cx)?;
-        let continuing = t.continuing_refusal.as_deref() == Some(thread_id);
+        let continuing = t.continuing_refusal.contains(thread_id);
         Some(Self::render_refusal_offer(
             app.downgrade(),
             thread_id.to_owned(),
@@ -2237,10 +2236,9 @@ impl Threadbear {
         account: String,
         cx: &mut Context<Self>,
     ) {
-        if self.continuing_refusal.as_deref() == Some(thread.as_str()) {
+        if !self.continuing_refusal.insert(thread.clone()) {
             return;
         }
-        self.continuing_refusal = Some(thread.clone());
         cx.notify();
         let client = self.client.clone();
         // The runner it's shown on, as every send says it (thread.rs, Daybreak 113).
@@ -2254,7 +2252,7 @@ impl Threadbear {
                 Err(e) => Err(e.clone()),
             };
             this.update(cx, |this, cx| {
-                this.continuing_refusal = None;
+                this.continuing_refusal.remove(&thread);
                 if let Err(e) = sent {
                     this.show_error(e.message, cx);
                 }
@@ -2385,7 +2383,7 @@ impl Threadbear {
                         if let Ok(t) = serde_json::from_value::<ThreadSummary>(v["thread"].clone())
                         {
                             let id = t.id.clone();
-                            this.threads.insert(t.id.clone(), std::sync::Arc::new(t));
+                            this.store_reply_summary(t);
                             this.open(id, window, cx);
                         }
                     }

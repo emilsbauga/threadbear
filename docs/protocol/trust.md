@@ -125,7 +125,9 @@ runs (`import(name)`, `` import(`./${x}`) ``, `require('./a' + b)`, any
 `createRequire`, `node:module`, `node:vm`, `node:worker_threads`,
 `node:inspector`, `node:repl`, `eval`, `Function`, a `data:` or `#`
 specifier, in any case, or any other URL scheme), or that reaches code
-made from a string or bytes by another route (`globalThis.eval`,
+made from a string or bytes by another route (`node:process` imported
+whole or for one of those names, `globalThis.process` as a value,
+`loadExtension`, `globalThis.eval`,
 `window['Function']`, any `.constructor` such as `(() => {}).constructor`,
 `const { eval: run } = globalThis`, `Reflect.get` with anything but a
 plain harmless name or `Reflect` handed on, `getOwnPropertyDescriptors`,
@@ -371,6 +373,79 @@ command or file's place, more than 8 wrappers deep, or from a path that's its in
 open (`sh /dev/stdin < ./steps.txt`, `node -`, `bash -s` after
 `--rcfile`, a `#!` with `-s`, `-c` or `-i`, `/dev/fd/N`, `/proc/self/fd/N`,
 `/dev/tty`, or anything outside the repo that isn't a plain file), a
+program on PATH for a check a thread that asks first wants approved on a
+card unless it's one a Claude Code hook may run (the hook's strict follow,
+`checkCardProblem`: a program handed a data file can run it as code by its
+own rules, `git -c alias.x='!sh data.txt' x`, `sqlite3 :memory: '.read
+data.txt'`, `apply`; an owner's check isn't held to that, and the digest
+doesn't change; `case` and `[[ ]]`, bare and at the command's start, are
+the shell's own and run nothing, `[[` only in a script bash, zsh or ksh runs
+(by its `#!` or by name: dash, a Linux `sh`, runs a program called `[[`),
+but there a number compared with `-eq` and
+the like, or a name tested with `-v` or `-R`, must be plain and known now,
+as bash works them out as arithmetic, whose `a[$(cmd)]` runs a command
+from the data; and a program may come only from a folder programs are
+installed in, on PATH, by its path or in a hook's settings `env` (the
+system's, Homebrew's, `~/.local/bin`, `~/bin`, `~/.bun/bin`, `~/.cargo/bin`,
+`~/.nvm/versions/node/*/bin` and the like, and the runner's own PATH, never
+the repo or a temp folder; `trustedProgramDirs`), with nothing written in
+one or where its programs are installed (`/opt/homebrew`, `~/.local`),
+and no `BASH_CMDS`, zsh `commands`, `functions` or `hash name=file`, `set
+-A`, `typeset -T`, PATH set in an expansion or arithmetic, `unset PATH`, a
+`#!` from another folder, IFS set beyond empty, or an unquoted `$x` whose
+value splits into words), `npm version` (its version scripts are followed) and
+`npm explore`, any of npm's own commands that could run something of the
+folder's for a check or hook, `MAKEFILES`, `MAKEFLAGS`, `AWKPATH` or
+`AWKLIBPATH` set, `make --eval`, gawk's `--include`, `-i`, `--load` or
+`@include`, a write to a file of your home folder that shells and tools
+read as they start (a dot file or folder, a launch agent), for checks and
+hooks an interactive or login shell (`bash -ic`, `zsh -l`), a program's
+name in another case on a Mac
+(`Env`, `Node`: the disk finds them all the same), a
+JavaScript file for a schedule's check, however it's run (a `.js` or
+`.ts` file, `node`, `nodejs`, `bun`, `deno`, `tsx` or `ts-node`, through
+`env`, `npx`, `bunx` or `npm exec` too): what JavaScript runs or loads can
+turn on files no hash covers by more routes than a scan can close
+(`globalThis.valueOf()` hands out the global object by another name), so
+it's followed as far as it can be, its imports hashed, and the check is
+one it can't follow (Daybreak 165, after three rounds of review). For a
+Claude Code hook, JavaScript is still read, and one that starts programs
+itself (an import of
+`child_process`, `cluster`, `bun` or a package known to wrap them, like
+`execa`, `cross-spawn`, `zx` or `shelljs`; `Bun` or `Deno` other than
+under `typeof`; `execve`, by any name, `Reflect.get` included), as what it
+runs isn't followed and may be read from data no hash covers
+(`execSync(readFileSync('payload.txt'))`, Daybreak 165; for schedule
+checks and Claude Code hooks, while a patch's command still follows past
+one, and the rest of a check is still followed). For those two, also
+what finds its code by its own rules: a test runner (`node --test`, `bun
+test`, `deno test`), a `bunfig.toml`, `--preserve-symlinks`, an import
+without its extension that more than one file could answer (`helper.ts`
+and `helper.js`, a folder's `package.json`, a `.node` addon), and a bare
+import beside a `tsconfig.json` or `jsconfig.json` with `paths`,
+`baseUrl` or `extends`. Everywhere: `bun` with a flag that loads code or
+reads a config (`--preload`, `-r`, `--config`, `--cwd`), `node --run x`
+followed as package.json's script `x`, and `NODE_OPTIONS`, `BUN_OPTIONS`
+or `PATH` set in quotes (`export 'NODE_OPTIONS=...'`), with a loading
+flag in quotes, by `+=`, or any way but a plain assignment (`read`,
+`for`, `printf -v`, `${X:=...}`), a variable whose name is worked out as
+it runs (`export "${x}NAME=..."`), `bun` or `deno` with a flag not known
+to load nothing, `node` with short flags run together (`-pe`), a test
+reporter or `--define`, Node's `--env_file` spellings, `npm` with
+`--userconfig`, `--node-options` or `--script-shell`, `npx -p` from a
+folder, a JavaScript file run by a `#!` with flags beyond a few known to
+load nothing, and a relative import with `%` in it. For checks and hooks,
+also `--tsconfig`, a `deno.json`, a `bunfig.toml` that preloads or
+defines, a `.env` beside `bun` that sets `NODE_OPTIONS` or the like (read
+for the names only, never kept), `npm start` with no start script, an
+import of a file that isn't there (Bun and tsx load `x.ts` for `./x.js`),
+and `this` in a plain function of a script that isn't an ES module
+(globalThis, in sloppy mode). `node:process` imported whole,
+`globalThis.process` as a value, `process.mainModule`, `module.children`,
+`module.parent`, `require.main` and `require.cache`, `import.meta` handed
+on whole, and `node:sqlite` count as loading code by a name worked out as
+it runs (below). What a JavaScript script writes with `fs` isn't tracked
+(a check that writes a file it then imports), as before. A
 command in a variable or a pattern (`$CMD`,
 `"$f"` in a loop, `./s/*.sh`), `source "$1"`, relative paths after a
 `cd` to somewhere worked out as it runs, `npm run "$x"`, `npx "$x"`,

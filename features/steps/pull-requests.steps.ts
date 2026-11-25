@@ -3,7 +3,7 @@ import type { ThreadbearWorld } from '../support/world.ts';
 import { pane } from '../support/pane.ts';
 import type { Dump } from '../support/driver.ts';
 
-// A PR open as a tab in the pane (the inlinePrs experiment). The GPUI app's
+// A PR open as a tab in the pane. The GPUI app's
 // dump has it as the pane's preview, `previewKind` "pr", and `pr` with the
 // words the tab draws.
 type PrDump = { url: string; tab?: string | null; busy?: string | null; error?: string | null; pr: { title: string; state: string; status: string; checks: string; failed?: string | null; files: string[]; filesLater?: boolean; activity: string[] } | string };

@@ -537,7 +537,7 @@ private fun LoadingRow() {
 private fun InboxRow(t: PhoneThread, under: PhoneSection, rows: RowContext, modifier: Modifier = Modifier) {
     val model = LocalModel.current
     // Only under Starred can a row be asleep: elsewhere it's in Hibernating.
-    val asleep = under == PhoneSection.STARRED && InboxSections.isSnoozed(t, rows.now)
+    val asleep = under == PhoneSection.STARRED && InboxSections.isAsleep(t, rows.now)
     var menu by remember { mutableStateOf(false) }
     val state = rememberSwipeToDismissBoxState()
     LaunchedEffect(state.currentValue) {
@@ -699,7 +699,7 @@ fun ThreadRow(
         // nothing needed. Not for unread alone: a running thread is always
         // unread, and its working mark already says so.
         val done = kind == RowStatus.Kind.TIME && t.unread && !t.needsYou
-        val needs = kind == RowStatus.Kind.NEEDS_YOU || (t.needsYou && kind != RowStatus.Kind.WORKING)
+        val needs = RowStatus.wantsMike(t)
         Box(Modifier.width(14.dp), contentAlignment = Alignment.Center) {
             when {
                 done -> Icon(Line.Check, "Done, unread", Modifier.size(10.dp), tint = signals.accent)
@@ -713,7 +713,7 @@ fun ThreadRow(
                 Text(
                     LocalModel.current.title(t, pending),
                     style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = if (t.needsYou || kind == RowStatus.Kind.NEEDS_YOU || done) FontWeight.SemiBold else FontWeight.Normal,
+                    fontWeight = if (t.needsYou || needs || done) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
                 )
                 if (t.starredAt != null) {
@@ -729,7 +729,7 @@ fun ThreadRow(
                 val model = LocalModel.current
                 val runners by model.runners.collectAsStateWithLifecycle()
                 val runner = if (runners.size > 1) runners.firstOrNull { it.runnerId == t.runnerId }?.name else null
-                val doing = t.working?.takeIf { t.isBusy || (t.pendingApproval == null && !t.waitingOnMike) }
+                val doing = RowStatus.doing(t)
                 val line = listOfNotNull(InboxSections.wakeLine(t, now), t.placeText, runner, doing).joinToString(" · ")
                 Text(line, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))

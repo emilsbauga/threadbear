@@ -4,6 +4,8 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -12,6 +14,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.mikerosoft.threadbear.kit.LinkPolicy
 
@@ -35,12 +38,9 @@ class LinkGate(private val context: Context) {
             is LinkPolicy.Kind.Web -> systemOpen(kind.url)
             is LinkPolicy.Kind.File -> say("That file opens on the Mac.")
             is LinkPolicy.Kind.Ask -> {
-                val scheme = kind.url.substringBefore(':')
-                asking = Ask(
-                    "Open this $scheme link?",
-                    "It isn't a web page: it opens another app, which acts on what the link says. It's from a thread, so Threadbear asks first.\n\n${LinkPolicy.shown(kind.url)}",
-                    "Open",
-                ) { systemOpen(kind.url) }
+                // The words name all of what opens: the same string goes to Android.
+                val (title, detail) = LinkPolicy.question(kind)
+                asking = Ask(title, detail, "Open") { systemOpen(kind.url) }
             }
             LinkPolicy.Kind.Refuse -> Unit
         }
@@ -77,7 +77,8 @@ fun LinkGateDialog(gate: LinkGate) {
     AlertDialog(
         onDismissRequest = gate::dismiss,
         title = { Text(ask.title) },
-        text = if (ask.detail.isEmpty()) null else ({ Text(ask.detail) }),
+        // Scrolls, so a long link's whole address can be read before Open.
+        text = if (ask.detail.isEmpty()) null else ({ Text(ask.detail, Modifier.verticalScroll(rememberScrollState())) }),
         confirmButton = {
             TextButton(onClick = { gate.dismiss(); ask.answer() }) { Text(ask.yes ?: "OK") }
         },

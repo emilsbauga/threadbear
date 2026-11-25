@@ -276,7 +276,9 @@ The backend's first slice (18 Nov 2026), with tests in
   `convex/runnerAccess.ts` is what it may call, and `ownThreadOnly` holds
   every row check (`mayWrite`, `mayTouch`, `mayClaim`, `mayTake`, the
   moves' `mustBe`, `fileRequest`) to its one thread. Its upload URLs die
-  with its key.
+  with its key. What it holds counts against its runner id's allowances as
+  a runner key's does, a thread moved to it included (`lib.ts
+  hasAllowance`), never as the owner's.
 - **Cloud tokens** (decision 10): `boxes:setCloudToken` (owner, an action)
   seals with AES-GCM under `BOX_SEAL_KEY` (a Convex env var: 32 random
   bytes in base64, `npx convex env set BOX_SEAL_KEY "$(openssl rand
@@ -862,7 +864,8 @@ The fourth slice (19 Nov 2026), the **box image** (`runner/box/Dockerfile`,
 `.github/workflows/box-image.yml` (Faster starts, 1):
 
 - **What's in it.** For linux/amd64, Fly's default: Node 24 on Debian 13
-  (`node:24-trixie-slim`, pinned by digest) with git, procps and ca-certificates; Claude Code's native
+  (`node:24-trixie-slim`, pinned by digest) with git, procps and ca-certificates
+  exactly as `runner/box/debs.lock` names them (below); Claude Code's native
   linux-x64 build at a pinned version, checked against its SHA-256
   (`CLAUDE_CODE_VERSION`, `CLAUDE_CODE_SHA256`), where its installer puts
   it (`~/.local/bin/claude`, a link into `~/.local/share/claude/versions`),
@@ -884,12 +887,36 @@ The fourth slice (19 Nov 2026), the **box image** (`runner/box/Dockerfile`,
 - **Which runner it is.** Built from the repo at a commit rather than from
   a signed release, so it's the runner Mike's backend is deployed from: a
   push to main that changes what the image holds pushes
-  `registry.fly.io/<FLY_APP>:<commit>` and `:latest`, and
-  `setRunnerService` makes a virtual runner with `:latest` when it names
-  no image (`defaultBoxImage`). A new box is a few minutes behind main
-  while the image builds; the runner and backend stay compatible both ways,
-  as for any runner. A release tag publishes `:release-<date>` too, for a
-  virtual runner pinned to a release. A fork's push builds its own, into its
+  `registry.fly.io/<FLY_APP>:<commit>`, and once the runner's typecheck and
+  unit tests pass on that commit (the workflow runs them beside the
+  build; until 23 Nov a main failing them still went to new boxes as
+  `:latest`), and only while that commit is still main's head by GitHub's
+  API, so a re-run of an older run promotes nothing, it's promoted.
+- **Booted by digest, never by tag** (Daybreak 171, 23 Nov;
+  `convex/boxImage.ts`). A box's image gets its boot token, which trades
+  for the login's Claude token and the thread's key, and a tag is only a
+  name anyone who can push to the app's registry can move. So the
+  workflow promotes the image to the backend by the
+  digest its own push reported (`POST /box-image/promote`), with the job's
+  GitHub OIDC token for the deployment's `CONVEX_SITE_URL` (the repo
+  variable `BOX_PROMOTE_URL`); the backend takes one only from
+  `box-image.yml` on main in the repo `BOX_IMAGE_REPO` names, and only
+  newer than the last. No shared secret: `FLY_BOX_IMAGE_TOKEN`, which
+  pushes images, can't promote one, so a stolen push token or a moved tag
+  reaches no box; a change to main's workflow, or GitHub itself, still
+  could. The build takes no cache from the registry and no `:latest` is
+  pushed: a pushed cache could hand the build layers it never ran, which
+  the workflow would then promote under its own name (the fix's second
+  review). `setRunnerService` makes a virtual runner that follows main when
+  it names no image (`defaultBoxImage`; its row keeps
+  `registry.fly.io/<FLY_APP>:latest` as the sign for that), and each new
+  box of it boots the digest promoted when the box is claimed; with none
+  promoted, the box fails, saying so, and nothing is made. An image given
+  must be a digest (`registry.fly.io/<app>@sha256:...`), and a row left with
+  any other tag makes no box. The Fly adapter refuses a tag too. A new box is ten minutes or
+  so behind main while the image builds and the tests run; the runner and backend stay compatible both ways,
+  as for any runner. A release tag publishes `:release-<date>` too: a
+  virtual runner pinned to a release names that image's digest. A fork's push builds its own, into its
   own Fly app (docs/forking.md).
 - **Private, in the boxes' own Fly app** (Mike, 19 Nov). The image holds
   Claude Code, which isn't open source, so publishing it would
@@ -910,7 +937,31 @@ The fourth slice (19 Nov 2026), the **box image** (`runner/box/Dockerfile`,
 - **Moving Claude Code on** is by hand: both values from its release
   manifest (the Dockerfile says how), in a commit that rebuilds the image.
   Until then a box runs that version, while Mike's other runners follow
-  Claude Code's latest.
+  Claude Code's latest. It's fetched with Node's own fetch: the image
+  build runs no apt and no curl.
+- **Debian's packages from a lock** (Daybreak, 24 Nov: until then the
+  build ran `apt-get update && apt-get install`, so rebuilding a commit took
+  whatever the archive, or anyone who could sign for it, published that
+  day). `runner/box/debs.lock` names every package the box adds (git,
+  procps, ca-certificates and their 37 dependencies) by name, version,
+  architecture, size and SHA-256, from one dated snapshot of Debian's
+  archive, resolved against the pinned base image; `box/debs.ts` fetches
+  each (from snapshot.debian.org, else deb.debian.org) and checks it, and
+  only when all of them match does `dpkg -i` see any, so a different file
+  stops the build before a package script runs; after the install, dpkg must
+  have each at its locked version. A download has a deadline and is read
+  only up to the locked size. The lock stays in the image at
+  `/opt/threadbear/box/debs.lock`, and its hash and snapshot are the
+  image's `dev.threadbear.box.debs-lock` and `-snapshot` labels. Moving it on (a Debian security
+  update, a new base image) is `runner/box/lock-debs.sh [YYYYMMDDTHHMMSSZ]`
+  on a machine with Docker that runs linux/amd64 (the Hetzner box), then
+  reading the diff and committing it, which rebuilds the image. apt reads
+  the snapshot over http inside the base image (which has no CA
+  certificates yet), so the script fetches each index apt used again over
+  https and stops unless they're the same bytes. Until then
+  a box keeps the packages it has, security fixes included: that's the
+  trade for knowing what's in it. A test fails when the Dockerfile's base
+  image changes without a new lock.
 
 The fifth slice (19 Nov 2026), **starting from the Mac and the token
 card** (docs/protocol.md, Virtual runners: "Waiting for a cloud token",

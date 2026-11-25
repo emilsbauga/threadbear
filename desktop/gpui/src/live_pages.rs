@@ -259,7 +259,7 @@ fn open_big(page: &LivePage, window: &mut Window, cx: &mut App) {
     let section = preview.from.clone();
     side.update(cx, |side, cx| side.show_preview(preview, &thread.id, cx));
     app.update(cx, |t, cx| {
-        if !t.dock.read(cx).controller.is_showing(&section) {
+        if !t.dock.read(cx).is_showing(&section) {
             t.show_pane(&section, cx);
         }
     });

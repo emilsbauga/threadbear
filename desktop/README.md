@@ -192,6 +192,25 @@ scripts/remote.sh tinker-desk --build -- bash -c 'cd desktop && cargo clippy --w
 - The automation feature's code isn't in the gate (its builds differ by
   feature), and nor is Windows'.
 
+### Loops between modules
+
+The Rust structure workflow (`.github/workflows/structure.yml`) fails when
+modules start using each other in a circle, or types and functions in
+different modules start knowing each other in one: none of them can then be
+read or changed alone. [deslop-please](https://github.com/deterministic-machines/deslop-please)
+finds them; `scripts/structure-allow.txt` lists the ones there already, and
+`scripts/structure.mjs` says what passes and why. It isn't in `../check.sh`,
+as indexing the workspace takes a few minutes. To run it on a check host:
+
+```bash
+scripts/remote.sh tinker-desk --build -- bash -c 'cd desktop && rustup component add rust-analyzer && node scripts/structure.mjs'
+```
+
+A new loop usually goes by moving what both sides share into a module of its
+own (`gpui/src/rows/parts.rs`, `web/src/mac/status.rs`), making one module a
+child of the other (`dock/src/view/overlay.rs`), or handing one side a
+callback (`PreviewLife`'s `OnClose` in `web/src/mac/preview.rs`).
+
 `scripts/spec.sh` is the one-command version for use through `remote.sh`: it
 builds the app (Swift or GPUI), keeps its own copy of the GPUI binary so another
 checkout's build can't swap it mid-run (the cargo target folder is shared), and
@@ -230,6 +249,10 @@ says whose is whose. An instance quits after an hour with no command.
   Swift app's README ("Seeing and driving it from a script").
 - A scripted app is never in front, so opening a thread doesn't mark it read
   until you send `{"cmd":"focus"}`.
+- A click that asks first says so: `click` and `click-at` reply "ok, and it
+  brought up a dialog with Cancel, Archive" (its buttons). A busy row's
+  Archive or moon (running, or waiting on you, as several demo threads are)
+  asks before stopping the turn, while the `archive` command doesn't ask.
 - A bug in one of Mike's real threads: `tb export <id>`, then
   `dev-app.sh start --mock --fixtures .fixtures/threads/<id>` and `open`
   it. Exports are his private conversations: keep shots of them out of git

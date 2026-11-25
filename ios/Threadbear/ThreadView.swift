@@ -25,6 +25,8 @@ struct ThreadView: View {
     @State private var gone: [WaitingSend] = []
     @State private var hibernateTarget: PhoneThread?
     @State private var renameTarget: PhoneThread?
+    /// The share sheet (sharing by link) is open.
+    @State private var shareShown = false
     @State private var markedSeen = false
     /// The oldest seq when "Load earlier" was tapped, until older messages
     /// arrive (the oldest seq changes) or the runner says it couldn't.
@@ -120,6 +122,10 @@ struct ThreadView: View {
         }
         .hibernateDialog(for: $hibernateTarget, leaving: { dismiss() })
         .renameDialog(for: $renameTarget)
+        .sheet(isPresented: $shareShown) {
+            // The live row, so the sheet follows the runner's answer.
+            if let thread = detail?.thread { ShareThreadSheet(thread: model.shown(thread)) }
+        }
         // model.connection in each id: a fresh Convex client after the app
         // comes back from the background, so these follow it, not the old one.
         .task(id: "\(threadId):\(model.connection)") { await follow() }
@@ -128,6 +134,12 @@ struct ThreadView: View {
         .task {
             if model.isFake, ProcessInfo.processInfo.arguments.contains("-ThreadbearReview") {
                 designReviewShown = DesignReviewTarget(id: "sample-review")
+            }
+            // For sim-shots.sh: the share sheet open, the thread shared.
+            if model.isFake, ProcessInfo.processInfo.arguments.contains("-ThreadbearShare") {
+                for _ in 0..<50 where detail == nil { try? await Task.sleep(for: .milliseconds(100)) }
+                if let thread = detail?.thread, thread.share?.isOn != true { model.share(thread, .on) }
+                shareShown = true
             }
             // For sim-shots.sh: a reply box with something typed in.
             if let text = model.draftText {
@@ -502,6 +514,15 @@ struct ThreadView: View {
                 }
                 Section {
                     Button { renameTarget = thread } label: { Label("Rename…", systemImage: "pencil") }
+                    if model.canShare {
+                        Button { shareShown = true } label: {
+                            if thread.share?.isOn == true {
+                                Label("Shared by Link…", systemImage: "link")
+                            } else {
+                                Label("Share…", systemImage: "square.and.arrow.up")
+                            }
+                        }
+                    }
                     // To point another thread at this one: pasted into a
                     // message here or on the Mac, it goes in as a link to it.
                     Button { UIPasteboard.general.string = thread.threadId } label: { Label("Copy Thread ID", systemImage: "number") }
@@ -658,6 +679,8 @@ struct ThreadView: View {
     /// A finished turn that needs nothing from Mike: the done card's place.
     private func isDone(_ thread: PhoneThread, messages: [PhoneMessage]) -> Bool {
         thread.status == .idle && !thread.needsYou && thread.archivedAt == nil && thread.working == nil
+            // Waiting on its own work isn't done, as on the Mac.
+            && thread.wait?.section != .running
             && Turns.lastShown(messages)?.role == .assistant && nothingOnItsWay
             && (answeredDone == nil || answeredDone != messages.last?.seq)
     }
@@ -1245,12 +1268,8 @@ struct MarkdownText: View {
                 line(text)
             }
             .padding(.leading, CGFloat(depth) * 18)
-        case let .code(text):
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(text).font(.system(.footnote, design: .monospaced)).padding(10)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+        case let .code(text, language):
+            CodeBlockView(code: text, language: language)
         case let .rich(kind, source):
             RichBlockView(kind: kind, source: source)
         case let .draft(draft):

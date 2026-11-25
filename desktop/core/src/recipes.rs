@@ -73,6 +73,20 @@ pub struct RecipeStats {
     pub last_headline: Option<String>,
 }
 
+/// A recipe's habit: what every thread's agent is told while it's on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RecipeHabit {
+    /// As its file has it now.
+    pub text: String,
+    pub bytes: u32,
+    /// Agents are being told it (as it was when it was switched on).
+    pub given: bool,
+    /// The file's wording isn't what was switched on.
+    pub changed: bool,
+    /// What agents are told, when that's not `text`.
+    pub given_text: Option<String>,
+}
+
 /// `RecipeSummary`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recipe {
@@ -88,6 +102,9 @@ pub struct Recipe {
     pub header: Option<String>,
     pub state: RecipeState,
     pub setup_thread_id: Option<String>,
+    pub habit: Option<RecipeHabit>,
+    /// Only a habit: Add is its switch, and there's no setup thread.
+    pub instant: bool,
     pub schedules: Vec<RecipeSchedule>,
     pub stats: RecipeStats,
 }
@@ -104,14 +121,77 @@ pub struct RecipeRun {
     pub archived: bool,
 }
 
+/// The end card of an example run: its headline and its answers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExampleCard {
+    pub headline: String,
+    pub options: Vec<String>,
+}
+
+/// `RecipeExample`: a made-up run as its thread would show it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipeExample {
+    /// The thread's title.
+    pub title: Option<String>,
+    /// What the user said first, for a habit.
+    pub you: Option<String>,
+    /// The agent's reply, in Markdown.
+    pub reply: String,
+    pub card: Option<ExampleCard>,
+}
+
+impl RecipeExample {
+    fn decode(v: &Value) -> Option<RecipeExample> {
+        let reply = text(&v["reply"]).unwrap_or_default();
+        let you = text(&v["you"]);
+        let card = text(&v["card"]["headline"]).map(|headline| ExampleCard {
+            headline,
+            options: v["card"]["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(text)
+                .collect(),
+        });
+        // One with nothing to show is left out.
+        (!reply.is_empty() || you.is_some() || card.is_some()).then(|| RecipeExample {
+            title: text(&v["title"]),
+            you,
+            reply,
+            card,
+        })
+    }
+
+    /// The title its little thread shows: its own, else the recipe's name.
+    pub fn title_or<'a>(&'a self, recipe: &'a Recipe) -> &'a str {
+        self.title.as_deref().unwrap_or(&recipe.name)
+    }
+}
+
 /// `recipes.get`'s answer: the summary and the page's parts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecipeDetail {
     pub recipe: Recipe,
     pub about: String,
-    pub example: Option<String>,
+    /// Its made-up runs: `examples`, or from a runner before those, `example`
+    /// as one reply.
+    pub examples: Vec<RecipeExample>,
     pub file: String,
     pub runs: Vec<RecipeRun>,
+}
+
+/// "Example 2 of 3", a dot's tip.
+pub fn example_tip(index: usize, count: usize) -> String {
+    format!("Example {} of {count}", index + 1)
+}
+
+/// The example shown after a step of `by` (-1 back, 1 on) from `index`, kept
+/// in range.
+pub fn step_example(index: usize, by: isize, count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    (index as isize + by).clamp(0, count as isize - 1) as usize
 }
 
 fn text(v: &Value) -> Option<String> {
@@ -160,6 +240,17 @@ impl Recipe {
             header: text(&v["header"]),
             state: RecipeState::decode(&v["state"]),
             setup_thread_id: text(&v["setupThreadId"]),
+            habit: v["habit"].is_object().then(|| {
+                let h = &v["habit"];
+                RecipeHabit {
+                    text: text(&h["text"]).unwrap_or_default(),
+                    bytes: count(&h["bytes"]),
+                    given: h["given"].as_bool().unwrap_or(false),
+                    changed: h["changed"].as_bool().unwrap_or(false),
+                    given_text: text(&h["givenText"]),
+                }
+            }),
+            instant: v["instant"].as_bool().unwrap_or(false),
             schedules,
             stats: RecipeStats {
                 runs: count(&st["runs"]),
@@ -209,6 +300,29 @@ impl Recipe {
             (None, RecipeState::SettingUp) => "Being set up".to_owned(),
             (None, _) => String::new(),
         }
+    }
+
+    /// Under its habit on the page: whether agents are being told it, and
+    /// what it costs every thread.
+    pub fn habit_line(&self) -> Option<String> {
+        let h = self.habit.as_ref()?;
+        // What it adds to every thread, in round terms.
+        let size = format!("about {} tokens", h.bytes.div_ceil(4).max(1));
+        Some(match (self.state.switch_on(), h.given, h.changed) {
+            (true, true, true) => "Its wording has changed since you switched it on. Agents are still told the old one.".to_owned(),
+            (true, false, _) => "Agents aren't being told this: its wording isn't what you switched on.".to_owned(),
+            (true, true, false) => format!("Every thread's agent is being told this · {size}"),
+            (false, ..) if self.state == RecipeState::Off => {
+                format!("Off, so no agent is told this · {size}")
+            }
+            (false, ..) => format!("Every thread's agent is told this while it's on · {size}"),
+        })
+    }
+
+    /// Whether the page offers "Use the new wording": it's on, and what's
+    /// given isn't what its file says.
+    pub fn habit_stale(&self) -> bool {
+        self.state.switch_on() && self.habit.as_ref().is_some_and(|h| h.changed || !h.given)
     }
 
     /// The next run of its schedules that aren't paused.
@@ -305,6 +419,12 @@ pub fn added(list: &[Recipe]) -> Vec<&Recipe> {
 /// set up stays so: the runner only records the choice.
 pub fn guess_on(recipe: &Recipe, on: bool) -> Recipe {
     let mut r = recipe.clone();
+    if let Some(h) = &mut r.habit {
+        // On takes the wording as it is now.
+        h.given = on;
+        h.changed = false;
+        h.given_text = None;
+    }
     r.state = match (r.state, on) {
         (RecipeState::SettingUp, true) => RecipeState::SettingUp,
         (_, true) => RecipeState::On,
@@ -339,7 +459,27 @@ impl RecipeDetail {
         Some(RecipeDetail {
             recipe,
             about: text(&v["about"]).unwrap_or_default(),
-            example: text(&v["example"]),
+            examples: {
+                let list: Vec<RecipeExample> = v["examples"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(RecipeExample::decode)
+                    .collect();
+                if list.is_empty() {
+                    text(&v["example"])
+                        .map(|reply| RecipeExample {
+                            title: None,
+                            you: None,
+                            reply,
+                            card: None,
+                        })
+                        .into_iter()
+                        .collect()
+                } else {
+                    list
+                }
+            },
             file: text(&v["file"]).unwrap_or_default(),
             runs,
         })
@@ -430,8 +570,8 @@ fn plural(n: u32, one: &str, many: &str) -> String {
 /// "Every day at 6:30" read mid-line: "every day at 6:30". A day's or a
 /// month's name ("Sundays at 19:00") keeps its capital.
 fn lower_first(s: &str) -> String {
-    const COMMON: [&str; 8] = [
-        "Every", "Each", "When", "Daily", "Before", "Once", "Twice", "Weekly",
+    const COMMON: [&str; 9] = [
+        "Every", "Each", "When", "Daily", "Before", "Once", "Twice", "Weekly", "In",
     ];
     let first = s
         .split_whitespace()
@@ -512,6 +652,70 @@ mod tests {
         assert_eq!(r.status_line(now()), "Ran 6:30 · next tomorrow 6:30");
         assert_eq!(r.byline(), "By Mike · every day at 6:30");
         assert_eq!(r.tag(), "On");
+    }
+
+    fn habit(state: &str, given: bool, changed: bool) -> Recipe {
+        let mut v = summary("options", state);
+        v["instant"] = json!(true);
+        v["when"] = json!("In every thread");
+        v["habit"] = json!({ "text": "Show three options.", "bytes": 19, "given": given });
+        if changed {
+            v["habit"]["changed"] = json!(true);
+            v["habit"]["givenText"] = json!("Show two options.");
+        }
+        Recipe::decode(&v).unwrap()
+    }
+
+    #[test]
+    fn a_habit_says_whether_agents_are_told_it_and_what_it_costs() {
+        let add = habit("add", false, false);
+        assert!(add.instant);
+        assert_eq!(add.habit.as_ref().unwrap().text, "Show three options.");
+        assert_eq!(
+            add.habit_line().unwrap(),
+            "Every thread's agent is told this while it's on · about 5 tokens"
+        );
+        assert_eq!(add.stat_line(), "In every thread");
+        let on = habit("on", true, false);
+        assert_eq!(
+            on.habit_line().unwrap(),
+            "Every thread's agent is being told this · about 5 tokens"
+        );
+        assert_eq!(on.status_line(now()), "In every thread");
+        assert!(!on.habit_stale());
+        assert_eq!(
+            habit("off", false, false).habit_line().unwrap(),
+            "Off, so no agent is told this · about 5 tokens"
+        );
+        let changed = habit("on", true, true);
+        assert!(changed.habit_stale());
+        assert_eq!(
+            changed.habit.as_ref().unwrap().given_text.as_deref(),
+            Some("Show two options.")
+        );
+        assert!(changed
+            .habit_line()
+            .unwrap()
+            .starts_with("Its wording has changed"));
+        assert!(habit("on", false, true)
+            .habit_line()
+            .unwrap()
+            .starts_with("Agents aren't"));
+        assert!(Recipe::decode(&summary("x", "on"))
+            .unwrap()
+            .habit_line()
+            .is_none());
+    }
+
+    #[test]
+    fn switching_a_habit_guesses_it_given_and_adds_one_that_needs_no_setup() {
+        let on = guess_on(&habit("add", false, false), true);
+        assert_eq!(on.state, RecipeState::On);
+        assert!(on.habit.as_ref().unwrap().given);
+        let off = guess_on(&habit("on", true, true), false);
+        assert_eq!(off.state, RecipeState::Off);
+        assert!(!off.habit.as_ref().unwrap().given);
+        assert!(!off.habit_stale());
     }
 
     #[test]
@@ -650,8 +854,35 @@ mod tests {
             d.numbers(),
             [(2, "runs"), (1, "needed you"), (1, "you opened")]
         );
-        assert_eq!(d.example.as_deref(), Some("**Today**"));
+        assert_eq!(d.examples.len(), 1, "an older runner's one example");
+        assert_eq!(d.examples[0].reply, "**Today**");
+        assert_eq!(d.examples[0].title_or(&d.recipe), "X");
         assert_eq!(log_time(ms(2026, 11, 20, 6, 30)), "Fri 20 Nov, 6:30");
+    }
+
+    #[test]
+    fn examples_decode_with_their_title_message_and_card() {
+        let v = json!({
+            "id": "x", "name": "X", "state": "add", "example": "ignored",
+            "examples": [
+                { "title": "Daily standup", "reply": "**Yesterday**", "card": { "headline": "Draft ready", "options": ["Posted", "Skip"] } },
+                { "you": "Too cluttered", "reply": "Three ideas" },
+                { "reply": "" }
+            ]
+        });
+        let d = RecipeDetail::decode(&v).unwrap();
+        assert_eq!(d.examples.len(), 2, "an empty one is left out");
+        assert_eq!(d.examples[0].title_or(&d.recipe), "Daily standup");
+        let card = d.examples[0].card.as_ref().unwrap();
+        assert_eq!(card.headline, "Draft ready");
+        assert_eq!(card.options, vec!["Posted", "Skip"]);
+        assert_eq!(d.examples[1].you.as_deref(), Some("Too cluttered"));
+        assert!(d.examples[1].card.is_none());
+        assert_eq!(example_tip(1, 3), "Example 2 of 3");
+        assert_eq!(step_example(0, -1, 3), 0);
+        assert_eq!(step_example(1, 1, 3), 2);
+        assert_eq!(step_example(2, 1, 3), 2);
+        assert_eq!(step_example(0, 1, 0), 0);
     }
 
     #[test]

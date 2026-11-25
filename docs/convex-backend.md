@@ -40,7 +40,8 @@ dashboard panel.
 - `convex/push.ts` (Node action) and `convex/devices.ts`: APNs over
   HTTP/2 with the team's token-based key, copied from Poddle's `apns.ts`.
   `sync:upsertThreads` schedules `push:notify` when a thread's `needsYou`
-  goes from false to true (at most once per thread every 30 seconds,
+  goes from false to true (the runner writes it false for a thread Mike
+  archived or hibernated: docs/protocol/needs-you.md, "Put away") (at most once per thread every 30 seconds,
   `pushedAt` on the row); the action re-reads the row, skips it if the
   Mac has seen it meanwhile, and sends `pushText`'s title and body
   (`convex/pushText.ts`: the question, the approval and its input line,
@@ -190,10 +191,13 @@ function takes `token` (a phone token from `tokens:issue`) and throws
 
 Queries:
 
-- `phone:me({ token })` → `{ name, expiresAt, apiVersion, pushOff? }`.
+- `phone:me({ token })` → `{ name, expiresAt, apiVersion, pushOff?, site? }`.
   `pushOff` is true when this backend can't send notifications (a
   self-hosted one, docs/self-hosting.md); the phone's Settings says so in
-  place of the Notify me picker.
+  place of the Notify me picker. `site` is the website's address
+  (`CONVEX_SITE_URL`), which a shared thread's link starts with
+  (`<site>/s/<slug>`); the iPhone and Android apps use it, and without it
+  (an older backend) take a cloud deployment's `.convex.site` twin.
 - `phone:runners({ token })` → `[{ runnerId, name, version, lastSeenAt,
   draining }]`. Offline is `lastSeenAt` older than 3 minutes (a runner
   that stopped for good has `lastSeenAt` of 1970).
@@ -261,7 +265,11 @@ Queries:
   card's asks carries `answers` (API 89), `[{ action, answer }]`: each ask's
   question and the pick, which its text starts with as the Mac wrote them
   (`AskAnswer.message`), so the iPhone draws the question small over the
-  answer, as the Mac's bubble does. It reads Convex alone, so it works
+  answer, as the Mac's bubble does. A message the runner sent by itself
+  (`origin: "runner"`) carries `wakeReason` (API 98), why it sent it in a
+  few words ("Codex answered"), so the phones and the website say it on
+  the divider before the turn it started ("5 min later · Codex
+  answered"), as the Mac does. It reads Convex alone, so it works
   while the Mac is asleep. The website watches only the newest 30 with it and
   reads older pages once, with `beforeSeq` (`web/src/transcript.ts`). The
   iPhone does the same with an 80-row live page and chunks of 200

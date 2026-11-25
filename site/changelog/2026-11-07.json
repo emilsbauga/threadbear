@@ -187,11 +187,7 @@
     "iPhone: messages sent while the thread's Mac is asleep show faded with Cancel until that Mac takes them",
     "iPhone: Copy Thread ID in a thread's ... menu, and a pasted thread id goes in as a link to that thread",
     "Run Threadbear on your own Convex backend instead of Convex's cloud with `./threadbear setup --self-hosted`",
-    "Your own copy of Threadbear starts a thread every five days to bring in the newest releases, and straight away for an important one: Settings > General > Updates from Mike sets how often",
-    {
-      "text": "New experiments you can switch on (the guide's Experiments page says how): keep the Mac awake while threads work, have Codex review Claude's changes and Claude review Codex's, skip a scheduled run when its check finds nothing new, a done card that lists loose ends, buttons in replies, instructions for every agent in Settings, and talking with a thread out loud",
-      "credit": "Wayne Sutton, for instructions and talking out loud"
-    }
+    "Your own copy of Threadbear starts a thread every five days to bring in the newest releases, and straight away for an important one: Settings > General > Updates from Mike sets how often"
   ],
   "changed": [
     {

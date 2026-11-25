@@ -11,14 +11,17 @@
 // highlight's `last_seq`: a file the agent writes again comes up again in the
 // thread, so its preview is made again then, and drawing the pane never
 // touches the disk.
+use crate::fit_picture::{Missed, Plan, BUSY_AGAIN};
 use crate::highlights::Palette;
 use crate::open_gate::{self, Origin};
 use crate::style::px;
 use gpui_kit::component::{v_flex, ActiveTheme as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 use threadbear_core::highlights as hl;
 use threadbear_core::open_policy as policy;
 use threadbear_core::reply_links::{self as rules, PeekPicture};
@@ -33,9 +36,13 @@ const PICTURE_MAX_BYTES: usize = 40 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(crate) enum Thumb {
-    Picture(Arc<RenderImage>),
+    /// A small PNG, drawn through the picture budget (fit_picture.rs), so
+    /// its pixels go when it's out of sight like any other picture's.
+    Picture(Arc<Image>),
     Lines(Vec<String>),
     Symbol,
+    /// No room to make it then: the symbol, and tried again after this.
+    Busy(Instant),
 }
 
 impl Thumb {
@@ -44,7 +51,7 @@ impl Thumb {
         match self {
             Thumb::Picture(_) => "picture",
             Thumb::Lines(_) => "lines",
-            Thumb::Symbol => "symbol",
+            Thumb::Symbol | Thumb::Busy(_) => "symbol",
         }
     }
 }
@@ -59,20 +66,20 @@ impl Asset for FileThumb {
         (path, _version): Self::Source,
         cx: &mut App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
-        let renderer = cx.svg_renderer();
         let background = cx.background_executor().clone();
         // One at a time, so a thread with forty videos doesn't start forty
-        // system thumbnail requests at once.
-        static ONE_AT_A_TIME: futures::lock::Mutex<()> = futures::lock::Mutex::new(());
+        // system thumbnail requests at once, and a picture's waits its turn
+        // at `decode_now` here rather than on a background thread.
+        let turn = crate::fit_picture::decode_now_turn(cx);
         async move {
-            let _turn = ONE_AT_A_TIME.lock().await;
+            let _turn = turn.await;
             match background.spawn(async move { make(&path) }).await {
-                Made::Png(bytes) => Image::from_bytes(ImageFormat::Png, bytes)
-                    .to_image_data(renderer)
-                    .map(Thumb::Picture)
-                    .unwrap_or(Thumb::Symbol),
+                Made::Png(bytes) => {
+                    Thumb::Picture(Arc::new(Image::from_bytes(ImageFormat::Png, bytes)))
+                }
                 Made::Lines(lines) => Thumb::Lines(lines),
                 Made::Nothing => Thumb::Symbol,
+                Made::Busy => Thumb::Busy(Instant::now() + BUSY_AGAIN),
             }
         }
     }
@@ -82,6 +89,17 @@ enum Made {
     Png(Vec<u8>),
     Lines(Vec<String>),
     Nothing,
+    Busy,
+}
+
+impl From<Result<Vec<u8>, Missed>> for Made {
+    fn from(made: Result<Vec<u8>, Missed>) -> Self {
+        match made {
+            Ok(png) => Made::Png(png),
+            Err(Missed::Busy) => Made::Busy,
+            Err(Missed::Failed) => Made::Nothing,
+        }
+    }
 }
 
 /// The preview for `path`, on a worker.
@@ -90,7 +108,7 @@ fn make(path: &str) -> Made {
         return Made::Nothing;
     }
     match rules::peek_picture(path) {
-        PeekPicture::Image => picture(path).map_or(Made::Nothing, Made::Png),
+        PeekPicture::Image => picture(path).into(),
         PeekPicture::Thumbnail => {
             let Ok(meta) = policy::local_metadata(Path::new(path)) else {
                 return Made::Nothing;
@@ -98,9 +116,10 @@ fn make(path: &str) -> Made {
             if !meta.is_file() {
                 return Made::Nothing;
             }
-            open_gate::media_thumbnail(path, Origin::ThisMac, policy::media_version(&meta))
-                .and_then(|png| shrunk(&png))
-                .map_or(Made::Nothing, Made::Png)
+            shrunk(|| {
+                open_gate::media_thumbnail(path, Origin::ThisMac, policy::media_version(&meta))
+            })
+            .into()
         }
         PeekPicture::Lines => {
             let Ok(sample) = policy::local_read(Path::new(path), 2048) else {
@@ -123,37 +142,31 @@ fn make(path: &str) -> Made {
 }
 
 /// A picture file, read through the gate and made small.
-fn picture(path: &str) -> Option<Vec<u8>> {
-    let bytes = policy::local_read(Path::new(path), PICTURE_MAX_BYTES + 1).ok()?;
-    if bytes.len() > PICTURE_MAX_BYTES {
-        return None;
-    }
-    shrunk(&bytes)
+fn picture(path: &str) -> Result<Vec<u8>, Missed> {
+    shrunk(|| {
+        let bytes = policy::local_read(Path::new(path), PICTURE_MAX_BYTES + 1).ok()?;
+        (bytes.len() <= PICTURE_MAX_BYTES).then_some(bytes)
+    })
 }
 
 /// Any picture's bytes as a small PNG filling the box (cropped, like the
 /// row shows it). Limits keep a made-up giant from taking the memory.
-fn shrunk(bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let mut limits = image::Limits::default();
-    // Any shape, a full-page phone shot too: max_alloc is what holds it.
-    limits.max_image_width = Some(65_536);
-    limits.max_image_height = Some(65_536);
-    limits.max_alloc = Some(512 * 1024 * 1024);
-    reader.limits(limits);
-    let small = reader.decode().ok()?.resize_to_fill(
-        PIXELS.0,
-        PIXELS.1,
-        image::imageops::FilterType::Triangle,
-    );
-    let mut png = Vec::new();
-    small
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    Some(png)
+fn shrunk(read: impl FnOnce() -> Option<Vec<u8>>) -> Result<Vec<u8>, Missed> {
+    // Read and decoded in its turn, within the picture budget (fit_picture.rs), kept small.
+    crate::fit_picture::decode_now(read, Plan::small(4 * 1024 * 1024), |picture| {
+        let small = crate::fit_picture::fill(&picture, PIXELS.0, PIXELS.1);
+        let mut png = Vec::new();
+        small
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .ok()?;
+        Some(png)
+    })
 }
+
+/// The most previews kept made: past it, the longest made goes and is made
+/// again if it's shown again. A preview is a few KB of PNG or lines, so a
+/// thread of thousands of files can't pile them up.
+const KEPT: usize = 1000;
 
 /// The preview so far: None while it's being made (the symbol shows).
 pub(crate) fn current(
@@ -162,7 +175,62 @@ pub(crate) fn current(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Thumb> {
-    window.use_asset::<FileThumb>(&(path.to_owned(), version), cx)
+    type Made = (VecDeque<(String, i64)>, HashSet<(String, i64)>);
+    static MADE: LazyLock<Mutex<Made>> = LazyLock::new(Default::default);
+    let source = (path.to_owned(), version);
+    {
+        let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
+        let (order, known) = &mut *made;
+        if known.insert(source.clone()) {
+            order.push_back(source.clone());
+            while order.len() > KEPT {
+                if let Some(old) = order.pop_front() {
+                    known.remove(&old);
+                    cx.remove_asset::<FileThumb>(&old);
+                }
+            }
+        }
+    }
+    let thumb = window.use_asset::<FileThumb>(&source, cx);
+    if let Some(Thumb::Busy(again)) = &thumb {
+        let now = Instant::now();
+        if now >= *again {
+            // Made again from scratch, now there may be room.
+            cx.remove_asset::<FileThumb>(&source);
+            window.refresh();
+            return None;
+        }
+        // Drawn again then, so the try happens while it's on screen: one
+        // timer for each, however often it's drawn meanwhile.
+        static TIMED: LazyLock<Mutex<HashSet<(String, i64)>>> = LazyLock::new(Default::default);
+        /// Its mark, taken off when the timer's done or dropped with its
+        /// window, so another window can set one.
+        struct Timed((String, i64));
+        impl Drop for Timed {
+            fn drop(&mut self) {
+                TIMED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&self.0);
+            }
+        }
+        if TIMED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(source.clone())
+        {
+            let timed = Timed(source);
+            let wait = *again - now;
+            window
+                .spawn(cx, async move |cx| {
+                    let _timed = timed;
+                    cx.background_executor().timer(wait).await;
+                    cx.update(|window, _| window.refresh()).ok();
+                })
+                .detach();
+        }
+    }
+    thumb
 }
 
 /// The box a Files row shows in place of its symbol.
@@ -188,7 +256,7 @@ pub(crate) fn element(
             frame
                 .relative()
                 .child(
-                    img(ImageSource::Render(image.clone()))
+                    img(crate::fit_picture::bytes_source(image.clone()))
                         .size_full()
                         .object_fit(ObjectFit::Cover),
                 )

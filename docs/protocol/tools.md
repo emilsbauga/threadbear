@@ -116,6 +116,11 @@ runner's threads only.
 | `THREADBEAR_MEDIA_DIR` | the thread's media folder (`<data dir>/threads/<id>/media`): the only place a shared page's pictures come from (see "Sharing") |
 | `THREADBEAR_NODE` | the Node binary the runner runs on, so the repo's scripts a thread runs (`check.sh`, `tb land`, `deploy-runner.sh`, a worktree's setup) use the same one (`runner/scripts/find-node.sh`) |
 
-The runner also puts its own `bin/` (the release's, or the checkout's for a
-runner run from source) at the front of `PATH`, so a bare `tb` in a thread
-is the `tb` that matches the runner.
+The runner also puts a `bin/` with `tb` in it at the front of `PATH`, so a
+bare `tb` in a thread is the `tb` that matches the runner: on macOS and
+Linux a release's runner gives `<data dir>/runner/current/bin`, the link each
+deploy and rollback moves, so a CLI that outlives the runner that started it
+still gets the release this Mac runs now; a runner run from source, and any
+runner on Windows, gives its own `bin/`. Like every variable here, the
+value is from when the CLI started: `THREADBEAR_RUNNER_VERSION` is the
+version of the runner that started it, which may since have updated.

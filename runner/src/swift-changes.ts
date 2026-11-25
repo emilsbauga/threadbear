@@ -24,13 +24,11 @@
 // Done means a commit on main has a `Ports: <commit>` trailer naming it
 // (the porting thread is told to add one), the commit changed desktop/ as
 // well (made in both apps at once), or they dismissed it here.
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
-import { untrustedGitEnv } from './safe-git.ts';
-import { bareRepoArgs, repoKey } from './upstream.ts';
+import { gitAsync, repoKey } from './upstream.ts';
 
 const MIKES_REPO = 'github.com/mikecann/threadbear';
 // What of app/ the GPUI app used, so a fork's change there isn't one to
@@ -40,7 +38,6 @@ const MIKES_REPO = 'github.com/mikecann/threadbear';
 export const GPUI_SHARED = /^app\/Tools\/mock-runner\/|^app\/Tools\/(droptarget|post-gesture|realdrag)\.swift$|^app\/Tests\/Fixtures\/|^app\/Sources\/Threadbear\/Resources\/(Art|Rich)\//;
 const MAX_CHANGES = 100;
 const MAX_FILES = 12;
-const GIT_TIMEOUT_MS = 60_000;
 // Looks again at most this often from hellos, and every so often anyway, so
 // a port landed (or a commit made by hand) moves off the list.
 const RESCAN_MS = 60_000;
@@ -78,13 +75,11 @@ type State = {
 
 export type Git = (cwd: string, args: string[]) => Promise<string>;
 
-export const git: Git = (cwd, args) =>
-  new Promise((resolve, reject) => {
-    execFile('git', ['-C', cwd, ...bareRepoArgs(cwd), ...args], { env: { ...untrustedGitEnv(), GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }, timeout: GIT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`git ${args.slice(0, 2).join(' ')} failed: ${String(stderr).trim() || err.message}`));
-      else resolve(stdout);
-    });
-  });
+// Release git (upstream.ts): this runs after every release check, in the
+// same checkout, reading its releases, so nothing its config names runs and
+// no replacement, graft or commit-graph changes what it reads (Gemini's
+// review of Daybreak 179 and 180).
+export const git: Git = (cwd, args) => gitAsync(cwd, args, { env: { GIT_OPTIONAL_LOCKS: '0' } });
 
 const PATHS = ['--', 'app/', 'dock/'];
 

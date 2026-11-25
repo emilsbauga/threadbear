@@ -20,7 +20,7 @@ import type { ThreadStatus, ThreadSummary } from './protocol.ts';
 import { ErrorCode, RpcError } from './protocol.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 import { paths, RUNNER_VERSION } from './config.ts';
-import { currentLink, pointCurrentAt, readState, releaseExists } from './release.ts';
+import { currentLink, pointCurrentAt, readState, releaseExists, releaseHome } from './release.ts';
 import type { TimerHandle } from './clock.ts';
 import type { UpdateStatus } from './update.ts';
 
@@ -133,8 +133,32 @@ export function resumesPath(home: string): string {
 }
 
 // This runner's own bin/ (the release's, or the checkout's when run from
-// source), so a bare `tb` in a thread is there and matches the runner.
+// source). Threads get threadBinDir's, below.
 export const BIN_DIR = path.resolve(import.meta.dirname, '..', 'bin');
+
+// The bin/ a thread's PATH starts with. A CLI outlives the runner that
+// started it (the runner updates itself onto main several times a day) and
+// keeps the PATH it started with, so a release's own bin/ there pins the
+// thread to that release's tb: on 24 Nov a day-old thread's `tb land`
+// still refused with a hold main had taken out, and old releases are
+// pruned, which leaves no tb at all. So a release's runner names
+// <home>/runner/current/bin instead, the link every deploy and rollback
+// moves, which always gets the tb of the release this Mac runs (as
+// ~/.local/bin/tb does, scripts/link-tb.sh). A checkout's runner (a dev
+// runner) keeps its own bin/, and so does Windows, where current is a text
+// file rather than a link (release.ts, currentLink).
+export function threadBinDir(binDir = BIN_DIR, platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') return binDir;
+  const home = releaseHome(path.dirname(binDir));
+  if (!home) return binDir;
+  const current = path.join(home, 'runner', 'current');
+  try {
+    if (fs.lstatSync(current).isSymbolicLink() && fs.statSync(path.join(current, 'bin', 'tb')).isFile()) return path.join(current, 'bin');
+  } catch {
+    // No link, or one to a release without a tb: this release's own.
+  }
+  return binDir;
+}
 
 // Every CLI gets these, so tools an agent runs (tb self, deploy-runner.sh)
 // know which thread and which runner they're in. THREADBEAR_HOME is the one
@@ -169,7 +193,7 @@ export function threadEnv(threadId: string, home: string, basePath = process.env
     // and Git Bash (Claude's Bash tool there) runs it with whatever node
     // is on PATH, which a fresh PC hasn't got (cmd and PowerShell run
     // tb.cmd, which uses THREADBEAR_NODE).
-    PATH: [BIN_DIR, ...(process.platform === 'win32' ? [path.dirname(process.execPath)] : []), ...(basePath ? [basePath] : [])].join(path.delimiter),
+    PATH: [threadBinDir(), ...(process.platform === 'win32' ? [path.dirname(process.execPath)] : []), ...(basePath ? [basePath] : [])].join(path.delimiter),
   };
 }
 

@@ -1,0 +1,73 @@
+# The runner's tests that guard files outside runner/, on every push to main
+# and every pull request, whatever it changes. Each reads files runner.yml's
+# paths leave out, so a change to only those ran none of them on GitHub:
+#
+# - workflow-pins.test.ts: every workflow in .github/workflows/ (and the
+#   Gradle wrapper in android-native/)
+# - desktop-ci-paths.test.ts: desktop/'s code and desktop.yml's paths
+# - swift-app-paths.test.ts: every file in the repo, against app/ and dock/
+# - shared-copies.test.ts: shared/'s files and their copies in ios/ and
+#   android-native/
+#
+# Adding those paths to runner.yml instead would run its six jobs (an hour
+# on Windows) for nearly every change, as swift-app-paths reads everything.
+# These take seconds. They're in runner.yml's unit tests and check.sh's too;
+# a new test that reads files outside runner.yml's paths belongs here as well.
+#
+# One standard Linux runner and no schedule, so it costs nothing (runner.yml
+# says why that matters).
+#
+# tb land: hold while red
+name: Repo guards
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A held workflow's runs on main finish one at a time, never cancelled
+# (docs/thread-worktrees.md, "Red on GitHub"); a pull request's newer push
+# replaces its older run.
+concurrency:
+  group: guards-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  guards:
+    # Only in Mike's repo or when started by hand, as runner.yml says.
+    if: github.repository == 'mikecann/threadbear' || github.event_name == 'workflow_dispatch'
+    name: Guard tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: runner
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: runner/package-lock.json
+
+      # desktop-ci-paths reads land-gate.ts, which imports the runner's packages.
+      - name: Packages
+        run: npm ci --no-audit --no-fund
+
+      - name: Guard tests
+        env:
+          THREADBEAR_CLI_UPDATES: 'off'
+          THREADBEAR_SYNC: 'off'
+        run: >-
+          node --import=./test/helpers/clean-env.ts --test --test-reporter=spec
+          test/unit/workflow-pins.test.ts
+          test/unit/desktop-ci-paths.test.ts
+          test/unit/swift-app-paths.test.ts
+          test/unit/shared-copies.test.ts

@@ -34,32 +34,15 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { CLAIMED, git, listCheckouts, MAIN, MAX_SPARES, readPlainFile, realpath, SPARE } from './worktrees.ts';
 import { readSlots, type SlotClaim } from './slot.ts';
+import { BORROW_FILE, BORROW_PREFIX, parseBorrower, type Borrower } from './borrow-marks.ts';
+export { BORROW_FILE, BORROW_PREFIX, parseBorrower, type Borrower };
 
-export const BORROW_FILE = 'threadbear-borrow';
-export const BORROW_PREFIX = 'thread/borrow-';
 // How long a borrow nobody's said is still theirs sits unused before it
 // goes back. A day: a thread that borrowed and is still working commits,
 // rebases or lands well inside that.
 export const BORROW_IDLE_MS = 24 * 3_600_000;
 // Git's own markers of something half done in a checkout.
 const HALF_DONE = ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer', 'BISECT_LOG'];
-
-export type Borrower = { thread?: string; home?: string; branch?: string; pid?: number; scratch?: boolean; at?: number };
-
-export function parseBorrower(text: string): Borrower {
-  const b: Borrower = {};
-  for (const line of text.split('\n')) {
-    const [k, v = ''] = line.split(/=(.*)/s, 2).map((s) => s.trim());
-    if (!v) continue;
-    if (k === 'thread') b.thread = v;
-    else if (k === 'home') b.home = v;
-    else if (k === 'branch') b.branch = v;
-    else if (k === 'pid' && /^\d+$/.test(v)) b.pid = Number(v);
-    else if (k === 'scratch') b.scratch = v === '1';
-    else if (k === 'at' && /^\d+$/.test(v)) b.at = Number(v) * 1000;
-  }
-  return b;
-}
 
 // Never a blocking read: a fifo in its place would hold the runner up.
 export function readBorrower(admin: string): Borrower | undefined {

@@ -19,6 +19,38 @@ $SIG{CHLD} = 'DEFAULT';
 my ($mode, $dir) = splice @ARGV, 0, 2;
 my $log = dirname($dir) . '/perf-cleanup.log';
 my $last_note = time;
+# Cleanup's own timings use a clock that clock steps don't move and, on
+# macOS, that stops while the Mac sleeps (CLOCK_MONOTONIC there counts
+# sleep), so a lid closed mid-cleanup doesn't count towards giving up.
+my $awake_clock = eval { Time::HiRes::CLOCK_UPTIME_RAW() } // CLOCK_MONOTONIC;
+$awake_clock = CLOCK_MONOTONIC unless clock_gettime($awake_clock) > 0;
+sub awake_now { return clock_gettime($awake_clock); }
+# Set once the workload has ended and cleanup begins (--reap).
+my ($cleanup_started, $backoff);
+sub cleanup_age {
+    return defined($cleanup_started) ? awake_now() - $cleanup_started : 0;
+}
+# Every process cleanup has known, pid => start time, kept across scans so
+# one ps listing that leaves a process out can't make it forget (or stop
+# killing) it. %probe_seen: carriers the descriptor probe reported, even
+# from output it didn't finish or a pid that snapshot didn't list, kept
+# until ps can say when each started (then they join %ever_known).
+my (%ever_known, %probe_seen);
+# The pause between scans that couldn't finish. Each scan starts ps and lsof,
+# and under load lsof times out, so a stuck cleanup scanning every 50 ms
+# never caught up: on Seth's Mac 33 of them ran for hours at a load of 159
+# (20 Nov). For the first 30 s of cleanup it's the caller's short pause, then
+# it doubles from 1 s up to 30 s. The confirming scan once everything is
+# gone, and a scan that made progress, reset it.
+sub blocked_pause {
+    my ($short) = @_;
+    my $wait = $short;
+    if (cleanup_age() >= 30) {
+        $backoff = $backoff ? ($backoff >= 15 ? 30 : $backoff * 2) : 1;
+        $wait = $backoff;
+    }
+    select(undef, undef, undef, $wait);
+}
 sub note_if_stuck {
     return if time - $last_note < 30;
     $last_note = time;
@@ -94,7 +126,7 @@ sub snapshot {
             return %rows if %rows;
         }
         note_if_stuck('ps unavailable while finding performance children; locks retained');
-        select(undef, undef, undef, 0.2);
+        blocked_pause(0.2);
     }
 }
 my %probe_children;
@@ -131,7 +163,9 @@ sub carriers {
             my $input = IO::Select->new($out, $err);
             my ($data, $errors) = ('', '');
             my $output_fd = fileno($out);
-            my $deadline = clock_gettime(CLOCK_MONOTONIC) + 2;
+            # Under load lsof can need more than 2 s; once cleanup has been
+            # stuck for 30 s, give it 10 rather than kill it every time.
+            my $deadline = clock_gettime(CLOCK_MONOTONIC) + (cleanup_age() >= 30 ? 10 : 2);
             my $timed_out = 0;
             while ($input->count) {
                 my $left = $deadline - clock_gettime(CLOCK_MONOTONIC);
@@ -151,21 +185,22 @@ sub carriers {
                 select(undef, undef, undef, 0.01);
                 $done = waitpid($pid, WNOHANG);
             }
+            # A carrier the probe did list is live work, even if the probe
+            # then failed: keep it, so failing probes can't erase it.
+            my (%found, $process, $device);
+            for my $line (split /\n/, $data) {
+                if ($line =~ /^p(\d+)$/) { $process = $1; $device = undef; }
+                elsif ($line =~ /^D(0x[0-9a-f]+)$/i) { $device = hex($1); }
+                elsif ($line =~ /^i(\d+)$/ && defined($device) && defined($process) &&
+                    $device == $proof->[0] && $1 == $proof->[1]) {
+                    $found{$process} = 1;
+                }
+            }
+            $probe_seen{$_} = 1 for keys %found;
             if ($done == 0) { kill 'KILL', $pid; $probe_children{$pid} = 1; return (0, {}); }
             my $status = $?;
             # lsof exits 1 without diagnostics when no descriptor matches.
-            if (($status == 0 || $status == 256) && !length($errors)) {
-                my (%found, $process, $device);
-                for my $line (split /\n/, $data) {
-                    if ($line =~ /^p(\d+)$/) { $process = $1; $device = undef; }
-                    elsif ($line =~ /^D(0x[0-9a-f]+)$/i) { $device = hex($1); }
-                    elsif ($line =~ /^i(\d+)$/ && defined($device) &&
-                        $device == $proof->[0] && $1 == $proof->[1]) {
-                        $found{$process} = 1;
-                    }
-                }
-                return (1, \%found);
-            }
+            return (1, \%found) if ($status == 0 || $status == 256) && !length($errors);
         }
         note_if_stuck('descriptor probe unavailable while finding performance children; locks retained');
         return (0, {});
@@ -350,7 +385,18 @@ sub collect_owned {
     # If an anchor was killed alone, don't guess whether its leaderless group
     # is still ours or was reused. Neither signal it nor declare it quiet.
     note_if_stuck('unproven registered groups ' . join(',', @uncertain) . '; locks retained') if @uncertain;
-    return (\%rows, \%owned, \%held, $ok && $marked->{$$} && !$raced && !@uncertain);
+    # $probed: the descriptor probe worked and found this reaper itself.
+    # $raced: it also found a carrier this snapshot didn't list, which is
+    # live work, not a failure to see.
+    $probe_seen{$_} = 1 for keys %$marked;
+    delete $probe_seen{$$};
+    for my $pid (keys %probe_seen) {
+        my $born = exists($rows{$pid}) ? $rows{$pid}->{born} : started($pid);
+        if (length($born // '')) { $ever_known{$pid} = $born; delete $probe_seen{$pid}; }
+        elsif (!kill(0, $pid)) { delete $probe_seen{$pid}; }
+    }
+    my $probed = $ok && $marked->{$$};
+    return (\%rows, \%owned, \%held, $probed && !$raced && !@uncertain, $probed, \@uncertain, $raced);
 }
 
 if ($mode eq '--child') {
@@ -394,6 +440,23 @@ if (!$guard) {
 }
 waitpid($guard, 0);
 my $status = $?;
+$cleanup_started = awake_now();
+# How long cleanup may go on when the only thing stopping it is that lsof
+# can't confirm the work is gone (below). Seconds; 0 means never give up.
+my $limit = $ENV{THREADBEAR_PERF_REAP_LIMIT} // '';
+my $give_up_after = $limit =~ /\A\d+\z/ ? 0 + $limit : 600;
+# From here this process starts only ps and lsof, and they mustn't inherit
+# the host locks (fds 198-200, from perf-lock.pl): a probe that was killed
+# but hasn't exited yet would hold them after this reaper had gone. The
+# handles stay open for the life of the process: closing one would unlock.
+my @lock_handles;
+for my $fd (198 .. 200) {
+    my $handle;
+    next unless open($handle, '>>&=', $fd) || open($handle, '<&=', $fd);
+    my $flags = fcntl($handle, F_GETFD, 0);
+    fcntl($handle, F_SETFD, ($flags || 0) | FD_CLOEXEC) if defined $flags;
+    push @lock_handles, $handle;
+}
 # From here cleanup must survive the caller's stdout/stderr having gone.
 open(STDERR, '>', '/dev/null');
 open(my $state, '<', "$dir/state") or die "perf-children: no registry\n";
@@ -436,7 +499,7 @@ delete $anchors{$_} for grep { !exists($groups{$_}) } keys %anchors;
 my @proof_stat;
 while (!(@proof_stat = stat($state))) {
     note_if_stuck('registry identity unavailable; locks retained');
-    select(undef, undef, undef, 0.2);
+    blocked_pause(0.2);
 }
 my $marker = [@proof_stat[0, 1]];
 my $control;
@@ -454,7 +517,7 @@ for (;;) {
         close $control if defined(fileno($control));
     }
     note_if_stuck('descriptor positive control unavailable; locks retained');
-    select(undef, undef, undef, 0.2);
+    blocked_pause(0.2);
 }
 # This unlocked, close-on-exec copy is a positive control for every scan.
 # Query children never inherit it, and it is excluded before ancestry walks.
@@ -462,18 +525,26 @@ close $state;
 my %known;
 my $quiet = 0;
 my $deadline;
+my ($blocked_since, $last_failure);
+my $failed_probes = 0;
+my %last_known;
+my $last_ending = '';
 for (my $pass = 0; ; $pass++) {
-    my ($rows, $owned, $held, $complete) = collect_owned($marker, \%groups, \%anchors, \%known);
+    my ($rows, $owned, $held, $complete) = collect_owned($marker, \%groups, \%anchors, \%ever_known);
     %known = %$owned;
+    $ever_known{$_} = $known{$_} for keys %known;
     my %anchor_pids = map { $_->{pid} => 1 } values %$held;
     kill_owned(\%known, $rows, \%groups, \%anchor_pids);
-    # Registered apps/mock runners still get their graceful TERM interval.
+    # Registered apps/mock runners still get their graceful TERM interval:
+    # 5 s, or THREADBEAR_STOP_GRACE_SECS for tests (as hangup-guard.sh), whose
+    # stand-ins ignore TERM on purpose.
     if ($pass == 0) {
         for my $pid (keys %known) {
             kill 'TERM', $pid if !$anchor_pids{$pid} && exists($groups{$rows->{$pid}->{group}}) &&
                 started($pid) eq $known{$pid};
         }
-        $deadline = clock_gettime(CLOCK_MONOTONIC) + 5;
+        my $grace = ($ENV{THREADBEAR_STOP_GRACE_SECS} // '') =~ /\A[1-9][0-9]?\z/ ? 0 + $ENV{THREADBEAR_STOP_GRACE_SECS} : 5;
+        $deadline = clock_gettime(CLOCK_MONOTONIC) + $grace;
     }
     last unless grep { !$anchor_pids{$_} } keys %known;
     last if clock_gettime(CLOCK_MONOTONIC) >= $deadline;
@@ -485,8 +556,9 @@ for (my $pass = 0; ; $pass++) {
 # captured ancestry. Keep the locks until group KILLs are observed to stop.
 my %ending;
 for (;;) {
-    my ($rows, $owned, $held, $complete) = collect_owned($marker, \%groups, \%anchors, \%known);
+    my ($rows, $owned, $held, $complete, $probed, $uncertain, $raced) = collect_owned($marker, \%groups, \%anchors, \%ever_known);
     %known = %$owned;
+    $ever_known{$_} = $known{$_} for keys %known;
     my %anchor_pids = map { $_->{pid} => 1 } values %$held;
     kill_owned(\%known, $rows, \%groups, \%anchor_pids);
     for my $group (keys %$held) {
@@ -502,8 +574,112 @@ for (;;) {
     }
     $quiet = $complete && !%known && !%ending ? $quiet + 1 : 0;
     last if $quiet >= 2;
+    # Give up only when the one thing left is that the descriptor probe
+    # can't confirm it: every process this cleanup knows of is gone, no
+    # group's ownership is in doubt, and since that's been so the probe has
+    # failed at least three times over the whole limit. Then the locks go,
+    # so a cleanup whose probe never recovers can't hold the host forever.
+    # Known or doubtful work keeps them, however long it takes.
+    if (!$probed && !$raced && !%known && !%ending && !@$uncertain) {
+        my $now = awake_now();
+        # A long gap since the last failure (ps down, a stalled scan) means
+        # the probe wasn't being tried: start the count again.
+        if (defined($last_failure) && $now - $last_failure > 90) { undef $blocked_since; $failed_probes = 0; }
+        $last_failure = $now;
+        $blocked_since //= $now;
+        $failed_probes++;
+        give_up(sprintf('gave up after %d s of cleanup: the descriptor probe could not confirm the lease\'s ' .
+            'processes were gone (%d tries), and none it knew of were still running; releasing the locks',
+            cleanup_age(), $failed_probes))
+            if $give_up_after && $failed_probes >= 3 &&
+                $now - $blocked_since >= $give_up_after && !still_alive();
+    } elsif ($raced || %known || %ending || @$uncertain) {
+        # Work it knows of, or a carrier it just found: start the count again.
+        # A probe that worked and found nothing doesn't: that scan counts
+        # towards the two quiet ones, and a probe that only sometimes works
+        # mustn't hold the host for good.
+        undef $blocked_since;
+        undef $last_failure;
+        $failed_probes = 0;
+    }
     note_if_stuck('still stopping performance children ' . join(',', keys %known) . '; locks retained');
-    select(undef, undef, undef, 0.05);
+    # Fast only for the confirming scan once everything is gone; otherwise
+    # back off after 30 s, as finished scans of a process that won't die
+    # (stuck on a hung disk) still run ps and lsof each time.
+    # Progress: a process cleanup knew of has really gone (not just left out
+    # of one ps listing), or the set of groups being killed changed. A group
+    # that never empties (a member of another user's) is no progress, so it
+    # backs off like any other stuck scan.
+    my $ending_now = join(',', sort keys %ending);
+    my $progress = $ending_now ne $last_ending ||
+        grep { !exists($known{$_}) && !kill(0, $_) } keys %last_known;
+    %last_known = %known;
+    $last_ending = $ending_now;
+    undef $backoff if $progress;
+    # The confirming scan is quick, but it doesn't reset the backoff: a probe
+    # that works now and then mustn't bring back the 50 ms polling.
+    if ($quiet > 0 || $progress) { select(undef, undef, undef, 0.05); }
+    else { blocked_pause(0.05); }
 }
 remove_tree($dir) if $renamed;
 exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
+
+# A check that doesn't trust one ps listing: a snapshot that left a process
+# out mustn't be the reason the locks go. Anything that might still be the
+# lease's counts as alive, and when ps can't say, it counts as alive too:
+# - a process cleanup has known, or the probe reported, still at its pid
+#   with the same start time and not a zombie;
+# - a registered group with members, unless its number now belongs to an
+#   unrelated leader (a different start time).
+# What this can't see is a process only the probe could find (its own
+# process group or session, its parent gone) that no probe ever listed
+# because the probe kept failing: that's the trade for a cleanup that can't
+# hold the host forever. (macOS ps won't show other processes'
+# environments, which would otherwise have caught it.)
+sub pid_state {
+    my ($pid) = @_;
+    return () unless kill(0, $pid);
+    my $rows = ps_rows('-p', $pid, '-o', 'stat=,lstart=') or return ('?', '');
+    my ($stat, $start) = (($rows->[0] // '') =~ /^\s*(\S+)\s+(.*?)\s*$/);
+    return defined($stat) ? ($stat, $start) : ('?', '');
+}
+sub still_alive {
+    # A carrier whose start time ps couldn't give yet.
+    for my $pid (keys %probe_seen) {
+        my ($stat) = pid_state($pid);
+        return 1 if defined($stat) && $stat !~ /^Z/;
+    }
+    for my $pid (keys %ever_known) {
+        my ($stat, $start) = pid_state($pid);
+        next unless defined $stat;
+        return 1 if $stat eq '?' || ($stat !~ /^Z/ && $start eq $ever_known{$pid});
+    }
+    for my $group (keys %groups) {
+        next unless kill(0, -$group);
+        my ($stat, $start) = pid_state($group);
+        next if defined($stat) && $stat ne '?' && $stat !~ /^Z/ && $start ne $groups{$group};
+        return 1;
+    }
+    return 0;
+}
+sub give_up {
+    my ($why) = @_;
+    # Probes this cleanup killed but hasn't reaped yet. They hold no host
+    # lock (close-on-exec above); reaping them just leaves nothing behind.
+    my $until = clock_gettime(CLOCK_MONOTONIC) + 2;
+    while (%probe_children && clock_gettime(CLOCK_MONOTONIC) < $until) {
+        for my $pid (keys %probe_children) {
+            kill 'KILL', $pid;
+            delete $probe_children{$pid} if waitpid($pid, WNOHANG) != 0;
+        }
+        select(undef, undef, undef, 0.05) if %probe_children;
+    }
+    remove_tree($dir) if $renamed;
+    if (sysopen(my $out, $log, O_WRONLY | O_CREAT | O_APPEND, 0600)) {
+        print {$out} scalar(gmtime) . " UTC: $why\n";
+        close $out;
+    }
+    # The workload's own failure stands; a run that succeeded reports 1, as
+    # its cleanup wasn't proven.
+    exit($status & 127 ? 128 + ($status & 127) : ($status >> 8) || 1);
+}

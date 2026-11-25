@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { archived, archiveShown, build, clampWidth, hibernating, isFiltering, matches, neighbour, NO_FILTER, passes, placeChoices, readFolded, readOrder, readWidth, shows, SIDEBAR_DEFAULT, SIDEBAR_MIN, urgency, wakeLine, wakesOf, type ThreadRow } from './sections.ts';
+import { archived, archiveShown, build, clampWidth, hibernating, isFiltering, isSnoozed, matches, neighbour, NO_FILTER, passes, placeChoices, readFolded, readOrder, readWidth, shows, SIDEBAR_DEFAULT, SIDEBAR_MIN, urgency, wakeLine, wakesOf, type ThreadRow } from './sections.ts';
 
 const NOW = Date.parse('2026-11-05T10:00:00Z');
 let n = 0;
@@ -86,9 +86,9 @@ test('urgency: a failure that wants Mike outranks a plain one', () => {
   assert.equal(urgency(row()), 4);
 });
 
-// The cases the Mac and phone run too: one rule for all three
-// (app/Sources/ThreadbearCore/Threads/InboxUrgency.swift).
-test('urgency and the Needs you filter follow the shared cases', () => {
+// The legacy rule, for rows without waitState: the cases the Mac and phone
+// ran (app/Sources/ThreadbearCore/Threads/InboxUrgency.swift).
+test('without waitState, urgency and the Needs you filter follow the old shared cases', () => {
   type Case = { name: string; thread: { status?: ThreadRow['status']; needsYou?: boolean; unread?: boolean; pendingReviews?: number }; urgency: number; counted: boolean };
   const file = new URL('../../shared/cases/inbox-urgency.json', import.meta.url);
   const { cases } = JSON.parse(readFileSync(file, 'utf8')) as { cases: Case[] };
@@ -98,6 +98,65 @@ test('urgency and the Needs you filter follow the shared cases', () => {
     assert.equal(urgency(r), c.urgency, c.name);
     assert.equal(passes(r, { show: 'needsYou' }, NOW), c.counted, c.name);
   }
+});
+
+// What the runner sends as waitState, drawn into the section, the Needs you
+// order and the filter: the cases every app and the runner run
+// (runner/src/wait-state.ts).
+test('waitState is drawn into its section, urgency and the Needs you filter', () => {
+  type Case = { name: string; thread: Partial<ThreadRow> & Record<string, unknown>; scheduled?: boolean; state: string; section: string; urgency: number; counted: boolean };
+  const file = new URL('../../shared/cases/wait-states.json', import.meta.url);
+  const { cases, now } = JSON.parse(readFileSync(file, 'utf8')) as { cases: Case[]; now: string };
+  const at = Date.parse(now);
+  assert.ok(cases.length >= 30);
+  for (const c of cases) {
+    const r = row({ ...c.thread, status: c.thread.status ?? 'idle', waitState: c.state } as Partial<ThreadRow>);
+    const wakes = c.scheduled ? new Map([[r.threadId, at + 3_600_000]]) : none;
+    const s = build([r], at, wakes, 'needsYou');
+    const has = (rows: ThreadRow[]) => rows.some((x) => x.threadId === r.threadId);
+    let section: string;
+    if (has(s.starred)) section = 'starred';
+    else if (has(s.inbox)) section = 'inbox';
+    else if (has(s.running)) section = 'running';
+    else if (has(s.scheduled)) section = 'hibernating';
+    else if (r.archivedAt) {
+      assert.ok(has(archived([r])), c.name);
+      section = 'archived';
+    } else {
+      // Skipped as snoozed: the backend's Hibernating list draws it.
+      assert.ok(isSnoozed(r, at), `${c.name}: skipped without a snooze`);
+      assert.ok(has(hibernating(s.scheduled, [r], wakes)), c.name);
+      section = 'hibernating';
+    }
+    assert.equal(section, c.section, c.name);
+    assert.equal(urgency(r), c.urgency, c.name);
+    assert.equal(passes(r, { show: 'needsYou' }, at), c.counted, c.name);
+  }
+});
+
+test('an unknown waitState is drawn as done', () => {
+  const r = row({ waitState: 'somethingNew', status: 'running', needsYou: true });
+  assert.deepEqual(ids(build([r], NOW, none, 'needsYou').inbox), [r.threadId]);
+  assert.equal(urgency(r), 4);
+  assert.ok(!passes(r, { show: 'needsYou' }, NOW));
+  assert.equal(urgency(row({ waitState: 'somethingNew', status: 'error' })), 3);
+});
+
+test('waitState wins over the fields the legacy rule reads', () => {
+  // The runner says it waits on other threads: Running, though snoozed.
+  const onThreads = row({ waitState: 'onThreads', snoozedUntil: '2026-11-06T00:00:00Z', needsYou: true });
+  // Says done, though the old rule would call it a card.
+  const done = row({ waitState: 'done', status: 'waiting' });
+  // Says card: first in every order, even oldest first.
+  const card = row({ waitState: 'card', status: 'waiting', lastActivityMs: NOW });
+  const old = row({ waitState: 'done', lastActivityMs: NOW - 99_000 });
+  const s = build([onThreads, done, card, old], NOW, none, 'oldest');
+  assert.deepEqual(ids(s.running), [onThreads.threadId]);
+  assert.deepEqual(ids(s.inbox), ids([card, old, done]));
+  assert.ok(!passes(done, { show: 'needsYou' }, NOW));
+  assert.ok(!passes(onThreads, { show: 'needsYou' }, NOW));
+  // A read thread with open asks counts now (Mike, 23 Nov).
+  assert.ok(passes(row({ waitState: 'needsYou', needs: 'you', asks: [{}] }), { show: 'needsYou' }, NOW));
 });
 
 test('stars stay in the order they were starred', () => {

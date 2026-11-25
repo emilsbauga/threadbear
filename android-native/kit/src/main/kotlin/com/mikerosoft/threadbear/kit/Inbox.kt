@@ -58,10 +58,14 @@ data class InboxSections(
     val running: List<PhoneThread> = emptyList(),
     val scheduled: List<PhoneThread> = emptyList(),
 ) {
-    /** The badge: threads waiting on an answer or wanting him. */
+    /**
+     * The badge: threads waiting on an answer or wanting him. A starred one
+     * put away doesn't count: with a wait state its urgency says so, before
+     * that its snooze.
+     */
     val needsYouCount: Int
         get() {
-            val awake = starred.filter { it.snoozedUntil == null && it.snoozedUntilRestart != true }
+            val awake = starred.filter { it.waitState != null || (it.snoozedUntil == null && it.snoozedUntilRestart != true) }
             return (awake + inbox).count { InboxUrgency.counts(urgency(it)) }
         }
 
@@ -74,17 +78,12 @@ data class InboxSections(
             val running = mutableListOf<PhoneThread>()
             val scheduled = mutableListOf<PhoneThread>()
             for (t in threads) {
-                if (t.archivedAt != null) continue
-                if (t.starredAt != null) { starred += t; continue }
-                if (isSnoozed(t, now)) continue
-                if (t.reviewWaiting || needsAnswer(t) || t.waitingOnMike || (t.needsYou && t.working == null)) {
-                    inbox += t
-                } else if (t.isBusy || t.working != null) {
-                    running += t
-                } else if (t.status == ThreadStatus.IDLE && t.needs != "you" && t.waitingForRoom == null && wakes[t.threadId] != null) {
-                    scheduled += t
-                } else {
-                    inbox += t
+                when (placement(t, now, wakes)) {
+                    PhoneSection.STARRED -> starred += t
+                    PhoneSection.INBOX -> inbox += t
+                    PhoneSection.RUNNING -> running += t
+                    PhoneSection.HIBERNATING -> scheduled += t
+                    PhoneSection.ARCHIVED, null -> {}
                 }
             }
             starred.sortWith(compareBy<PhoneThread> { it.starredAt ?: Instant.MAX }.thenBy { it.threadId })
@@ -115,13 +114,57 @@ data class InboxSections(
             return soonest
         }
 
-        fun urgency(t: PhoneThread): Int = InboxUrgency.of(
+        /**
+         * The heading a thread from the inbox list goes under in `build`, or
+         * null for one drawn from another list (Hibernating's snoozed ones,
+         * the archived). Under Hibernating here only waiting on a schedule.
+         * From a newer runner a thread its agent put away to wait on its own
+         * work (other threads, landing, an app restart) is in this list with
+         * a snooze, and goes under Running.
+         */
+        fun placement(t: PhoneThread, now: Instant, wakes: Map<String, ScheduleWake>): PhoneSection? {
+            val state = t.waitState ?: return legacyPlacement(t, now, wakes)
+            return when (val section = state.section(t.starredAt != null)) {
+                PhoneSection.ARCHIVED -> null
+                PhoneSection.HIBERNATING -> section.takeIf { state == WaitState.SCHEDULED }
+                else -> section
+            }
+        }
+
+        /**
+         * Only for a row without `waitState`, from a runner before 23 Nov
+         * 2026: the app's own copy of the rule the runner now works out. Goes
+         * once every runner sends it.
+         */
+        private fun legacyPlacement(t: PhoneThread, now: Instant, wakes: Map<String, ScheduleWake>): PhoneSection? = when {
+            t.archivedAt != null -> null
+            t.starredAt != null -> PhoneSection.STARRED
+            isSnoozed(t, now) -> null
+            t.reviewWaiting || needsAnswer(t) || t.waitingOnMike || (t.needsYou && t.working == null) -> PhoneSection.INBOX
+            t.isBusy || t.working != null -> PhoneSection.RUNNING
+            t.status == ThreadStatus.IDLE && t.needs != "you" && t.waitingForRoom == null && wakes[t.threadId] != null -> PhoneSection.HIBERNATING
+            else -> PhoneSection.INBOX
+        }
+
+        fun urgency(t: PhoneThread): Int = t.waitState?.urgency(t.status) ?: legacyUrgency(t)
+
+        /** Only for a row without `waitState` (a runner before 23 Nov 2026); goes once every runner sends it. */
+        private fun legacyUrgency(t: PhoneThread): Int = InboxUrgency.of(
             answerWaiting = t.reviewWaiting || needsAnswer(t),
             needsYou = t.needsYou,
             broken = t.status == ThreadStatus.ERROR || t.status == ThreadStatus.STOPPED,
         )
 
-        fun needsAnswer(t: PhoneThread) = t.pendingApproval != null || t.status == ThreadStatus.WAITING
+        /** Stuck on a card only Mike can answer: the runner's card state, or before it the card or status. */
+        fun needsAnswer(t: PhoneThread) =
+            t.waitState?.let { it == WaitState.CARD } ?: (t.pendingApproval != null || t.status == ThreadStatus.WAITING)
+
+        /**
+         * Under Starred with a moon: put away by a snooze. With a wait state,
+         * only when it's hibernating, not one waiting on its own work.
+         */
+        fun isAsleep(t: PhoneThread, now: Instant): Boolean =
+            t.waitState?.let { it == WaitState.HIBERNATING } ?: isSnoozed(t, now)
 
         fun isSnoozed(t: PhoneThread, now: Instant): Boolean {
             if (t.snoozedUntilRestart == true) return true
@@ -145,13 +188,36 @@ object RowStatus {
     enum class Kind { NEEDS_YOU, WORKING, FAILED, WAITING_FOR_CONNECTION, STOPPED, TIME }
 
     fun kind(t: PhoneThread): Kind {
-        if (t.reviewWaiting || t.pendingApproval != null || t.status == ThreadStatus.WAITING) return Kind.NEEDS_YOU
+        val state = t.waitState
+        if (state == null) {
+            if (t.reviewWaiting || t.pendingApproval != null || t.status == ThreadStatus.WAITING) return Kind.NEEDS_YOU
+        } else {
+            if (state == WaitState.CARD || state == WaitState.REVIEW) return Kind.NEEDS_YOU
+            if (state == WaitState.SENDING) return Kind.WORKING
+        }
         return when (t.status) {
             ThreadStatus.RUNNING, ThreadStatus.STARTING -> Kind.WORKING
             ThreadStatus.ERROR -> if (t.waitingForNetwork != null) Kind.WAITING_FOR_CONNECTION else Kind.FAILED
             ThreadStatus.STOPPED -> Kind.STOPPED
             else -> Kind.TIME
         }
+    }
+
+    /**
+     * The gutter's dot: it wants Mike. With a wait state, whatever the badge
+     * counts (a read thread with open asks too, Mike 23 Nov).
+     */
+    fun wantsMike(t: PhoneThread): Boolean {
+        t.waitState?.let { return it.counts(t.status) }
+        val kind = kind(t)
+        return kind == Kind.NEEDS_YOU || (t.needsYou && kind != Kind.WORKING)
+    }
+
+    /** The row's working line ("1 sub-agent"), while a turn or a job is going and not held up on Mike. */
+    fun doing(t: PhoneThread): String? = t.working?.takeIf {
+        val state = t.waitState
+        if (state == null) t.isBusy || (t.pendingApproval == null && !t.waitingOnMike)
+        else t.isBusy || state == WaitState.WORKING || state == WaitState.JOB
     }
 
     fun text(t: PhoneThread, now: Instant, zone: ZoneId = ZoneId.systemDefault()): String = when (kind(t)) {

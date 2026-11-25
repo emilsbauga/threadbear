@@ -208,14 +208,83 @@ pub struct BuildDebounce {
 }
 
 impl BuildDebounce {
-    pub fn ready(&mut self, tree: &str, now: std::time::Instant) -> bool {
+    pub fn ready(
+        &mut self,
+        tree: &str,
+        now: std::time::Instant,
+        quiet: std::time::Duration,
+    ) -> bool {
         let (last, since) = self.observed.get_or_insert_with(|| (tree.to_owned(), now));
         if last != tree {
             *last = tree.to_owned();
             *since = now;
         }
-        now.saturating_duration_since(*since) >= std::time::Duration::from_secs(10 * 60)
+        now.saturating_duration_since(*since) >= quiet
     }
+
+    /// How long until the tree last seen has been quiet for `quiet`: when to
+    /// look again, rather than at the next five-minute look (which made two
+    /// minutes up to seven; Codex's and Gemini's reviews).
+    pub fn left(
+        &self,
+        now: std::time::Instant,
+        quiet: std::time::Duration,
+    ) -> Option<std::time::Duration> {
+        let (_, since) = self.observed.as_ref()?;
+        let at = *since + quiet;
+        (at > now).then(|| at - now)
+    }
+}
+
+/// How long main has to stay as it is before the app builds it: runner.json's
+/// `updateQuietMinutes`, two by default. A few landings in a row then make
+/// one build, not one each. Mike's says three, as his threads land all day and
+/// each build takes a build host for minutes (it said ten until 24 Nov, which
+/// with the build put off behind agents' work left his app half an hour to two
+/// hours behind main); on a copy where one person lands now and then, ten
+/// minutes was most of the wait to see a fix (Ville, 21 Nov).
+pub const DEFAULT_QUIET_MINUTES: u32 = 2;
+
+pub fn quiet_minutes(runner_json: &Path) -> u32 {
+    std::fs::read(runner_json)
+        .ok()
+        .and_then(|d| serde_json::from_slice::<serde_json::Value>(&d).ok())
+        .and_then(|j| j["updateQuietMinutes"].as_u64())
+        .map(|m| m.min(24 * 60) as u32)
+        .unwrap_or(DEFAULT_QUIET_MINUTES)
+}
+
+/// The priority the update build runs at: runner.json's `jobPriority` (or
+/// THREADBEAR_JOB_PRIORITY), as the runner's own builds and checks
+/// (runner/src/background.ts): `background` is macOS's `taskpolicy -b`,
+/// as Mike's says, `low` (the default) `nice -n 10`, `normal` as it is.
+/// Background made the first build on a copy without build hosts take 31
+/// minutes, and every update crawl even with the Mac idle (Ville, 21 Nov).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobPriority {
+    Background,
+    Low,
+    Normal,
+}
+
+fn priority_of(v: &str) -> Option<JobPriority> {
+    match v {
+        "background" => Some(JobPriority::Background),
+        "low" => Some(JobPriority::Low),
+        "normal" => Some(JobPriority::Normal),
+        _ => None,
+    }
+}
+
+pub fn job_priority(runner_json: &Path, env: Option<&str>) -> JobPriority {
+    if let Some(p) = env.and_then(priority_of) {
+        return p;
+    }
+    std::fs::read(runner_json)
+        .ok()
+        .and_then(|d| serde_json::from_slice::<serde_json::Value>(&d).ok())
+        .and_then(|j| j["jobPriority"].as_str().and_then(priority_of))
+        .unwrap_or(JobPriority::Low)
 }
 
 /// Puts the staged bundle in the installed one's place in one exchange, so
@@ -447,17 +516,41 @@ pub fn restart_wait(m: &RestartMoment, why_held: impl FnOnce() -> String) -> Opt
     ))
 }
 
-/// The update script's arguments, run at background priority (`taskpolicy
-/// -b`, as Mike asks of every build on his M5): throttled CPU and disk, off
-/// the cores he's using, inherited by everything it starts, the copy to a
-/// build host and back included.
-pub fn build_command(script: &str, checkout: &str, next: &str) -> (String, Vec<String>) {
-    (
-        "/usr/sbin/taskpolicy".into(),
-        ["-b", "/bin/bash", script, checkout, "--next", next]
-            .map(String::from)
-            .to_vec(),
-    )
+/// The update script's arguments, at the priority asked for (`job_priority`).
+/// Everything it starts inherits it, the copy to a build host and back
+/// included.
+pub fn build_command(
+    script: &str,
+    checkout: &str,
+    next: &str,
+    priority: JobPriority,
+) -> (String, Vec<String>) {
+    let run = ["/bin/bash", script, checkout, "--next", next].map(String::from);
+    match priority {
+        // Without taskpolicy (Linux), background is nice's lowest, as the
+        // runner's own (runner/src/background.ts).
+        JobPriority::Background if !cfg!(target_os = "macos") => (
+            "nice".into(),
+            ["-n", "19"]
+                .map(String::from)
+                .into_iter()
+                .chain(run)
+                .collect(),
+        ),
+        JobPriority::Background => (
+            "/usr/sbin/taskpolicy".into(),
+            std::iter::once("-b".to_owned()).chain(run).collect(),
+        ),
+        JobPriority::Low => (
+            "/usr/bin/nice".into(),
+            ["-n", "10"]
+                .map(String::from)
+                .into_iter()
+                .chain(run)
+                .collect(),
+        ),
+        JobPriority::Normal => (run[0].clone(), run[1..].to_vec()),
+    }
 }
 
 #[cfg(test)]
@@ -563,20 +656,85 @@ mod tests {
     }
 
     #[test]
-    fn the_build_runs_at_background_priority() {
-        let (program, args) = build_command("/b/stage-update.sh", "/repo", "/next");
-        assert_eq!(program, "/usr/sbin/taskpolicy");
+    fn the_build_runs_at_the_priority_runner_json_asks() {
+        let (program, args) = build_command(
+            "/b/stage-update.sh",
+            "/repo",
+            "/next",
+            JobPriority::Background,
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(program, "/usr/sbin/taskpolicy");
+            assert_eq!(
+                args,
+                [
+                    "-b",
+                    "/bin/bash",
+                    "/b/stage-update.sh",
+                    "/repo",
+                    "--next",
+                    "/next"
+                ]
+            );
+        } else {
+            assert_eq!(program, "nice");
+            assert_eq!(
+                args,
+                [
+                    "-n",
+                    "19",
+                    "/bin/bash",
+                    "/b/stage-update.sh",
+                    "/repo",
+                    "--next",
+                    "/next"
+                ]
+            );
+        }
+        let (program, args) = build_command("/b/s.sh", "/repo", "/next", JobPriority::Low);
+        assert_eq!(program, "/usr/bin/nice");
         assert_eq!(
             args,
             [
-                "-b",
+                "-n",
+                "10",
                 "/bin/bash",
-                "/b/stage-update.sh",
+                "/b/s.sh",
                 "/repo",
                 "--next",
                 "/next"
             ]
         );
+        let (program, args) = build_command("/b/s.sh", "/repo", "/next", JobPriority::Normal);
+        assert_eq!(program, "/bin/bash");
+        assert_eq!(args, ["/b/s.sh", "/repo", "--next", "/next"]);
+
+        let dir = temp("priority");
+        let json = dir.join("runner.json");
+        assert_eq!(
+            job_priority(&json, None),
+            JobPriority::Low,
+            "no runner.json: low"
+        );
+        std::fs::write(
+            &json,
+            r#"{"jobPriority":"background","updateQuietMinutes":10}"#,
+        )
+        .unwrap();
+        assert_eq!(job_priority(&json, None), JobPriority::Background);
+        assert_eq!(
+            job_priority(&json, Some("normal")),
+            JobPriority::Normal,
+            "the environment wins"
+        );
+        assert_eq!(
+            job_priority(&json, Some("fast")),
+            JobPriority::Background,
+            "an unknown one is ignored"
+        );
+        assert_eq!(quiet_minutes(&json), 10);
+        std::fs::write(&json, "{}").unwrap();
+        assert_eq!(quiet_minutes(&json), DEFAULT_QUIET_MINUTES);
     }
 
     #[test]
@@ -643,16 +801,27 @@ mod tests {
         use std::time::{Duration, Instant};
         let now = Instant::now();
         let mut quiet = BuildDebounce::default();
-        assert!(!quiet.ready("t2", now));
-        assert!(!quiet.ready("t2", now + Duration::from_secs(599)));
-        assert!(quiet.ready("t2", now + Duration::from_secs(600)));
+        let ten = Duration::from_secs(600);
+        assert!(!quiet.ready("t2", now, ten));
+        assert!(!quiet.ready("t2", now + Duration::from_secs(599), ten));
+        assert!(quiet.ready("t2", now + Duration::from_secs(600), ten));
         // More landings during a build collapse into the newest tree.
-        assert!(!quiet.ready("t3", now + Duration::from_secs(601)));
-        assert!(!quiet.ready("t4", now + Duration::from_secs(900)));
-        assert!(!quiet.ready("t4", now + Duration::from_secs(1499)));
-        assert!(quiet.ready("t4", now + Duration::from_secs(1500)));
+        assert!(!quiet.ready("t3", now + Duration::from_secs(601), ten));
+        assert!(!quiet.ready("t4", now + Duration::from_secs(900), ten));
+        assert!(!quiet.ready("t4", now + Duration::from_secs(1499), ten));
+        assert!(quiet.ready("t4", now + Duration::from_secs(1500), ten));
         // A busy host retry, or a landing outside desktop/, keeps its wait.
-        assert!(quiet.ready("t4", now + Duration::from_secs(1800)));
+        assert!(quiet.ready("t4", now + Duration::from_secs(1800), ten));
+        // When to look again: the moment the newest tree's wait is up.
+        let mut fresh = BuildDebounce::default();
+        assert_eq!(fresh.left(now, ten), None);
+        let two = Duration::from_secs(120);
+        assert!(!fresh.ready("t5", now, two));
+        assert_eq!(
+            fresh.left(now + Duration::from_secs(30), two),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(fresh.left(now + two, two), None);
     }
 
     /// A moment that would restart: staged, loaded, nothing typed or under

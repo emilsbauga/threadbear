@@ -258,3 +258,33 @@ test('a handover that begins while an edit cuts the session back keeps the threa
   assert.equal(fs.readFileSync(file, 'utf8'), 'first\n');
   assert.ok(r.turnId);
 });
+
+test('going back to an earlier message while a finish is held for the wake grace does not finish on the answer it replaces', async () => {
+  const h = makeHarness();
+  h.adapter.rewind = async (req) => {
+    h.adapter.rewound.push(req);
+    return { resumeAt: 'entry-1' };
+  };
+  const { thread } = h.runner.create({ text: 'Make a plan', accountId: 'claude-3' });
+  const s = h.adapter.last;
+  s.init();
+  s.text('a1', 'Here is the plan.');
+  s.result();
+  const { turnId } = h.runner.send(thread.id, 'Measure it');
+  // A job that ends mid-turn holds the finish (completeTurn's finishPending).
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'measure' }] });
+  s.out({ kind: 'tasks', tasks: [] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('a2', 'Saved 4.1 MB.');
+  s.result();
+  const seq = log(h, thread.id).find((e) => e.type === 'user.message' && e.turnId === turnId)!.seq;
+  let finishes = 0;
+  const markFinished = h.runner.markFinished.bind(h.runner);
+  h.runner.markFinished = (st, text) => {
+    finishes++;
+    markFinished(st, text);
+  };
+  await h.runner.editMessage(thread.id, seq, 'Measure it twice');
+  h.clock.advance(20_000);
+  assert.equal(finishes, 0);
+});

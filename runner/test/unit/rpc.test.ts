@@ -512,7 +512,17 @@ test('subscribe replays the gap then streams; thread.updated goes to everyone', 
   await new Promise((r) => setTimeout(r, 30));
   const phoned = (await b.call('threads.events', { threadId: id })).events.find((e: { type: string; text?: string }) => e.type === 'user.message' && e.text === 'from the phone');
   assert.equal(phoned?.origin, 'phone');
-  await assert.rejects(b.call('threads.send', { threadId: id, text: 'x', origin: 'runner' }), (e: { code: number }) => e.code === -32602);
+  // The runner's own tools (tb red-watch) send its note, with why: not
+  // stored as words Mike typed. Nothing else can be claimed.
+  await b.call('threads.send', { threadId: id, text: 'CI passed', origin: 'runner', wakeReason: "Main's CI passed again" });
+  const log = h.runner.store.log(id);
+  const ciNote = () => log.read(1, log.lastSeq).find((e) => e.type === 'user.message' && e.text === 'CI passed');
+  await patiently(() => ciNote() !== undefined);
+  const noted = ciNote() as { origin?: string; wakeReason?: string } | undefined;
+  assert.equal(noted?.origin, 'runner');
+  assert.equal(noted?.wakeReason, "Main's CI passed again");
+  await assert.rejects(b.call('threads.send', { threadId: id, text: 'x', origin: 'schedule' }), (e: { code: number }) => e.code === -32602);
+  await assert.rejects(b.call('threads.send', { threadId: id, text: 'x', wakeReason: 'why' }), (e: { code: number }) => e.code === -32602);
   a.close();
   b.close();
   await server.close();

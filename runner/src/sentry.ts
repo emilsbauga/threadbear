@@ -160,9 +160,9 @@ export const ERROR_CLASSES: ReadonlySet<string> = new Set([
   'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError',
   'AbortError', 'TimeoutError', 'SystemError', 'DOMException',
   'AcpExitedError', 'AcpRpcError', 'AmbiguousPeer', 'BoxBootRefused', 'BoxFolderBroken', 'CheckRefused', 'CodexExitedError', 'CodexRpcError',
-  'ConvexAdminError', 'CronError', 'GaveUp', 'HeldLocal', 'KeysBusy', 'NoSwitches', 'PiMissingSessionError', 'Refused', 'RewindRefusedError',
+  'ConvexAdminError', 'CronError', 'ForeignPeer', 'GaveUp', 'HeldLocal', 'KeysBusy', 'NoSwitches', 'PiMissingSessionError', 'Refused', 'RewindRefusedError',
   'RpcClientError', 'RpcError', 'RunnerJsonError', 'RunnerNotProvedError', 'SessionNotFoundError', 'SpawnRefused',
-  'SpecialFile', 'StaleProcess', 'TooBig', 'Unknown', 'Waiting',
+  'SpecialFile', 'StaleProcess', 'TooBig', 'Unknown', 'UnresolvedPeer', 'Waiting',
 ]);
 const LEADING_CLASS = /^\s*(?:Uncaught\s+)?([A-Za-z][A-Za-z0-9]{0,40})\b/;
 // Codes only from the system's own errno list, so a capitals word from the

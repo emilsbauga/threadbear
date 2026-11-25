@@ -125,6 +125,10 @@ struct NewThreadView: View {
             }
             .onAppear { Dictation.prepare() }
             .onDisappear { dictation.close() }
+            #if DEBUG
+            .onChange(of: model.clipTyped) { if let typed = model.clipTyped { text = typed } }
+            .onChange(of: model.clipStartTaps) { start() }
+            #endif
             .task {
                 if photos.isEmpty, let load = model.loadSamplePhoto { words.add([load], model: model) }
             }

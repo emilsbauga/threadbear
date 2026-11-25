@@ -31,7 +31,17 @@ export function parseWhen(s: string, now: number): string {
     d.setHours(9, 0, 0, 0);
     return d.toISOString();
   }
-  const t = Date.parse(s);
-  if (Number.isNaN(t)) throw new Error(`Can't read the time "${s}". Use 30m, 2h, 1d, tomorrow or an ISO time.`);
+  const t = parseIsoTime(s);
+  if (t === undefined) throw new Error(`Can't read the time "${s}". Use 30m, 2h, 1d, tomorrow or an ISO time.`);
   return new Date(t).toISOString();
+}
+
+// An ISO date or time ("2026-11-21", "2026-11-21T09:00+08:00"), else
+// undefined. Date.parse alone takes far more: V8 reads "MACG-3843" as the
+// year 3843 and "after PR 123" as the year 123, so words about a ticket
+// hibernated a thread for 1800 years (20 Nov 2026).
+export function parseIsoTime(s: string): number | undefined {
+  if (!/^\s*\d{4}-\d{2}-\d{2}(?:$|[T\s])/.test(s)) return undefined;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? undefined : t;
 }

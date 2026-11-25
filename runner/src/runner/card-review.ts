@@ -20,7 +20,7 @@
 import crypto from 'node:crypto';
 import type { Runner, ThreadState } from '../runner.ts';
 import { cutOut } from '../store.ts';
-import { fromMike } from '../runner.ts';
+import { fromMike } from './messages.ts';
 
 // The most of a card's input the reviewer is shown. More than this and it
 // can't vouch for what it didn't see, so the card goes to Mike.

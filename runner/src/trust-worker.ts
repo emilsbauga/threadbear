@@ -18,7 +18,7 @@ function look(req: TrustRequest): unknown {
     case 'claudeCommands':
       return claudeCommandsKinds(req.cwd, req.home, req.grants);
     case 'editsAsk': {
-      const scan = codeOfUnhashedPatch(req.file, req.from, req.now);
+      const scan = codeOfUnhashedPatch(req.file, req.from, req.now, req.maxAgeMs);
       return { all: scan.all, ...(scan.why ? { why: scan.why } : {}) };
     }
   }

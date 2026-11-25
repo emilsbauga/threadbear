@@ -46,7 +46,7 @@ final class AskClient {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 Log.net.info("Ping \(status) in \(Int((Stopwatch.now - started) * 1000)) ms")
             } catch {
-                Log.net.error("Ping failed: \(error.localizedDescription, privacy: .public)")
+                Log.net.error("Ping failed: \(error: error)")
             }
         }
     }

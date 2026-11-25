@@ -27,13 +27,54 @@ object LinkPolicy {
 
     private val schemePattern = Regex("^([A-Za-z][A-Za-z0-9+.-]*):")
 
+    /** The longest link looked at, of any kind (the desktop's MAX_LINK). */
+    const val MAX_LINK = 8_192
+
+    /**
+     * The longest link that asks: its question shows all of it, and has to
+     * fit on a screen, the desktop's alert too, which doesn't scroll
+     * (Gemini's review). A real `mailto:` or app link is a few hundred at
+     * most.
+     */
+    const val MAX_ASK_LINK = 1_024
+
     fun scheme(url: String): String? = schemePattern.find(url)?.groupValues?.get(1)?.lowercase()
 
-    fun kind(url: String): Kind = when (scheme(url)) {
-        null -> Kind.Refuse
-        "http", "https" -> web(url)?.let { Kind.Web(it) } ?: Kind.Refuse
-        "file" -> Kind.File(url)
-        else -> Kind.Ask(url)
+    /**
+     * Before the scheme is looked at, for every kind: too long, or with a
+     * character that changes how the rest shows (a control such as a line
+     * break or tab, a bidi override, a zero-width or other format
+     * character, a line or paragraph separator, half a surrogate pair), is
+     * refused. Such a link asked about could show one thing and open
+     * another (Daybreak 167, 22 Nov 2026).
+     */
+    fun kind(url: String): Kind {
+        if (url.length > MAX_LINK || hidesText(url)) return Kind.Refuse
+        return when (scheme(url)) {
+            null -> Kind.Refuse
+            "http", "https" -> web(url)?.let { Kind.Web(it) } ?: Kind.Refuse
+            "file" -> Kind.File(url)
+            // One that asks is printable ASCII only: a space, a blank filler
+            // (U+2800, U+3164) or a run of wide letters could push the rest
+            // of it out of sight in the question (Gemini's reviews). A real
+            // link percent-encodes anything else.
+            else -> if (url.length > MAX_ASK_LINK || !url.all { it in '!'..'~' }) Kind.Refuse else Kind.Ask(url)
+        }
+    }
+
+    /** Whether `text` has a character that hides or reorders what's around it (`kind`). */
+    fun hidesText(text: String): Boolean {
+        var i = 0
+        while (i < text.length) {
+            val c = text.codePointAt(i)
+            when (Character.getType(c).toByte()) {
+                Character.CONTROL, Character.FORMAT, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR,
+                Character.SURROGATE,
+                -> return true
+            }
+            i += Character.charCount(c)
+        }
+        return false
     }
 
     /**
@@ -41,7 +82,7 @@ object LinkPolicy {
      * without case (`HTTPS:` is web too); anything else is not web.
      */
     fun web(url: String?): String? {
-        if (url == null || url.length > 8_192) return null
+        if (url == null || url.length > MAX_LINK || hidesText(url)) return null
         val s = scheme(url)
         if (s != "http" && s != "https") return null
         val host = try {
@@ -52,9 +93,13 @@ object LinkPolicy {
         return if (host.isNullOrEmpty()) null else url
     }
 
-    /** A link shown in a question about it: long ones cut in the middle, so both the scheme and the end of it show. */
-    fun shown(url: String, limit: Int = 300): String {
-        if (url.length <= limit) return url
-        return url.take(limit * 2 / 3) + "…" + url.takeLast(limit / 3)
-    }
+    /**
+     * The words of the question for a link that asks, with all of the link
+     * in them, as it will open: never cut in the middle, where what it says
+     * to do could hide (Daybreak 167). `kind` keeps an asking link short
+     * enough to show whole, and the dialog scrolls.
+     */
+    fun question(ask: Kind.Ask): Pair<String, String> =
+        "Open this ${ask.url.substringBefore(':')} link?" to
+            "It isn't a web page: it opens another app, which acts on what the link says. It's from a thread, so Threadbear asks first.\n\n${ask.url}"
 }

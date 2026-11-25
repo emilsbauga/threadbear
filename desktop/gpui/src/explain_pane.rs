@@ -64,7 +64,7 @@ pub(crate) fn explain(
     });
     // Over the section it's in, opening that if it's closed.
     app.update(cx, |t, cx| {
-        if !t.dock.read(cx).controller.is_showing(&section) {
+        if !t.dock.read(cx).is_showing(&section) {
             t.show_pane(&section, cx);
         }
     });

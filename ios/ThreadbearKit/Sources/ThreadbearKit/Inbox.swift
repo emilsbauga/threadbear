@@ -106,38 +106,20 @@ public struct InboxSections: Sendable, Equatable {
         self.scheduled = scheduled
     }
 
-    /// The same rules as the Mac's ThreadSections.build, so the phone and
-    /// the sidebar agree on what's in the inbox; change both together.
-    /// Running: a turn is underway, or background work is still going.
-    /// Scheduled: idle with a schedule due to message it (`wakes`), and
-    /// nothing for Mike: no question, no design review, no reply wanting
-    /// him (one that said "nothing" doesn't), no open asks, not waiting for a login
-    /// with room. Inbox: everything else. Starred takes a starred thread
-    /// from all of these, whatever it's doing.
+    /// Each thread goes under the heading `section` gives it. Starred,
+    /// Inbox and Running come from this list; so do the Hibernating rows
+    /// that aren't snoozed (waiting on a schedule: `scheduled`). Snoozed
+    /// and archived ones come from their own lists, so they're left out.
     public static func build(_ threads: some Sequence<PhoneThread>, now: Date, wakes: [String: PhoneSchedule] = [:]) -> InboxSections {
         var sections = InboxSections()
-        for thread in threads where thread.archivedAt == nil {
-            if thread.backlog != nil || thread.backlogged == true {
-                sections.backlog.append(thread)
-                continue
-            }
-            if thread.starredAt != nil {
-                sections.starred.append(thread)
-                continue
-            }
-            if isSnoozed(thread, now: now) { continue }
-            // A question or approval goes in the inbox even while background
-            // work runs: the thread is stuck until he answers. So does a
-            // turn that ended asking him for something, unless sub-agents
-            // are still at it (`waitingOnMike`).
-            if thread.reviewWaiting || needsAnswer(thread) || thread.waitingOnMike || (thread.needsYou && thread.working == nil) {
-                sections.inbox.append(thread)
-            } else if thread.isBusy || thread.working != nil {
-                sections.running.append(thread)
-            } else if thread.status == .idle, thread.needs != "you", thread.waitingForRoom == nil, wakes[thread.threadId] != nil {
-                sections.scheduled.append(thread)
-            } else {
-                sections.inbox.append(thread)
+        for thread in threads {
+            switch section(thread, now: now, wakes: wakes) {
+            case .backlog: sections.backlog.append(thread)
+            case .starred: sections.starred.append(thread)
+            case .inbox: sections.inbox.append(thread)
+            case .running: sections.running.append(thread)
+            case .hibernating: if !isSnoozed(thread, now: now) { sections.scheduled.append(thread) }
+            case .archived: break
             }
         }
         sections.starred.sort {
@@ -184,12 +166,67 @@ public struct InboxSections: Sendable, Equatable {
         return soonest
     }
 
-    /// How much an inbox thread wants Mike, lowest first (InboxUrgency,
-    /// the Mac's rule too). Unread alone isn't wanting him: a turn that
-    /// said "nothing" is done, as on the Mac.
+    /// The heading a thread goes under: Archived, else Starred for a
+    /// starred one, else its wait state's (`WaitState.section`). A thread an
+    /// agent put away to wait on its own work (other threads, landing, an
+    /// app restart) is under Running though it's snoozed.
+    public static func section(_ thread: PhoneThread, now: Date, wakes: [String: PhoneSchedule] = [:]) -> PhoneSection {
+        if thread.archivedAt == nil && (thread.backlog != nil || thread.backlogged == true) { return .backlog }
+        guard let state = thread.wait else { return legacySection(thread, now: now, wakes: wakes) }
+        if state == .archived || thread.archivedAt != nil { return .archived }
+        if thread.starredAt != nil { return .starred }
+        return state.section
+    }
+
+    /// Only for a row without `waitState` (a runner from before 23 Nov
+    /// 2026): the rule the phone used to work out itself, the same as the
+    /// Mac's ThreadSections.build then. Goes once every runner sends it.
+    /// Running: a turn is underway, or background work is still going.
+    /// Hibernating: snoozed, or idle with a schedule due to message it
+    /// (`wakes`) and nothing for Mike: no question, no design review, no
+    /// reply wanting him (one that said "nothing" doesn't), no open asks,
+    /// not waiting for a login with room. Inbox: everything else. Starred
+    /// takes a starred thread from all of these, whatever it's doing.
+    public static func legacySection(_ thread: PhoneThread, now: Date, wakes: [String: PhoneSchedule] = [:]) -> PhoneSection {
+        if thread.archivedAt != nil { return .archived }
+        if thread.starredAt != nil { return .starred }
+        if isSnoozed(thread, now: now) { return .hibernating }
+        // A question or approval goes in the inbox even while background
+        // work runs: the thread is stuck until he answers. So does a
+        // turn that ended asking him for something, unless sub-agents
+        // are still at it (`waitingOnMike`).
+        if thread.reviewWaiting || needsAnswer(thread) || thread.waitingOnMike || (thread.needsYou && thread.working == nil) {
+            return .inbox
+        }
+        if thread.isBusy || thread.working != nil { return .running }
+        if thread.status == .idle, thread.needs != "you", thread.waitingForRoom == nil, wakes[thread.threadId] != nil {
+            return .hibernating
+        }
+        return .inbox
+    }
+
+    /// How much an inbox thread wants Mike, lowest first, from its wait
+    /// state and status (`WaitState.urgency`).
     public static func urgency(_ thread: PhoneThread) -> Int {
+        guard let state = thread.wait else { return legacyUrgency(thread) }
+        return state.urgency(status: thread.status)
+    }
+
+    /// Only for a row without `waitState` (a runner from before 23 Nov
+    /// 2026), as InboxUrgency has it, the Mac's rule too. Unread alone
+    /// isn't wanting him: a turn that said "nothing" is done, as on the
+    /// Mac. Goes once every runner sends it.
+    public static func legacyUrgency(_ thread: PhoneThread) -> Int {
         InboxUrgency.of(answerWaiting: thread.reviewWaiting || needsAnswer(thread), needsYou: thread.needsYou,
                         broken: thread.status == .error || thread.status == .stopped)
+    }
+
+    /// Whether it counts in the badge and the Needs you filter, given it's
+    /// in view. A hibernating row from an old runner, starred or not, isn't
+    /// counted; one with a wait state is never urgent enough to be.
+    public static func counts(_ thread: PhoneThread) -> Bool {
+        if thread.wait == nil, thread.snoozedUntil != nil || thread.snoozedUntilRestart == true { return false }
+        return InboxUrgency.counts(urgency(thread))
     }
 
     public static func needsAnswer(_ thread: PhoneThread) -> Bool {
@@ -213,12 +250,10 @@ public struct InboxSections: Sendable, Equatable {
         a.lastActivityAt != b.lastActivityAt ? a.lastActivityAt > b.lastActivityAt : a.threadId < b.threadId
     }
 
-    /// The badge: threads waiting on an answer or wanting him (InboxUrgency),
-    /// as the Mac's Dock badge. A star doesn't take one out of it, unless
-    /// it's hibernating, which isn't counted either.
+    /// The badge: threads waiting on an answer or wanting him (`counts`),
+    /// as the Mac's Dock badge. A star doesn't take one out of it.
     public var needsYouCount: Int {
-        let awake = starred.filter { $0.snoozedUntil == nil && $0.snoozedUntilRestart != true }
-        return (awake + inbox).filter { InboxUrgency.counts(Self.urgency($0)) }.count
+        (starred + inbox).filter(Self.counts).count
     }
 
     public var isEmpty: Bool { starred.isEmpty && backlog.isEmpty && inbox.isEmpty && running.isEmpty && scheduled.isEmpty }
@@ -279,7 +314,12 @@ public enum RowStatus {
     public enum Kind: Sendable, Equatable { case needsYou, working, failed, waitingForConnection, stopped, time }
 
     public static func kind(_ thread: PhoneThread) -> Kind {
-        if thread.reviewWaiting || thread.pendingApproval != nil || thread.status == .waiting { return .needsYou }
+        switch thread.wait {
+        case .card?, .review?: return .needsYou
+        case .sending?: return .working
+        case nil: if thread.reviewWaiting || thread.pendingApproval != nil || thread.status == .waiting { return .needsYou }
+        default: break
+        }
         switch thread.status {
         case .running, .starting: return .working
         // Lost the internet: it carries on by itself, so not Failed.
@@ -287,6 +327,22 @@ public enum RowStatus {
         case .stopped: return .stopped
         default: return .time
         }
+    }
+
+    /// Whether it asks something of Mike: the row's dot and bold title. From
+    /// its wait state (stuck on a card or review, or asking him, read or
+    /// not), else as the old runner's row said (`needsYou`).
+    public static func wantsYou(_ thread: PhoneThread) -> Bool {
+        guard let state = thread.wait else { return thread.needsYou }
+        return state == .card || state == .review || state == .needsYou
+    }
+
+    /// Whether the row shows its working line ("Running npm test"): while
+    /// it's working or a job's going, not while it waits on Mike.
+    public static func showsWorkingLine(_ thread: PhoneThread) -> Bool {
+        guard thread.working != nil else { return false }
+        guard let state = thread.wait else { return thread.isBusy || (thread.pendingApproval == nil && !thread.waitingOnMike) }
+        return state == .working || state == .job
     }
 
     /// The words, as the Mac says them: "Needs you" whether it's a question

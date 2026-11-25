@@ -23,10 +23,11 @@
 # Costs nothing: standard ubuntu runners, free for a public repo; a newer
 # push replaces a check still waiting.
 #
-# tb land holds a landing that changes what this checks while its last run
-# on main failed (runner/src/land-gate.ts, docs/thread-worktrees.md "Red on
-# GitHub"), and main's runs aren't cancelled by newer pushes, so each one
-# finishes and says something (only a pull request's are). From 16 to 19
+# When its last run on main failed (or a job ran into its timeout), tb
+# red-watch starts a thread to fix it and tb land says so (runner/src/
+# red-watch.ts, docs/thread-worktrees.md "Red on GitHub"), and main's runs
+# aren't cancelled by newer pushes, so each one finishes and says something
+# (only a pull request's are). From 16 to 19
 # Nov this workflow was red on Windows while landings went on top, and
 # with every workflow having to pass on one commit for the daily release,
 # none went out (runner/src/upstream.ts).

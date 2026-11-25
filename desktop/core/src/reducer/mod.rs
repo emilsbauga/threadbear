@@ -29,15 +29,13 @@ pub use diff::{DiffBuilder, DiffDisplayLine, DiffLineKind};
 pub use event::*;
 pub use feed::{FeedAction, ThreadFeed};
 pub use format::{cost_text, duration, short_tokens, token_line, TurnTokens};
-pub use groups::{
-    BackgroundStatus, BackgroundWork, ChangedFile, ChangedFiles, DiffPreview, WorkGroup,
-    WorkSummary, WorkingStatus,
-};
+pub use groups::{BackgroundWork, DiffPreview, WorkSummary};
 pub use model::{PrependResult, TranscriptChange, TranscriptModel};
 pub use pending::PendingMessage;
 pub use row::{
-    AgentHeader, ApprovalItem, AskNote, AsksCard, Pending, PlanCard, PlanCardState, QuestionItem,
-    Row, RowContent, RowKind, ScheduledHeader, SecretItem, TextItem, ToolItem, UserMessage,
+    AgentHeader, ApprovalItem, AskNote, AsksCard, BackgroundStatus, ChangedFile, ChangedFiles,
+    Pending, PlanCard, PlanCardState, QuestionItem, Row, RowContent, RowKind, ScheduledHeader,
+    SecretItem, TextItem, ToolItem, UserMessage, WorkGroup, WorkingStatus,
 };
 pub use row_debug::RowDebug;
 pub use tool_presentation::{

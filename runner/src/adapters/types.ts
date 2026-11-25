@@ -113,7 +113,9 @@ export type AdapterOutput =
   | { kind: 'context'; contextTokens: number; contextWindow?: number }
   // A rate-limit reading for the session's account (D's UsageStore keeps
   // it). email and plan come with it when the CLI reports them.
-  | { kind: 'limits'; windows: UsageWindow[]; blocked?: boolean; email?: string; plan?: string; resets?: UsageResets }
+  // aside: titles of windows shown but never deciding the login's room or
+  // its block (Gemini's Claude and GPT group: agy-usage.ts).
+  | { kind: 'limits'; windows: UsageWindow[]; blocked?: boolean; email?: string; plan?: string; resets?: UsageResets; aside?: string[] }
   // The version of the CLI process actually running this session (not the
   // one that created it).
   | { kind: 'cliVersion'; version: string }
@@ -338,9 +340,14 @@ export interface AgentAdapter<Identity = Account> {
   // Codex: spends one of the login's usage-limit resets (Mike's click on
   // the limit box, never by itself) and reads its limits after.
   useReset?(account: Identity): Promise<UseResetResult>;
-  // Codex: reads the login's limits without a turn (limit-recheck.ts), for
-  // a login whose last reading says it's out. null if Codex said nothing.
+  // Codex, Grok and Gemini: reads the login's limits without a turn
+  // (limit-recheck.ts), for a login whose last reading says it's out or
+  // that has none yet, and for Gemini every limitsPollMs. null if the CLI
+  // said nothing.
   readLimits?(account: Identity): Promise<Extract<AdapterOutput, { kind: 'limits' }> | null>;
+  // Gemini: its turns carry no reading, so readLimits is the only one, asked
+  // when the last is this old, and soon after each of its turns ends.
+  readonly limitsPollMs?: number;
   // The slash commands the account's CLI offers in a folder (skills
   // included), without starting a turn, for the composer's picker.
   commands?(account: Identity, cwd: string, untrusted?: Record<string, unknown>): Promise<SlashCommand[]>;

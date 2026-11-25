@@ -184,6 +184,14 @@ only way the app opens another runner's thread.
   old runner's card has those; any more files are named in the result. The app fills
   the row in by `itemId`. Withheld, the result says why. Otherwise the stub stands.
   Reasoning, sub-agents and tools' pictures stay on that runner from here.
+- **Wake reasons in messages** (backend API 98). A runner's own message
+  row (`origin: "runner"`) from a `user.message` with `wakeReason` carries
+  it, scrubbed as the text is and cut to 200 characters, and `remoteTail`
+  and `remoteMessages` pass it on, so the relay's event has it and another
+  Mac's divider before the turn it started says it ("Moments later · Codex
+  answered") rather than the bare wait. The relay puts that message before
+  its turn's `turn.started`, as its own runner wrote them. A runner sends
+  it only to a backend of 98 or later.
 - **Answers in messages** (backend API 89). A user's message row from a
   `user.message` with `answers` carries them (`[{ action, answer }]`, scrubbed
   as the text is), and `remoteTail` and `remoteMessages` pass them on, so the
@@ -454,7 +462,14 @@ runner that's this one is the usual create.
   <name>. Each reply you end a turn with goes back to that thread, so put
   your report in your reply.]`, and the main Mac's runner keeps it in
   `far-reports.json` with its starter (a thread already there keeps its
-  first starter). Every 15 seconds, on a timer of its own, and not while
+  first starter) and a ceiling, `by`: the starter's saved mode as it asked
+  (read before the request goes), or the mode the thread was started with
+  if that's more. Taken on
+  this Mac, never from the backend or the other runner. A reply that
+  arrives after Mike raised the starter above `by` isn't passed to its
+  agent: the starter gets a `system.note` and goes to Needs you, with no
+  turn (`runner/src/runner/ceiling.ts`; Daybreak finding 163, 22 Nov 2026).
+  A watch saved before that has no `by` and counts as Ask. Every 15 seconds, on a timer of its own, and not while
   sync is off or the runner is draining, it reads each such thread's row
   (`relay:remoteThread`) and newest 100 message rows
   (`relay:remoteMessages`) straight from the backend: the sidebar's list
@@ -500,7 +515,7 @@ In the backend a request is a state machine (`convex/requestMachine.ts`,
 
 A thread can be shared by link on the website (docs/website.md, "Sharing"),
 from the share button beside its ... menu, or from the website itself
-(a `share` command; see Sync). The runner keeps it on the thread's
+or the iPhone and Android apps (a `share` command; see Sync). The runner keeps it on the thread's
 record and the mirror carries it to Convex, which serves the link;
 nothing about it is decided in Convex.
 

@@ -257,6 +257,65 @@ async function reread(h: ReturnType<typeof makeHarness>, threadId: string) {
   return h.runner.get(threadId);
 }
 
+test("runner: patches.trust answers once this thread's patches are read, not every thread's (a slow folder elsewhere timed it out, 22 Nov)", async () => {
+  const root = tmpDir();
+  const project = path.join(root, 'app');
+  const v = writePatch(project, 'tools', 'Deploy');
+  const slow = path.join(root, 'slow');
+  fs.mkdirSync(slow, { recursive: true });
+  const home = tmpDir();
+  const h = makeHarness(home, {}, { panelsRoot: root, patchTrust: new PatchTrust({ file: path.join(home, 'patch-trust.json') }) });
+  const { thread } = h.runner.create({ text: 'hi', accountId: 'claude-3', cwd: project });
+  h.runner.create({ text: 'hi', accountId: 'claude-3', cwd: slow });
+  await tick();
+  await h.runner.patchesIdle();
+  const hash = h.runner.get(thread.id).patches![0].hash!;
+  const st = h.runner.threads.get(thread.id)!;
+
+  // The other folder's reads never finish in this test (a slow live
+  // command, a busy disk). This folder's each load what's there, then wait
+  // at a gate of their own until the test opens it.
+  let releaseSlow!: () => void;
+  const slowGate = new Promise<void>((r) => (releaseSlow = r));
+  const gates: { open: () => void; waiting: boolean }[] = [];
+  const load = h.runner.loadSharedPatchSet.bind(h.runner);
+  h.runner.loadSharedPatchSet = async (cwd, ...rest) => {
+    if (cwd === slow) await slowGate;
+    const got = await load(cwd, ...rest);
+    if (cwd === project) {
+      const g = { open: () => {}, waiting: true };
+      const wait = new Promise<void>((r) => (g.open = r));
+      gates.push(g);
+      await wait;
+    }
+    return got;
+  };
+  const until = async (ok: () => boolean) => {
+    for (let i = 0; i < 2000 && !ok(); i++) await tick(1);
+    assert.ok(ok());
+  };
+  // A read of this thread under way, having loaded the patch as untrusted,
+  // and a live poll coming round while it runs, before Trust is pressed.
+  h.runner.rereadAllPatches();
+  await until(() => gates.length === 1);
+  void h.runner.refreshPatches(st);
+
+  let answered = false;
+  const trust = h.runner.trustPatches(thread.id, [{ file: v.file, hash }]).then(() => (answered = true));
+  // That read ends with what it saw before Trust; the read again Trust
+  // asked for (entry.again) is the one it waits for.
+  gates[0].open();
+  await until(() => gates.length === 2);
+  await tick();
+  assert.equal(answered, false, "Trust waits for the read that sees the trust");
+  gates[1].open();
+  await until(() => answered);
+  assert.deepEqual(h.runner.get(thread.id).actions?.map((a) => a.title), ['Deploy']);
+  await trust;
+  releaseSlow();
+  await h.runner.patchesIdle();
+});
+
 test('runner: a denied edit of an untrusted patch leaves it untrusted, from Claude or Codex, at the result and at the turn end', async () => {
   const root = tmpDir();
   const project = path.join(root, 'cloned');

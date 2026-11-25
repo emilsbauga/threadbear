@@ -28,7 +28,7 @@ ended in the last day) and acts on the state:
 | `ready` | S waits for the thread's turn and sub-agents to end, then freezes it: `moves:moveFrozen` | `packing` |
 | `packing` | S packs, seals, uploads: `moves:movePacked { moveId, chunks, sha256, bytes }` | `unpacking` |
 | `unpacking` | T downloads (`moves:moveChunks`, T only, the chunks' URLs), checks, opens and unpacks into staging, then `moves:moveClaim` | `claimed` |
-| `claimed` | T adopts the thread and mirrors it: `moves:moveDone`. The move ends once the thread's mirrored rows have all gone to T too (`moves:rehomeRows`, a page at a time); until then it stays `claimed`, so the thread can't start another move | `done` |
+| `claimed` | T adopts the thread and mirrors it: `moves:moveDone`. The move ends once the thread's mirrored rows have all gone to T too (`moves:rehomeRows`, a page at a time); until then it stays `claimed`, so the thread can't start another move. T takes them as its own writes are taken (Daybreak 181, 24 Nov 2026): a runner key's runner or a box (`lib.ts hasAllowance`; a box's key isn't a `runnerKeys` row, but it's charged like one) within its message and tool-output allowances, as if it had written each row when it was written: when T is full a row makes room only among T's own threads' rows older than it (a few a run), and goes itself, rather than come over, when T has none, the page running again while it gets somewhere (one that can't make any room waits for the sweep, `expireMoves`), and a picture's file only if it has room to store it, charged at its size even if it had no record (the owner's), else the backend's copy goes (T's runner sends its own again when it has room). S's rows and the thread's rows nobody was charged for all go to T. Pages are small enough to read (50 messages, 8 tool outputs, 200 pictures). A row of a thread now T's that S's own room-making meets goes to T if T has room, goes as T's own oldest would if it's older than anything T has, and otherwise waits for the rehome. T's runner sending the thread's history again before the rehome reaches a row takes it within its allowance the same way. The owner takes no allowance, as before | `done` |
 | `done` | S puts its copy away (`<home>/moved/<id>`, kept 7 days), unless a later move has brought the thread back | |
 
 Any state before `claimed` can go to `failed` (`moves:moveFailed { moveId,
@@ -46,7 +46,11 @@ being updated" (a deploy's stepping stone, for a minute) is asked again,
 only that call, rather than failing the move: 20 seconds later, then
 longer each time, up to 5 minutes, for about 20 minutes in all. T's adopt
 and `moveDone` at `claimed`, where there's nothing to fail, are tried again
-the same way whatever went wrong. Older runners failed the move, or left
+the same way whatever went wrong. So is T's `moveClaim` once it has
+placed the thread (never the placing): a claim whose reply was lost may
+have gone through, and a `claimed` move can't fail; `moveClaim` answers a
+claimed move as done, and one that never goes through ends at the thirty
+minutes. Older runners failed the move, or left
 it `claimed` until T restarted, so while the stepping stone is up
 `moveDone` and `moveFailed` still go through as they did before the
 machine.

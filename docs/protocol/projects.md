@@ -10,14 +10,6 @@ thread can be in several projects, and it keeps `goals`, `state` and
 the librarian and the agents do. Kept in `projects.json` in the data dir;
 which projects a thread is in is kept with the thread.
 
-**Decisions** (the `projectDecisions` experiment, Mac app only so far).
-The app gathers a project's open cards of asks at the top of its page from
-what it already has: a thread is a decision while its summary is waiting
-on Mike (`needs` "you", not busy) with an `asksSeq` and an unticked ask.
-There's no request of its own: an answer there is the `threads.send` the
-thread's own card makes with an empty composer (the picked answers'
-`text` and `answers`), so the agent can't tell where it was answered.
-
 **Parts.** A project can be a part of another (`parentId`), for one
 body of work with separate strands (Threadbear, its GPUI port and its
 Android app), so each part keeps its own goals, state and notes rather
@@ -174,8 +166,28 @@ the inventory's). A manifest's icon counts only if it's named like a
 picture and is a file of the repo's own, not a link out of it. The best is
 copied in, so the app never reads a repo, and only if its bytes say it's a
 picture; on Linux ImageMagick gets it with its decoder named (never one it
-picks, as its MSL and MVG ones are scripts), and an SVG is drawn only by
-rsvg-convert. It
+picks, as its MSL and MVG ones are scripts). A picture is a candidate, and is copied, only when its own
+structure, read here without decoding it, says how big every picture in it
+is and that's within the icon budget (`runner/src/icon-budget.ts`: 4096 px
+a side, 4096 x 4096 px and 64 MB decoded in all, at most 32 pictures in an
+`.ico` or `.icns`), so a small file that says it's 60,000 px square is
+never decoded (Daybreak, 24 Nov). Only PNG (whole and well formed, not
+animated, its compressed text and colour profile within 1 MB inflated), ICO
+(PNG or uncompressed bitmaps) and ICNS (PNG and the old fixed-size
+elements; no JPEG 2000 or nested sets) are icons. JPEG and WebP aren't, as
+what a decoder makes of them can't be told from their headers for sure, and
+nor is SVG: it's a program for its renderer more than a size, and three
+review rounds each found a way past a check of its text (a picture inside
+it, CDATA, namespace prefixes, CSS sizing, a mask fan-out), so it waits for
+a real parser. What's copied is the one read and checked, made into a PNG
+of at most 256 px (ImageMagick also told the budget), never the file as it
+was: when the best picture can't be made into one here (an `.icns` on Linux) the next best is tried,
+and with none the project gets a symbol. A copy an older runner kept that
+isn't such a PNG (the repo's file as it was, or an SVG) is dropped as the
+runner starts, before any app is sent its path, and the project goes back
+to automatic (even one Mike chose); the phone is sent no picture outside
+the budget. The desktop app decodes an icon (only a PNG) within the
+same budget. It
 looks again a few seconds after a project is made or its folders change,
 and every hour at all of them, copying again when the file has changed or
 a better one has turned up. A project with no picture gets an SF Symbol:
@@ -279,6 +291,17 @@ A schedule sends a message at a set time, once (`at`) or over and over
 a thread that already exists or starts a new thread each time. They're
 kept in `schedules.json` in the data dir.
 
+The desktop composer's quick send times (beside Send, and its right-click)
+are ordinary one-off schedules with `at` filled in, made through the same
+editor and `schedules.create`, with no call of their own: tonight at 21:00
+and tomorrow at 09:00 in the app's zone, or a minute after a known reset.
+The reset is when the box's login, or the first of its pool's logins of
+the box's provider, has room again as `backAt` in `runner/src/pools.ts`
+works it out (every 5-hour or weekly window under 1% has reset; blocked
+with none, its tightest), or with room, the next reset of a used window.
+Stale readings, a signed-out login or a missing reset give none. A pool's
+schedule keeps `poolId` (and `provider`), so the run still picks its login.
+
 - **Cron.** Five fields: minute, hour, day of month, month, day of week
   (0 or 7 is Sunday), with `*`, lists (`1,15`), ranges (`1-5`), steps
   (`*/15`, `9-17/2`) and names (`jan`, `mon`). When both day fields are
@@ -286,6 +309,42 @@ kept in `schedules.json` in the data dir.
   `timezone`, or the Mac's own zone. A time that doesn't exist on a
   daylight-saving day runs at the first minute that does; one that happens
   twice runs once.
+- **Ceilings.** A schedule that sends to a thread keeps a ceiling: the
+  most access that thread may have when a run reaches its agent
+  (`runner/src/schedules.ts`, "Ceilings"; Daybreak finding 162, 22 Nov
+  2026). One a thread on Ask or Auto set up for another thread has that
+  thread's own mode (or, if Mike allowed it on a card, the other thread's
+  access as the card showed it), and so does one it sets up for itself
+  (after a `/clear` its words are no longer in what its agent reads);
+  Mike's (the app, `tb` outside a thread, the phone) and a Full thread's
+  have none. A run to a thread that's above its ceiling now isn't sent: the run
+  says `Paused, not sent: …`, a repeating schedule pauses, and the thread
+  gets a `system.note` and goes to Needs you, with no turn. Mike resuming
+  or changing its words (the app, `tb`, the phone), or his Run now, lifts
+  the ceiling; a limited thread rewording, resuming or giving a new check to one (what a
+  check prints goes into each run) lowers it to its
+  own mode (never lifts it, even through a card, which shows only what
+  changes; the thread it sends to included), and a
+  limited thread's Run now goes by the higher of its mode and the
+  ceiling. Over RPC, `ceiling` (and `schedules.run`'s `by`) left out is
+  Mike's; the RPC gate puts a thread's own in, whatever it says. A
+  schedule on another Mac is lifted on that Mac: a resume or Run now from
+  this one reaches it only as the backend's row or run request, which
+  carry no ceiling. Ceilings are kept on the
+  Mac the schedule runs on (`schedule-ceilings.json` in the data dir,
+  bound to the schedule's id, creation time and thread), never in the
+  backend's row; one with none kept (made before 22 Nov 2026, or one that
+  only came through the backend) is bound the first time the runner sees
+  it, at its `createdBy` thread's saved mode then (Ask if that thread is
+  gone or none is named), so existing ones carry on as they were. A
+  moved thread's schedules take the lower of the ceiling they had on the
+  Mac they came from and the thread's saved mode as it arrives. The
+  ceiling goes with the queued message (and to a draining runner, as
+  `drain.sendScheduled`'s `ceiling`, which that runner checks again and
+  refuses rather than queue), and is checked again as the message leaves
+  the queue (`runner/src/runner/ceiling.ts`). A run for a thread a
+  draining runner has that doesn't say its access (busy there) is tried
+  again rather than held.
 - **Sending.** The message starts with a line saying which schedule sent
   it, `[Scheduled: "<title>", <whenText>]`, so the agent knows Mike didn't
   just type it, and its `user.message` has `origin: "schedule"` and
@@ -300,8 +359,7 @@ kept in `schedules.json` in the data dir.
   automatic inputs are marked `beforeMessage: true` in `QueuedSend`.
   If the agent then ends with archive, snooze or waitFor, those older
   inputs are held through that wait instead of overriding it. This also
-  applies when ordinary input joins a background-opened CLI turn; automatic
-  notifications alone do not grant that parking path. Inputs
+  applies when ordinary input joins a background-opened CLI turn. Inputs
   arriving later still prevent putting the thread away. An older reminder
   delivered later tells the agent that newer instructions take precedence.
   An interrupted, unread peer message is queued again ahead of automatic
@@ -525,6 +583,8 @@ experiment's switch (`settings.update`'s `experiments`).
   header?,                   // absolute path of its header picture on this Mac
   state: "add" | "settingUp" | "on" | "off",
   setupThreadId?,
+  habit?: { text, bytes, given: boolean, changed?: true, givenText? },   // see "Habits"
+  instant?: true,            // only a habit: recipes.add turns it on, with no thread
   schedules: { id, title, paused, nextRunAt?, whenText }[],
   stats: { runs: number, neededYou: number, seen: number, lastRunAt?, lastHeadline? } }   // last 30 days
 ```
@@ -535,13 +595,60 @@ has a schedule (or, for an experiment's, until that's on); then `on` or `off`.
 that ended needing the user, and those they've read (`lastSeenSeq` at
 `lastSeq`).
 
+### Habits
+
+A recipe's file may have a `## Habit` section: a few lines every thread's
+agent is given while the recipe is on, at most 800 bytes (a longer one makes
+the file unreadable, and it's left out of the list like any broken file). The
+runner gives them after the user's standing instructions, in the same words
+at the start of a session and the same note when they change
+(settings.md, "Standing instructions"), under a line saying they're habits
+from recipes the user switched on. Nothing is written to the user's
+`CLAUDE.md` or `AGENTS.md`, so off takes effect on every thread's next
+message, and Claude and Codex sessions both hear it.
+
+A habit steers every thread, so a recipe's file alone doesn't count, as
+with the standing instructions. What's given is the wording as it was when
+the user switched the recipe on (`recipes.add`, `recipes.setOn` with `on:
+true`), kept in `recipes.json` with an HMAC of it keyed by the runner's
+token. The line is the standing instructions' (settings.md): `recipes.*`
+are refused to a thread below Full access (connection.md, "A thread's own
+key"), so such a thread can neither switch one on nor sign one by writing
+files. A thread on Full access can call them, as it can `instructions.set`. In `habit`, `text`
+is the file's wording now and `bytes` its size; `given` says agents are
+being told it; `changed` that the recipe is on but what the file says isn't
+what was switched on (the file was edited, a release changed a built-in's,
+or what's kept wasn't signed by this runner), with `givenText` the wording
+still being given, if any. `recipes.setOn` with `on: true` on a recipe
+that's already on takes the file's wording.
+
+Switching a habit on is agreeing to its words, so a client sends the ones
+it showed: `habit` (the summary's `habit.text`) and `name`, on
+`recipes.add` and on `recipes.setOn` with `on: true`. The runner reads the
+file again and refuses (`-32602`) unless it still says exactly those, so a
+file changed between the user's look and their click isn't taken; the client
+fetches the list again and shows the new wording. The name counts because
+agents are told the habit under it: it's kept and signed with the wording,
+at most 60 characters, and a changed name is `changed` too. Switching it off
+forgets the signed wording, so nothing left in `recipes.json` can turn it
+back on. Each message reads the recipes afresh, so a habit whose file or
+experiment has gone stops with the next one.
+
+A recipe that is only a habit (no "Setting it up", no "Each run", no
+experiment) is `instant`: there's nothing for an agent to set up, so
+`recipes.add` turns it on and answers `{ recipe }` with no thread, and
+`recipes.setOn` with `on: true` adds it too. It's never `settingUp`. One
+with a habit and a setup is added by its thread as usual, and its habit is
+given from then while it's on.
+
 | Method | Params | Result |
 |---|---|---|
 | `recipes.list` | `{}` | `{ recipes: RecipeSummary[] }`, on first, then the rest by name |
-| `recipes.get` | `{ id }` | `{ recipe: RecipeSummary & { about, example?, file, runs: RecipeRun[] } }`. `about` and `example` are Markdown (the file's sections); `file` is the `RECIPE.md` path. `RecipeRun` is `{ threadId, title, at, headline?, needsYou, seen, archived }`, the threads its schedules started in the last 30 days, newest first, 60 at most |
-| `recipes.add` | `{ id }` | `{ threadId, thread }` (`thread` its `ThreadSummary`, so a client opens it at once): starts a thread in `<recipes folder>/<id>` (made if need be), on the default pool and mode, whose message points its agent at the recipe's file and has it set the recipe up with the user. The recipe is `settingUp` from now |
-| `recipes.setOn` | `{ id, on }` | `{ recipe }`. Off pauses each of its schedules (and turns its experiment off); on resumes them (and turns it on). A recipe still setting up just records the choice |
-| `recipes.remove` | `{ id }` | `{ removed: true }`: deletes its schedules, turns its experiment off and forgets it, so it's `add` again. Its files stay |
+| `recipes.get` | `{ id }` | `{ recipe: RecipeSummary & { about, example?, examples: RecipeExample[], file, runs: RecipeRun[] } }`. `about` is Markdown (the file's section). `examples` are its made-up runs, each drawn as its thread would show it: `RecipeExample` is `{ title?, you?, reply, card?: { headline, options: string[] } }`, the thread's title, what the user said first (for a habit), the agent's reply in Markdown and its end card; `example` is the first one's `reply`, for a client from before `examples`; `file` is the `RECIPE.md` path. `RecipeRun` is `{ threadId, title, at, headline?, needsYou, seen, archived }`, the threads its schedules started in the last 30 days (and for a recipe whose feature starts its own threads, those: its file's `runsFrom` names the label they're started under), newest first, 60 at most |
+| `recipes.add` | `{ id, habit?, name? }` | For an `instant` recipe `{ recipe }`, on from now. Otherwise `{ threadId, thread }` (`thread` its `ThreadSummary`, so a client opens it at once): starts a thread in `<recipes folder>/<id>` (made if need be), on the default pool and mode, whose message points its agent at the recipe's file and has it set the recipe up with the user. The recipe is `settingUp` from now |
+| `recipes.setOn` | `{ id, on, habit?, name? }` | `{ recipe }`. Off pauses each of its schedules, stops its habit being given (and turns its experiment off); on resumes them, takes its habit as its file has it now (and turns it on). A recipe still setting up just records the choice |
+| `recipes.remove` | `{ id }` | `{ removed: true }`: deletes its schedules, stops its habit, turns its experiment off and forgets it, so it's `add` again. Its files stay |
+| `recipes.link` | `{ id, scheduleIds: string[] }` | `{ recipe }`: makes schedules the user already runs this recipe's own, as they are, so it isn't set up a second time beside them: it's added (or keeps the ones it has), `on` unless they're all paused, and their threads count as its runs. `-32602` for a schedule that isn't there or is another recipe's, an empty list, or a recipe that's a habit or an experiment's. `tb rpc` and a setup thread on Full access use it; the app doesn't yet |
 | `recipes.create` | `{ text?, fromThreadId?, editId? }` | `{ threadId, thread }`: starts a thread in the recipes folder whose agent writes a new recipe with the user (from `text`, or from what went well in `fromThreadId`), and a header picture if it can make one. A new recipe shows as `add` until it's added. With `editId` the agent changes that recipe instead, writing a built-in's changed copy into the recipes folder as the user's own |
 
 `recipes.updated` (notification, no params) says the list has changed: a

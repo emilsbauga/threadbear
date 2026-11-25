@@ -6,7 +6,7 @@ import { FakeAccounts, makeHarness, tick, tmpDir, withCodex } from '../helpers/f
 import { checkSequence, checkSummary } from '../helpers/protocol-check.ts';
 import { makePng } from '../helpers/png.ts';
 import { RpcError } from '../../src/protocol.ts';
-import { askedLine, requestLine, UNTIL_RESTART, WROTE_INSTEAD } from '../../src/runner.ts';
+import { askedLine, UNTIL_RESTART, WROTE_INSTEAD } from '../../src/runner.ts';
 import { PATIENCE_MS } from '../helpers/patience.ts';
 
 const MIN = 60_000;
@@ -765,11 +765,12 @@ test('a dated snooze or a message clears an until-restart snooze', () => {
 test('an archive says who did it, and Alex\'s verdict goes in the thread', () => {
   const h = makeHarness();
   const { thread } = create(h);
-  // ⌘E or a swipe: Alex, no verdict, no note.
+  // ⌘E or a swipe: Alex, no verdict, and a plain line saying who and when
+  // (place-notes.ts).
   const plain = h.runner.update({ threadId: thread.id, archived: true }).thread;
   assert.equal(plain.archivedBy, 'mike');
   assert.equal(plain.archiveVerdict, undefined);
-  assert.ok(!h.events(thread.id).some((e) => e.type === 'system.note' && /Archived by you/.test(e.text)));
+  assert.match(h.events(thread.id).filter((e) => e.type === 'system.note').at(-1).text, /^Archived by you on /);
   // Back, then the done card's menu: the verdict, and a note saying it.
   h.runner.update({ threadId: thread.id, archived: false });
   assert.equal(h.runner.get(thread.id).archivedBy, undefined, 'only while archived');
@@ -2640,83 +2641,6 @@ test('asked: a thread from before it learns it from its log on restart', () => {
   delete rec.asked;
   fs.writeFileSync(file, JSON.stringify(rec));
   assert.equal(h.restart().runner.get(thread.id).asked, 'Fix the tests more detail here');
-});
-
-test('request: the summary carries Alex\'s first message, and keeps it as he sends more', () => {
-  const h = makeHarness();
-  const { thread } = create(h);
-  assert.equal(thread.request, 'Fix the tests more detail here');
-  h.adapter.last.init();
-  h.adapter.last.result();
-  h.runner.send(thread.id, 'And the lint too', [], { origin: 'phone' });
-  const t = h.runner.get(thread.id);
-  assert.equal(t.asked, 'And the lint too');
-  assert.equal(t.request, 'Fix the tests more detail here');
-  assert.deepEqual(checkSummary(t), []);
-});
-
-test('request: a schedule\'s, the runner\'s or another agent\'s message isn\'t it; his first one after is', () => {
-  const h = makeHarness();
-  const { thread } = create(h, { text: 'Nightly check', origin: 'schedule', scheduleId: 'sc1', title: 'Nightly' });
-  assert.equal(thread.request, undefined);
-  h.adapter.last.init();
-  h.adapter.last.result();
-  h.runner.send(thread.id, '[Sent by the agent in the thread abc] hello');
-  assert.equal(h.runner.get(thread.id).request, undefined);
-  h.adapter.last.result();
-  h.runner.send(thread.id, 'Carry on', [], { origin: 'runner' });
-  assert.equal(h.runner.get(thread.id).request, undefined);
-  h.adapter.last.result();
-  h.runner.send(thread.id, 'Why did it fail?');
-  assert.equal(h.runner.get(thread.id).request, 'Why did it fail?');
-});
-
-test('request: one line of at most 200 characters, by the same rules as asked', () => {
-  const long = `Look at\n\nthe ${'x'.repeat(300)}`;
-  const line = requestLine({ text: long })!;
-  assert.equal(line.length, 200);
-  assert.ok(line.startsWith('Look at the x'));
-  assert.ok(!line.includes('\n'));
-  assert.equal(askedLine({ text: long })!.length, 140);
-  assert.equal(requestLine({ text: 'Carry on', origin: 'runner' }), undefined);
-  const review = { id: 'r1', title: 'Grey line', status: 'answered', options: [{ id: 'C', title: 'What you asked', path: '/c.png' }] } as never;
-  assert.equal(requestLine({ text: 'Review: Grey line (r1)\n\nPicked C. What you asked.', reviewId: 'r1', reviewResponse: { pickedId: 'C', notes: {} } }, [review]), 'Picked What you asked');
-});
-
-test('request: a thread from before it learns it from the start of its log on restart', () => {
-  const h = makeHarness();
-  const { thread } = create(h);
-  h.adapter.last.init();
-  h.adapter.last.result();
-  h.runner.send(thread.id, 'And the lint too');
-  h.adapter.last.result();
-  h.runner.flush();
-  const file = path.join(h.home, 'threads', thread.id, 'thread.json');
-  const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
-  delete rec.request;
-  fs.writeFileSync(file, JSON.stringify(rec));
-  const t = h.restart().runner.get(thread.id);
-  assert.equal(t.request, 'Fix the tests more detail here', 'his first, not his last');
-  assert.equal(t.asked, 'And the lint too');
-});
-
-test('request: one whose first message of his is past the first 300 events has none, and his next isn\'t it', () => {
-  const h = makeHarness();
-  const { thread } = create(h, { text: 'Nightly check', origin: 'schedule', scheduleId: 'sc1', title: 'Nightly' });
-  h.adapter.last.init();
-  h.adapter.last.result();
-  for (let i = 0; i < 300; i++) h.runner.note(thread.id, `note ${i}`);
-  h.runner.send(thread.id, 'Why did it fail?');
-  h.adapter.last.result();
-  h.runner.flush();
-  const file = path.join(h.home, 'threads', thread.id, 'thread.json');
-  const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
-  delete rec.request;
-  fs.writeFileSync(file, JSON.stringify(rec));
-  const h2 = h.restart();
-  assert.equal(h2.runner.get(thread.id).request, undefined);
-  h2.runner.send(thread.id, 'Try again');
-  assert.equal(h2.runner.get(thread.id).request, undefined, 'not his first');
 });
 
 // Found by the CLI session table (cli-session.ts): a setting the CLI refused

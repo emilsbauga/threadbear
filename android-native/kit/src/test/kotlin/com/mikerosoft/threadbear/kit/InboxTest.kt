@@ -110,6 +110,102 @@ class InboxTest {
         }
     }
 
+    /**
+     * The runner's wait state drawn into a heading, urgency and badge, the
+     * same cases the runner and every app run (shared/cases/wait-states.json).
+     */
+    @Test fun waitStatesMatchTheSharedCases() {
+        val file = File("../../shared/cases/wait-states.json")
+        val root = parseJson(file.readText()) as JsonObject
+        val now = java.time.Instant.parse(root.str("now")!!)
+        val cases = root.arr("cases")!!
+        assertTrue(cases.size > 20)
+        for (c in cases) {
+            val o = c as JsonObject
+            val name = o.str("name")
+            val t = o.obj("thread")!!
+            val state = WaitState.of(o.str("state"))!!
+            assertEquals(o.str("state"), state.wire, "$name: a state this build doesn't know")
+            val row = thread("x", 1).copy(
+                status = ThreadStatus.of(t.str("status") ?: "idle"),
+                needsYou = t.bool("needsYou") ?: false,
+                unread = t.bool("needsYou") ?: false,
+                needs = t.str("needs"),
+                asks = t.arr("asks")?.map { PhoneAsk("x", ticked = (it as JsonObject).bool("ticked")) },
+                pendingReviews = t.num("pendingReviews"),
+                snoozedUntil = t.str("snoozedUntil")?.let { java.time.Instant.parse(it) },
+                snoozedUntilRestart = t.bool("snoozedUntilRestart"),
+                waitingForRoom = t.obj("waitingForRoom")?.let { PhoneWaitingForRoom(it.str("until")!!) },
+                archivedAt = t.str("archivedAt")?.let { java.time.Instant.parse(it) },
+                starredAt = t.str("starredAt")?.let { java.time.Instant.parse(it) },
+                waitState = state,
+            )
+            val section = state.section(row.starredAt != null)
+            assertEquals(o.str("section"), section.name.lowercase(), name)
+            val urgency = InboxSections.urgency(row)
+            assertEquals(o.num("urgency")!!.toInt(), urgency, name)
+            assertEquals(o.bool("counted"), InboxUrgency.counts(urgency), name)
+            // And the inbox list puts it there: put-away rows come from their own lists.
+            val s = InboxSections.build(listOf(row), now)
+            val under = when {
+                s.starred.isNotEmpty() -> PhoneSection.STARRED
+                s.inbox.isNotEmpty() -> PhoneSection.INBOX
+                s.running.isNotEmpty() -> PhoneSection.RUNNING
+                s.scheduled.isNotEmpty() -> PhoneSection.HIBERNATING
+                else -> null
+            }
+            val expected = section.takeUnless { it == PhoneSection.ARCHIVED || state == WaitState.HIBERNATING && it == PhoneSection.HIBERNATING }
+            assertEquals(expected, under, name)
+            assertEquals(if (o.bool("counted") == true) 1 else 0, s.needsYouCount, name)
+        }
+    }
+
+    @Test fun anUnknownWaitStateIsDrawnAsDone() {
+        assertEquals(WaitState.DONE, WaitState.of("somethingNew"))
+        assertNull(WaitState.of(null))
+        assertEquals(WaitState.ON_THREADS, WaitState.of("onThreads"))
+    }
+
+    @Test fun waitStateOverridesTheOldRule() {
+        // Waiting on other threads arrives in the inbox list with a snooze: under Running, not skipped.
+        val waiting = thread("waiting", 1, snoozed = true).copy(waitState = WaitState.ON_THREADS)
+        // Read, but its asks are open: in the Inbox and counted (Mike, 23 Nov).
+        val asked = thread("asked", 2).copy(needs = "you", waitState = WaitState.NEEDS_YOU)
+        // The runner holds it back while sub-agents work, whatever the old rule says.
+        val job = thread("job", 3, working = "1 sub-agent").copy(needs = "you", waitState = WaitState.JOB)
+        val card = thread("card", 4, status = ThreadStatus.WAITING, approval = true).copy(waitState = WaitState.CARD)
+        val s = InboxSections.build(listOf(waiting, asked, job, card), NOW)
+        assertEquals(listOf("card", "asked"), s.inbox.map { it.threadId })
+        assertEquals(listOf("waiting", "job"), s.running.map { it.threadId })
+        assertEquals(2, s.needsYouCount)
+        assertTrue(asked.waitingOnMike)
+        assertFalse(job.waitingOnMike)
+        assertTrue(job.jobGoing)
+        assertEquals("1 sub-agent", RowStatus.doing(job))
+        assertTrue(RowStatus.wantsMike(asked))
+        assertFalse(RowStatus.wantsMike(job))
+        assertEquals(RowStatus.Kind.NEEDS_YOU, RowStatus.kind(card))
+        assertTrue(InboxSections.needsAnswer(card))
+        assertFalse(InboxSections.isAsleep(waiting, NOW))
+        assertTrue(InboxSections.isAsleep(waiting.copy(waitState = WaitState.HIBERNATING), NOW))
+    }
+
+    @Test fun changesTappedHereGuessTheState() {
+        val unread = thread("u", 1, needsYou = true).copy(waitState = WaitState.NEEDS_YOU)
+        assertEquals(WaitState.DONE, WaitGuess.seen(unread).waitState)
+        val asked = unread.copy(needs = "you")
+        assertEquals(WaitState.NEEDS_YOU, WaitGuess.seen(asked).waitState)
+        val asleep = thread("h", 1, snoozed = true).copy(waitState = WaitState.HIBERNATING)
+        // Woken or unarchived, the state goes and the old rule draws the row:
+        // a guess couldn't tell a running turn or an open card from done.
+        assertNull(WaitGuess.woken(asleep).waitState)
+        assertEquals(WaitState.HIBERNATING, WaitGuess.unarchived(asleep).waitState)
+        assertNull(WaitGuess.unarchived(asked.copy(waitState = WaitState.ARCHIVED)).waitState)
+        val runningAsleep = thread("r", 1, snoozed = true).copy(status = ThreadStatus.RUNNING, waitState = WaitState.HIBERNATING)
+        assertNull(WaitGuess.woken(runningAsleep).waitState)
+        assertNull(WaitGuess.woken(thread("old", 1, snoozed = true)).waitState)
+    }
+
     @Test fun rowStatusText() {
         assertEquals("Needs you", RowStatus.text(thread("a", 1, status = ThreadStatus.WAITING, approval = true), NOW))
         assertEquals("Working", RowStatus.text(thread("b", 1, status = ThreadStatus.RUNNING), NOW))

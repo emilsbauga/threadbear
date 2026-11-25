@@ -47,14 +47,12 @@ use crate::{
 };
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use anyhow::bail;
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use async_task::Runnable;
 use collections::FxHashMap;
 use futures::channel::oneshot;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 use image::RgbaImage;
-use image::codecs::gif::GifDecoder;
-use image::{AnimationDecoder as _, DynamicImage, Frame};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use scheduler::Instant;
 pub use scheduler::RunnableMeta;
@@ -65,7 +63,6 @@ use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::hash::{Hash, Hasher};
-use std::io::Cursor;
 use std::ops;
 use std::time::Duration;
 use std::{
@@ -3360,33 +3357,6 @@ pub struct Image {
     pub id: u64,
 }
 
-pub(crate) fn decode_static_image(
-    bytes: &[u8],
-    format: image::ImageFormat,
-) -> Result<SmallVec<[Frame; 1]>> {
-    let decoder = image::ImageReader::with_format(Cursor::new(bytes), format)
-        .into_decoder()
-        .context("creating image decoder")?;
-    decode_static_image_from_decoder(decoder)
-}
-
-pub(crate) fn decode_static_image_from_decoder(
-    mut decoder: impl image::ImageDecoder,
-) -> Result<SmallVec<[Frame; 1]>> {
-    let orientation = decoder
-        .orientation()
-        .context("reading decoder's orientation")?;
-    let mut image = DynamicImage::from_decoder(decoder).context("decoding image")?;
-    image.apply_orientation(orientation);
-
-    let mut data = image.into_rgba8();
-    for pixel in data.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-
-    Ok(SmallVec::from_elem(Frame::new(data), 1))
-}
-
 impl Hash for Image {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write_u64(self.id);
@@ -3447,49 +3417,20 @@ impl Image {
         ImageSource::Image(self.clone()).is_asset_cached(cx)
     }
 
-    /// Convert the clipboard image to an `ImageData` object.
+    /// Convert the clipboard image to an `ImageData` object. A raster
+    /// picture is decoded within `image_budget`'s limits (Threadbear's
+    /// patch, Daybreak 170): whatever it claims to be, its bytes decide.
     pub fn to_image_data(&self, svg_renderer: SvgRenderer) -> Result<Arc<RenderImage>> {
-        let frames = match self.format {
-            ImageFormat::Gif => {
-                let decoder = GifDecoder::new(Cursor::new(&self.bytes))?;
-                let mut frames = SmallVec::new();
-
-                for frame in decoder.into_frames() {
-                    match frame {
-                        Ok(mut frame) => {
-                            // Convert from RGBA to BGRA.
-                            for pixel in frame.buffer_mut().chunks_exact_mut(4) {
-                                pixel.swap(0, 2);
-                            }
-                            frames.push(frame);
-                        }
-                        Err(err) => {
-                            log::debug!("Skipping GIF frame due to decode error: {err}");
-                        }
-                    }
-                }
-
-                if frames.is_empty() {
-                    anyhow::bail!("GIF could not be decoded: all frames failed");
-                }
-
-                frames
-            }
-            ImageFormat::Png => decode_static_image(&self.bytes, image::ImageFormat::Png)?,
-            ImageFormat::Jpeg => decode_static_image(&self.bytes, image::ImageFormat::Jpeg)?,
-            ImageFormat::Webp => decode_static_image(&self.bytes, image::ImageFormat::WebP)?,
-            ImageFormat::Bmp => decode_static_image(&self.bytes, image::ImageFormat::Bmp)?,
-            ImageFormat::Tiff => decode_static_image(&self.bytes, image::ImageFormat::Tiff)?,
-            ImageFormat::Ico => decode_static_image(&self.bytes, image::ImageFormat::Ico)?,
-            ImageFormat::Svg => {
-                return svg_renderer
-                    .render_single_frame(&self.bytes, 1.0)
-                    .map_err(Into::into);
-            }
-            ImageFormat::Pnm => decode_static_image(&self.bytes, image::ImageFormat::Pnm)?,
-        };
-
-        Ok(Arc::new(RenderImage::new(frames)))
+        if self.format == ImageFormat::Svg {
+            return svg_renderer
+                .render_single_frame(&self.bytes, 1.0)
+                .map_err(Into::into);
+        }
+        let decoded = crate::image_budget::decode(
+            &self.bytes,
+            &crate::image_budget::DecodeLimits::DEFAULT,
+        )?;
+        Ok(Arc::new(RenderImage::new(decoded.frames)))
     }
 
     /// Get the format of the clipboard image

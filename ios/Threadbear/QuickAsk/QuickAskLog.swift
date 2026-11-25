@@ -3,10 +3,12 @@ import OSLog
 
 /// Quick ask's log: each line goes to the system log (Console.app, `log stream --predicate
 /// 'subsystem == "com.mikecann.threadbear"'`) and is appended straight away to
-/// Library/Caches/quickask.log, so a hang on a phone can be read off it afterwards with
+/// Library/Caches/quickask-events.log, so a hang on a phone can be read off it afterwards with
 /// `devicectl device copy from`, even if the app's killed. (Reading the system log back from the
-/// app only returns notices and errors, and `log collect` from a phone needs root.) The file stays
-/// on the phone and is cut back once it's large. Never log the archive server's token.
+/// app only returns notices and errors, and `log collect` from a phone needs root.) A line is
+/// events, counts, timings and error categories only: `QuickAskLogMessage` (QuickAskCore) leaves
+/// out anything not marked `.public`, so never mark what was said or spoken, a thread id, a token
+/// or an error's description public (`QuickAskLogTests` holds every `.public` to a list).
 nonisolated enum Log {
     static let app = QuickAskLogger(category: "quickask")
     static let audio = QuickAskLogger(category: "quickask-audio")
@@ -16,37 +18,21 @@ nonisolated enum Log {
 }
 
 nonisolated struct QuickAskLogger: Sendable {
-    let category: String
-    private var logger: Logger { Logger(subsystem: "com.mikecann.threadbear", category: category) }
+    let category: StaticString
+    private var logger: Logger { Logger(subsystem: "com.mikecann.threadbear", category: "\(category)") }
 
-    init(category: String) { self.category = category }
+    init(category: StaticString) { self.category = category }
 
+    // `message.text` is already redacted, so public here leaks nothing private.
     func info(_ message: QuickAskLogMessage) {
         logger.info("\(message.text, privacy: .public)")
-        QuickAskLogFile.append("\(category) \(message.text)")
+        QuickAskLogFile.append(category: category, error: false, message)
     }
 
     func error(_ message: QuickAskLogMessage) {
         logger.error("\(message.text, privacy: .public)")
-        QuickAskLogFile.append("\(category) ERROR \(message.text)")
+        QuickAskLogFile.append(category: category, error: true, message)
     }
-}
-
-/// A log line written the way the call sites were for `os.Logger` (`\(x, privacy: .public)`), so
-/// they didn't need changing. Everything's kept: the file never leaves the phone.
-nonisolated struct QuickAskLogMessage: ExpressibleByStringInterpolation, Sendable {
-    enum Privacy { case `public`, `private` }
-
-    struct Interpolation: StringInterpolationProtocol {
-        var text = ""
-        init(literalCapacity: Int, interpolationCount: Int) {}
-        mutating func appendLiteral(_ literal: String) { text += literal }
-        mutating func appendInterpolation<T>(_ value: T, privacy: Privacy = .private) { text += "\(value)" }
-    }
-
-    let text: String
-    init(stringLiteral value: String) { text = value }
-    init(stringInterpolation: Interpolation) { text = stringInterpolation.text }
 }
 
 /// Wall-clock seconds, the one clock every timing uses (so it lines up with the process start time).
@@ -76,35 +62,25 @@ nonisolated final class OnceFlag: @unchecked Sendable {
     }
 }
 
-/// Library/Caches/quickask.log: every quick ask log line, time-stamped, appended as it happens.
+/// Library/Caches/quickask-events.log: every quick ask log line, time-stamped, appended as it
+/// happens, on a queue of its own.
 nonisolated enum QuickAskLogFile {
     private static let queue = DispatchQueue(label: "com.mikecann.threadbear.quickask.logfile", qos: .utility)
-    private static let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-        .appendingPathComponent("quickask.log")
-    private static let limit = 1_000_000
+    private static let store: QuickAskLogStore? = {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let store = QuickAskLogStore(directory: caches)
+        store.removeOldLog()
+        return store
+    }()
 
-    static func append(_ line: String) {
+    /// Deletes the old, unredacted quickask.log. Called at launch, so it goes even if quick ask
+    /// is never used again.
+    static func removeOldLog() {
+        queue.async { _ = store }
+    }
+
+    static func append(category: StaticString, error: Bool, _ message: QuickAskLogMessage) {
         let stamp = Date()
-        queue.async {
-            guard let url else { return }
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withFullDate, .withTime, .withFractionalSeconds, .withColonSeparatorInTime, .withDashSeparatorInDate]
-            let data = Data("\(formatter.string(from: stamp)) \(line)\n".utf8)
-            if let handle = try? FileHandle(forWritingTo: url) {
-                defer { try? handle.close() }
-                let size = (try? handle.seekToEnd()) ?? 0
-                if size > UInt64(limit) {
-                    // Keep the newest half.
-                    try? handle.close()
-                    if let old = try? Data(contentsOf: url) {
-                        try? (old.suffix(limit / 2) + data).write(to: url)
-                    }
-                    return
-                }
-                try? handle.write(contentsOf: data)
-            } else {
-                try? data.write(to: url)
-            }
-        }
+        queue.async { store?.append(category: category, error: error, message, at: stamp) }
     }
 }

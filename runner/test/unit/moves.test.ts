@@ -290,6 +290,86 @@ test('a call waiting out an update gives up once its move ends, and leaves a new
   assert.deepEqual([s.seen.at(-1)?.moveId, s.seen.at(-1)?.state], [b, 'ready'], 'the thread still shows the new move');
 });
 
+// Review, 23 Nov 2026: T's claim going through with its reply lost (a POST
+// timeout, a reset) used to be taken as the move failing. The backend
+// refuses to fail a claimed move, and T took the move as ended, so it
+// dropped the claimed row and never adopted the thread: it showed moving,
+// on neither runner, until T restarted. A claim that truly didn't go
+// through is asked again, without placing the thread twice.
+for (const committed of [true, false]) {
+  test(`a claim whose reply is lost ${committed ? 'after it went through' : 'before it went through'} still ends with the thread on T`, async () => {
+    const w = await world();
+    const id = committed ? 'T20' : 'T21';
+    await call(w.b.ctx, sync.upsertThreads, { key: MINI_KEY, threads: [{ threadId: id, runnerId: MINI, ...THREAD_BASICS, title: 'T', view: 'inbox', needsYou: false }] });
+    const s = source(id);
+    const t = target({ cwd: '/x', accountId: 'a', leftBehind: [] });
+    const place = t.host.place!;
+    let places = 0;
+    t.host.place = async (row, entries) => (places++, place(row, entries));
+    const timers: { fn: () => void; ms: number }[] = [];
+    const setTimer = (fn: () => void, ms: number) => (timers.push({ fn, ms }), { cancel() {} });
+    const common = { runnerName: (n: string) => names[n] ?? n };
+    let claims = 0;
+    const tb = w.backendFor(OWNER, LAPTOP);
+    const lossy: MovesBackend = {
+      ...tb,
+      async call(fn, args) {
+        if (fn === 'moveClaim' && ++claims === 1) {
+          if (committed) await tb.call(fn, args);
+          throw new Error('fetch failed: the request timed out');
+        }
+        return tb.call(fn, args);
+      },
+    };
+    new Moves({ self: () => MINI, backend: () => w.backendFor(MINI_KEY, MINI), host: { ...common, ...s.host } as MovesHost, log, setTimer }).start();
+    new Moves({ self: () => LAPTOP, backend: () => lossy, host: { ...common, ...t.host } as MovesHost, log, setTimer }).start();
+    await startBound(w, id, s, t);
+    for (let i = 0; i < 4 && moveRow(w).state !== 'done' && moveRow(w).state !== 'failed'; i++) {
+      await until(() => timers.some((x) => x.ms === 20_000) || ['done', 'failed'].includes(moveRow(w).state), 'the claim to try again, or the end');
+      const at = timers.findIndex((x) => x.ms === 20_000);
+      if (at >= 0) timers.splice(at, 1)[0]!.fn();
+      await w.refresh();
+    }
+    await until(() => moveRow(w).state === 'done', 'done');
+    assert.equal(t.adopted, 1, 'T runs the thread');
+    assert.equal(places, 1, 'placed once');
+    assert.equal(t.discarded, 0);
+    assert.equal(w.b.rows('threads').find((r) => r.threadId === id)!.runnerId, LAPTOP);
+    await until(() => s.putAway === 1, "Mac mini's copy put away");
+  });
+}
+
+// Grok's review, 23 Nov 2026: T restarting while it asks for the claim
+// again placed the thread a second time, and a worktree that came with git
+// work blocked that. A placing that finished is on disk (movePlaced): a
+// restarted T only asks for the claim.
+test('a target that restarts after placing the thread only asks for the claim', async () => {
+  const w = await world();
+  await call(w.b.ctx, sync.upsertThreads, { key: MINI_KEY, threads: [{ threadId: 'T22', runnerId: MINI, ...THREAD_BASICS, title: 'T', view: 'inbox', needsYou: false }] });
+  const s = source('T22');
+  const t = target({ cwd: '/x', accountId: 'a', leftBehind: [] });
+  const place = t.host.place!;
+  let places = 0;
+  t.host.place = async (row, entries) => (places++, place(row, entries));
+  t.host.placed = () => places > 0;
+  const timers: { fn: () => void; ms: number }[] = [];
+  const setTimer = (fn: () => void, ms: number) => (timers.push({ fn, ms }), { cancel() {} });
+  const common = { runnerName: (n: string) => names[n] ?? n };
+  const tb = w.backendFor(OWNER, LAPTOP);
+  const down: MovesBackend = { ...tb, call: async (fn, args) => (fn === 'moveClaim' ? Promise.reject(new Error('fetch failed')) : tb.call(fn, args)) };
+  new Moves({ self: () => MINI, backend: () => w.backendFor(MINI_KEY, MINI), host: { ...common, ...s.host } as MovesHost, log, setTimer }).start();
+  const before = new Moves({ self: () => LAPTOP, backend: () => down, host: { ...common, ...t.host } as MovesHost, log, setTimer });
+  before.start();
+  await startBound(w, 'T22', s, t);
+  await until(() => timers.some((x) => x.ms === 20_000), 'the claim waiting to be asked again');
+  before.close();
+  assert.equal(moveRow(w).state, 'unpacking');
+  new Moves({ self: () => LAPTOP, backend: () => tb, host: { ...common, ...t.host } as MovesHost, log, setTimer }).start();
+  await until(() => moveRow(w).state === 'done', 'done');
+  assert.equal(places, 1, 'placed once, before the restart');
+  assert.equal(t.adopted, 1);
+});
+
 test("a move the new runner can't take fails, and the thread stays where it was", async () => {
   const w = await world();
   await call(w.b.ctx, sync.upsertThreads, { key: MINI_KEY, threads: [{ threadId: 'T3', runnerId: MINI, ...THREAD_BASICS, title: 'T', view: 'inbox', needsYou: false }] });

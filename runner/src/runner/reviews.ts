@@ -4,9 +4,10 @@
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import { fitReview, keepPictureMarkers, reviewInput, reviewDraft, reviewReply, sameDraft, type ReviewInput } from '../reviews.ts';
+import { fitReview, keepPictureMarkers, reviewImages, reviewInput, reviewDraft, reviewReply, sameDraft, type ReviewInput } from '../reviews.ts';
+import { experimentOn } from '../experiments.ts';
 import type { ImageRef } from '../protocol.ts';
-import type { DesignReview, ReviewDraft } from '../protocol.ts';
+import type { DesignReview, ReviewDraft, ReviewUserMark } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
 import type { QueuedSend } from '../store.ts';
 import { parkRecord } from '../place.ts';
@@ -17,24 +18,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { SendOptions, ThreadState } from '../runner.ts';
-import { fromMike } from '../runner.ts';
+import { fromMike } from './messages.ts';
 
 export const reviewsPart = {
   createReview(this: Runner, threadId: string, raw: ReviewInput): { review: DesignReview } {
     const st = this.mustGet(threadId);
     this.checkAccepting();
-    const input = reviewInput(raw, st.rec.cwd);
+    // The agent's marks on its pictures only with the reviewCanvas experiment on.
+    const input = reviewInput(raw, st.rec.cwd, {marks: experimentOn(this.cfg.home, 'reviewCanvas')});
     const id = crypto.randomUUID();
     const dir = path.join(this.store.mediaDir(threadId), 'reviews', id);
     const now = this.isoNow();
     try {
       const options = input.options.map(({shots: sources, ...option}) => {
         const shots = sources.map(s => ({...(s.title ? {title: s.title} : {}),
-          ...(s.kind === 'video' || s.kind === 'page' ? copyReviewMedia(dir, s.path, s.kind) : {image: copyImageInto(dir, s.path)})}));
+          ...(s.kind && s.kind !== 'image' ? copyReviewMedia(dir, s.path, s.kind) : {image: copyImageInto(dir, s.path)}),
+          ...(s.marks?.length ? {marks: s.marks} : {})}));
         // image stays the first shot for clients that show one per option
-        // (a video's or page's still); shots only when there's more to say
-        // than that one picture.
-        return {...option, image: shots[0].image, ...(shots.length > 1 || shots[0].title || 'media' in shots[0] ? {shots} : {})};
+        // (a video's, sound's or page's still); shots only when there's more to say
+        // than that one picture, marks included, so marks always live on a shot.
+        return {...option, image: shots[0].image, ...(shots.length > 1 || shots[0].title || 'media' in shots[0] || 'marks' in shots[0] ? {shots} : {})};
       });
       const review: DesignReview = { id, title: input.title, ...(input.note ? {note: input.note} : {}), ...(input.recommended ? {recommended: input.recommended} : {}), options,
         status: 'pending', revision: 0, createdAt: now, updatedAt: now, draft: {notes: {}} };
@@ -93,7 +96,7 @@ export const reviewsPart = {
     this.checkReviewRevision(review, revision);
     const turnId = crypto.randomUUID();
     const next: DesignReview = {...review, draft, response: draft, status: 'answered', revision: review.revision + 1, updatedAt: this.isoNow(), replyTurnId: turnId};
-    const message: QueuedSend = {turnId, text: reviewReply(review, draft), images: draft.images ?? [], reviewId, reviewResponse: draft};
+    const message: QueuedSend = {turnId, text: reviewReply(review, draft), images: reviewImages(draft), reviewId, reviewResponse: draft};
     // The answer and outbox live in one atomic thread.json write. Publish
     // the card only after it succeeds, then start the queued reply.
     this.persistReview(st, next, [...st.rec.queue, message], true);
@@ -132,8 +135,9 @@ export const reviewsPart = {
   // restart. Only what media.import put in inbox/, or ones already kept here:
   // a draft's path is never a way to read some other file. Named by their
   // contents, so saving the same picture twice keeps one copy.
+  // Each mark's cut-out (marks[].image) is kept the same way.
   keepReplyImages(this: Runner, st: ThreadState, review: DesignReview, draft: ReviewDraft): ReviewDraft {
-    if (!draft.images?.length) return draft;
+    if (!draft.images?.length && !draft.marks?.some(m => m.image)) return draft;
     const dir = path.join(this.store.mediaDir(st.rec.id), 'reviews', review.id, 'reply');
     const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
     const under = (file: string, folder: string) => file.startsWith(folder + path.sep);
@@ -142,7 +146,7 @@ export const reviewsPart = {
     fs.mkdirSync(dir, {recursive: true});
     const inbox = real(paths.inbox(this.cfg.home));
     const kept = real(dir);
-    const images = draft.images.map((img): ImageRef => {
+    const keep = (img: ImageRef): ImageRef => {
       const name = path.basename(img.path);
       let file: string;
       try {
@@ -165,8 +169,10 @@ export const reviewsPart = {
         fs.renameSync(temp, target);
       }
       return imageRefFor(target, info.mediaType);
-    });
-    return {...draft, images};
+    };
+    return {...draft,
+      ...(draft.images?.length ? {images: draft.images.map(keep)} : {}),
+      ...(draft.marks?.length ? {marks: draft.marks.map(m => (m.image ? {...m, image: keep(m.image)} : m))} : {})};
   },
 
   // Whether a reply picture is one keepReplyImages made for this review:
@@ -186,9 +192,10 @@ export const reviewsPart = {
   },
 
   // The review with only its own reply pictures (ownReplyImage).
+  // A mark whose cut-out isn't one of them stays, without it.
   ownReplyImages(this: Runner, st: ThreadState, review: DesignReview): DesignReview {
-    const fit = (draft: ReviewDraft | undefined): ReviewDraft | undefined => {
-      if (!draft?.images) return draft;
+    const fitImages = (draft: ReviewDraft): ReviewDraft => {
+      if (!draft.images) return draft;
       const all: unknown[] = Array.isArray(draft.images) ? draft.images : [];
       const keep = all.map(img => this.ownReplyImage(st, review.id, img as ImageRef));
       if (Array.isArray(draft.images) && keep.every(Boolean)) return draft;
@@ -198,9 +205,28 @@ export const reviewsPart = {
       const reply = typeof rest.reply === 'string' ? {reply: keepPictureMarkers(rest.reply, keep)} : {};
       return images.length ? {...rest, ...reply, images} : {...rest, ...reply};
     };
+    const fit = (draft: ReviewDraft | undefined): ReviewDraft | undefined => {
+      if (!draft) return draft;
+      const next = fitImages(draft);
+      const marks = this.ownMarkImages(st, review.id, next.marks);
+      return marks === next.marks ? next : {...next, marks};
+    };
     const draft = fit(review.draft)!;
     const response = fit(review.response);
     return draft === review.draft && response === review.response ? review : {...review, draft, ...(response ? {response} : {})};
+  },
+
+  // Marks with only cut-outs that are this review's own (ownReplyImage); the
+  // same list when nothing changed.
+  ownMarkImages(this: Runner, st: ThreadState, reviewId: string, marks: unknown): ReviewUserMark[] | undefined {
+    if (!Array.isArray(marks)) return marks as ReviewUserMark[] | undefined;
+    const bad = (m: unknown) => Boolean(m && typeof m === 'object' && 'image' in m && !this.ownReplyImage(st, reviewId, (m as ReviewUserMark).image as ImageRef));
+    if (!marks.some(bad)) return marks as ReviewUserMark[];
+    return marks.map(m => {
+      if (!bad(m)) return m as ReviewUserMark;
+      const {image: _, ...rest} = m as ReviewUserMark;
+      return rest;
+    });
   },
 
   mustReview(this: Runner, st: ThreadState, id: string): DesignReview {
@@ -258,6 +284,10 @@ export const reviewsPart = {
         const [kept, keptMask] = own(reviewResponse.images);
         reviewResponse = {...reviewResponse, images: kept, ...(typeof reviewResponse.reply === 'string' ? {reply: keepPictureMarkers(reviewResponse.reply, keptMask)} : {})};
       }
+      if (reviewResponse && typeof reviewResponse === 'object' && 'marks' in reviewResponse) {
+        const marks = this.ownMarkImages(st, q.reviewId, reviewResponse.marks);
+        if (marks !== reviewResponse.marks) reviewResponse = {...reviewResponse, marks};
+      }
       return {...q, text, images, ...(reviewResponse ? {reviewResponse} : {})};
     });
     const log = this.store.log(st.rec.id);
@@ -286,7 +316,7 @@ export const reviewsPart = {
     st.rec.queue = st.rec.queue.filter(q => !q.reviewId || !sent.has(q.reviewId));
     for (const [id, review] of reviews) {
       if (review.status === 'answered' && review.replyTurnId && review.response && !sent.has(id) && !st.rec.queue.some(q => q.reviewId === id)) {
-        st.rec.queue.push({turnId: review.replyTurnId, text: reviewReply(review, review.response), images: review.response.images ?? [], reviewId: id, reviewResponse: review.response});
+        st.rec.queue.push({turnId: review.replyTurnId, text: reviewReply(review, review.response), images: reviewImages(review.response), reviewId: id, reviewResponse: review.response});
       }
       if (latest.get(id)?.revision !== review.revision) this.emit(st, {type: 'review.updated', review});
     }
@@ -298,8 +328,12 @@ export type ReviewsPart = RunnerPart<typeof reviewsPart>;
 
 // A client from before reply pictures (the frozen Swift app) sends a draft
 // without `images`: the pictures already saved stay, rather than going with
-// their [Picture N] still in the words. `images: []` takes them away.
+// their [Picture N] still in the words. `images: []` takes them away. The
+// same for marks, from a client that doesn't draw them (the phone, or the
+// window with the reviewCanvas experiment off).
 function withSavedImages(review: DesignReview, raw: ReviewDraft): ReviewDraft {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || 'images' in raw || !review.draft.images?.length) return raw;
-  return {...raw, images: review.draft.images};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const images = !('images' in raw) && review.draft.images?.length ? {images: review.draft.images} : {};
+  const marks = !('marks' in raw) && review.draft.marks?.length ? {marks: review.draft.marks} : {};
+  return 'images' in images || 'marks' in marks ? {...raw, ...images, ...marks} : raw;
 }

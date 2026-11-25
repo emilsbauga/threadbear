@@ -304,6 +304,36 @@ impl Threadbear {
         )
     }
 
+    /// The pane of the thread in a panel of its own whose box (or a card's
+    /// Something else box) has the focus: what a menu command or its key
+    /// acts on in place of the main panel's thread.
+    pub(crate) fn focused_panel_pane(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<Entity<ThreadPane>> {
+        self.thread_panels
+            .panes()
+            .find(|pane| {
+                pane.read(cx)
+                    .composer
+                    .read(cx)
+                    .native_paste_target(window, cx)
+                    .is_some()
+            })
+            .cloned()
+    }
+
+    /// The thread a menu command (Archive, Stop, Hibernate, Copy
+    /// Transcript) acts on: one in a panel of its own while its box has the
+    /// focus, else the main panel's.
+    pub(crate) fn command_thread(&self, window: &Window, cx: &App) -> Option<String> {
+        match self.focused_panel_pane(window, cx) {
+            Some(pane) => Some(pane.read(cx).summary.id.clone()),
+            None => self.selected.clone(),
+        }
+    }
+
     /// What a thread's own panel shows (`PinnedThreadView`): its sign-in
     /// line and its reviews waiting over its transcript and box, as in the
     /// main panel.
@@ -435,7 +465,7 @@ impl Threadbear {
             .thread_panels
             .panes
             .iter()
-            .filter(|(id, _)| self.dock.read(cx).controller.is_showing(&thread_panel(id)))
+            .filter(|(id, _)| self.dock.read(cx).is_showing(&thread_panel(id)))
             .map(|(_, p)| p.pane.clone())
             .collect();
         for pane in showing {
@@ -494,7 +524,7 @@ impl Threadbear {
             }
         }
         for (id, panel) in &self.thread_panels.panes {
-            let behind = !self.dock.read(cx).controller.is_showing(&thread_panel(id));
+            let behind = !self.dock.read(cx).is_showing(&thread_panel(id));
             panel.pane.update(cx, |p, _| p.behind = behind);
         }
         self.mark_thread_panels_seen(cx);
@@ -563,10 +593,14 @@ impl Threadbear {
             .filter_map(|panel| {
                 let id = pinned_thread(panel)?;
                 let pane = self.thread_panels.panes.get(id);
+                let thread = self.threads.get(id);
                 Some(serde_json::json!({
                     "id": id,
+                    // Its settings as its box's chips show them.
+                    "mode": thread.map(|t| if t.permission_mode.is_empty() { "full" } else { t.permission_mode.as_str() }),
+                    "archived": thread.is_some_and(|t| t.is_archived()),
                     "title": self.thread_panel_title(panel),
-                    "showing": self.dock.read(cx).controller.is_showing(panel),
+                    "showing": self.dock.read(cx).is_showing(panel),
                     "transcript": pane.map(|p| p.pane.read(cx).dump(cx)),
                 }))
             })

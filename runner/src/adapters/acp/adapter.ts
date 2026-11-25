@@ -25,7 +25,7 @@ import { formContent, formQuestions, type FormSchema } from '../elicitation.ts';
 import type { AdapterOutput, AgentAdapter, AgentSession, QuestionAnswer, SessionSink, StartSessionOptions, ToolApprovalAnswer, TurnResult, UserInput } from '../types.ts';
 import { SessionNotFoundError } from '../types.ts';
 import type { AcpAgent } from './agents.ts';
-import { AcpExitedError, AcpProcess, AcpRpcError, AUTH_REQUIRED, type AcpTimings, type InitializeResult, type RequestId } from './connection.ts';
+import { AcpExitedError, AcpProcess, AcpRpcError, AUTH_REQUIRED, failureNote, genericRpcMessage, laterFailure, outOfUsage, type AcpTimings, type InitializeResult, type RequestId } from './connection.ts';
 import { AcpMcpServer } from './mcp-http.ts';
 import { AcpNormalizer, absolutePath, isPlainEdit, isPlainObject, requestPaths, writesFiles, type AcpToolCall } from './normalize.ts';
 
@@ -57,6 +57,10 @@ export type AcpAdapterDeps = {
   // (Grok's hook: grok-guard.ts).
   dataDir?: string;
 };
+
+// How often a login whose turns don't report its limits is read (an agent
+// whose AcpAgent.limits is a usage command).
+export const LIMITS_POLL_MS = 10 * 60_000;
 
 // "Always allow" for a file edit: the thread's edits, while they aren't to
 // a file that runs as code. A command's rule is the exact command in that
@@ -117,18 +121,43 @@ export function withoutHookNote(call: AcpToolCall, meta: unknown): AcpToolCall {
 
 function notFound(e: unknown): boolean {
   if (e instanceof AcpRpcError && e.code === -32002) return true;
-  return /not found|no such session|does not exist/i.test(e instanceof Error ? e.message : String(e));
+  // The agent's own message only: a reason from an error's data (a file
+  // "not found" behind an "Internal error") isn't the session gone.
+  const said = e instanceof AcpRpcError ? (e.rpcMessage ?? '') : e instanceof Error ? e.message : String(e);
+  return /not found|no such session|does not exist/i.test(said);
 }
+
+type Limits = Extract<AdapterOutput, { kind: 'limits' }>;
+
+// How long a read of a login's limits on a thread's own process may take.
+export const TURN_LIMITS_MS = 5_000;
+// A completed turn reads the login's limits at most this often per process;
+// one that ran out of usage always does.
+export const LIMITS_EVERY_MS = 5 * 60_000;
 
 export class AcpAdapter implements AgentAdapter {
   readonly provider;
   readonly settingsApplyNextTurn = true;
   readonly wakesAfterTasks = false;
+  // Only for an agent that can say (AcpAgent.limits): limit-recheck.ts
+  // takes any adapter with one as able to read. null when the agent said
+  // nothing that reads (or didn't list its usage command): never a reason
+  // to show an error.
+  readonly readLimits?: (account: Account) => Promise<Limits | null>;
+  // An agent whose turns carry no reading (one read by a usage command,
+  // Gemini): limit-recheck.ts reads it this often, and soon after its turns.
+  readonly limitsPollMs?: number;
   private deps: AcpAdapterDeps;
 
   constructor(deps: AcpAdapterDeps) {
     this.deps = deps;
     this.provider = deps.agent.provider;
+    const limits = deps.agent.limits;
+    if (limits && 'method' in limits) this.readLimits = (account) => this.limitsNow(account, limits);
+    else if (limits) {
+      this.readLimits = (account) => this.usageNow(account, limits);
+      this.limitsPollMs = LIMITS_POLL_MS;
+    }
   }
 
   private env(account: Account, binary: string, threadEnv?: Record<string, string>): Record<string, string | undefined> {
@@ -159,30 +188,127 @@ export class AcpAdapter implements AgentAdapter {
   // folder of temp means it's in nobody's way, and it's closed where the
   // agent can.
   async models(account: Account): Promise<ModelChoice[]> {
+    return this.shortLived(account, `models:${account.id}`, async (_p, r) => modelChoices(r?.configOptions, r?.models));
+  }
+
+  // A login's limits from the agent's own request (Grok's _x.ai/billing):
+  // initialize, then the request. No session is opened, so nothing shows in
+  // the agent's own list.
+  private async limitsNow(account: Account, limits: Extract<NonNullable<AcpAgent['limits']>, { method: string }>): Promise<Limits | null> {
+    return this.shortLived(account, `limits:${account.id}`, async (p) => limits.read(await p.request(limits.method, {})) ?? null, { session: false, noTools: true, deadlineMs: LIMITS_DEADLINE_MS });
+  }
+
+  // A login's limits from the agent's own usage command (Antigravity's
+  // /usage), which it answers itself in a session with no model turn.
+  private async usageNow(account: Account, limits: Extract<NonNullable<AcpAgent['limits']>, { command: string }>): Promise<Limits | null> {
+    return this.shortLived(
+      account,
+      `usage:${account.id}`,
+      async (p, r, commands) => {
+        if (!r?.sessionId) return null;
+        // Only a command the session lists: anything else would go to the
+        // model as a prompt, and cost a turn.
+        const listed = await commands(USAGE_COMMANDS_WAIT_MS);
+        if (!listed.includes(limits.command)) {
+          this.deps.log.info("the agent didn't list its usage command, so its plan wasn't read", { provider: this.provider });
+          return null;
+        }
+        let text = '';
+        const sessionId = r.sessionId;
+        p.onNotification = (method, params) => {
+          if (method !== 'session/update' || !isPlainObject(params) || params.sessionId !== sessionId || !isPlainObject(params.update)) return;
+          const u = params.update;
+          if (u.sessionUpdate === 'agent_message_chunk' && isPlainObject(u.content) && u.content.type === 'text' && typeof u.content.text === 'string' && text.length < USAGE_TEXT_MAX) text += u.content.text;
+        };
+        await p.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `/${limits.command}` }] }, USAGE_PROMPT_MS);
+        // Not even the plan's name without a reading: any reading, a
+        // plan-only one too, stamps the login as read now, which would hide
+        // how old its windows are and drop any whose reset has passed
+        // (usage.ts compute).
+        const read = limits.read(text, r);
+        if (!read && text) this.deps.log.info("the agent's usage answer didn't read", { provider: this.provider, chars: text.length });
+        return read ?? null;
+      },
+      { deadlineMs: LIMITS_DEADLINE_MS },
+    );
+  }
+
+  // A process of its own for a small job, in an empty temp folder: closed,
+  // with its folder, however the job ends. With a session (unless session
+  // is false), `commands` waits (up to ms) for the session's
+  // available_commands_update, which comes just after session/new answers,
+  // and says the names it listed. deadlineMs: the whole job, start to
+  // close, after which its process is killed (which fails whatever it's
+  // waiting on), so a hung agent never outlives the read that started it.
+  private async shortLived<T>(
+    account: Account,
+    label: string,
+    job: (p: AcpProcess, session: SessionResult | undefined, commands: (ms: number) => Promise<string[]>) => Promise<T>,
+    o: { session?: boolean; noTools?: boolean; deadlineMs?: number } = {},
+  ): Promise<T> {
     const { deps } = this;
     const bin = this.binary();
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'threadbear-acp-'));
     let p: AcpProcess;
     try {
-      p = new AcpProcess({ binary: bin, args: deps.agent.args({ dataDir: deps.dataDir, binary: bin }), env: this.env(account, bin), cwd, registry: deps.registry, log: deps.log, label: `models:${account.id}`, timings: deps.timings });
+      p = new AcpProcess({ binary: bin, args: deps.agent.args({ dataDir: deps.dataDir, binary: bin, ...(o.noTools ? { noTools: true } : {}) }), env: this.env(account, bin), cwd, registry: deps.registry, log: deps.log, label, timings: deps.timings });
     } catch (e) {
-      fs.rmSync(cwd, { recursive: true, force: true });
+      removeQuietly(cwd);
       throw e;
     }
+    let listed: string[] | undefined;
+    let wake: (() => void) | undefined;
+    p.onNotification = (method, params) => {
+      if (method !== 'session/update' || !isPlainObject(params) || !isPlainObject(params.update) || params.update.sessionUpdate !== 'available_commands_update') return;
+      const cmds = params.update.availableCommands;
+      listed = Array.isArray(cmds) ? cmds.flatMap((c) => (isPlainObject(c) && typeof c.name === 'string' ? [c.name] : [])) : [];
+      wake?.();
+    };
+    const commands = (ms: number): Promise<string[]> =>
+      listed
+        ? Promise.resolve(listed)
+        : new Promise((resolve) => {
+            const t = setTimeout(() => resolve(listed ?? []), ms);
+            t.unref();
+            wake = () => (clearTimeout(t), resolve(listed ?? []));
+          });
+    let r: SessionResult | undefined;
+    let init: InitializeResult | undefined;
+    const deadline = o.deadlineMs ? setTimeout(() => p.kill(), o.deadlineMs) : undefined;
+    deadline?.unref();
     try {
-      const init = await p.start();
+      init = await p.start();
       if (!deps.agent.identifies(init)) throw new Error(`The program found for ${providerName(this.provider)} isn't it.`);
-      const r = await p.request<SessionResult>('session/new', { cwd, mcpServers: [] });
-      if (r?.sessionId && init.agentCapabilities?.sessionCapabilities?.close !== undefined) await p.request('session/close', { sessionId: r.sessionId }).catch(() => undefined);
-      return modelChoices(r?.configOptions, r?.models);
+      if (o.session !== false) r = await p.request<SessionResult>('session/new', { cwd, mcpServers: [] });
+      return await job(p, r, commands);
     } finally {
+      if (r?.sessionId && p.alive && init?.agentCapabilities?.sessionCapabilities?.close !== undefined) await p.request('session/close', { sessionId: r.sessionId }, CLOSE_SESSION_MS).catch(() => undefined);
+      clearTimeout(deadline);
       await p.close().catch(() => undefined);
       removeQuietly(cwd);
     }
   }
 }
 
+// How long a usage command's read waits for the session to list its
+// commands, and for the command's answer (Antigravity 1.4.5 lists them with
+// session/new's answer, and answers in under a second).
+const USAGE_COMMANDS_WAIT_MS = 5_000;
+const USAGE_PROMPT_MS = 30_000;
+// A whole read of a login's limits in a process of its own, under
+// limit-recheck's READ_DEADLINE_MS (60 s), so its process is gone before the
+// recheck moves on. Antigravity 1.4.5's /usage takes 4 to 18 s, Grok's
+// _x.ai/billing under a second.
+const LIMITS_DEADLINE_MS = 50_000;
+// A short-lived session's session/close: it's closed anyway after.
+const CLOSE_SESSION_MS = 5_000;
+// More than any answer is: what a runaway one adds past it is dropped.
+const USAGE_TEXT_MAX = 64_000;
+
 type State = 'starting' | 'ready' | 'turn' | 'closing' | 'closed';
+// failure: what the agent said went wrong in the turn outside the prompt's
+// answer (Grok's retry_state and turn_completed notes), with any HTTP status.
+type Turn = { id?: string; startedAt: number; interrupted: boolean; dropped: string[]; failure?: { message: string; httpStatus?: number }; dispatched?: boolean };
 // cancelled: what a cancelled turn answers it with (a form's differs).
 type Pending = { abort: AbortController; options: PermissionOption[]; cancelled?: unknown };
 type PermissionOption = { optionId?: string; kind?: string };
@@ -200,7 +326,9 @@ export class AcpSession implements AgentSession {
   private sessionId?: string;
   private init: InitializeResult = {};
   private held: UserInput[] = [];
-  private turn?: { id?: string; startedAt: number; interrupted: boolean; dropped: string[] };
+  private turn?: Turn;
+  // When this process last read the login's limits after a turn.
+  private limitsReadAt?: number;
   private pending = new Map<RequestId, Pending>();
   private rules: Set<string>;
   private mode: PermissionMode;
@@ -260,7 +388,7 @@ export class AcpSession implements AgentSession {
     this.startRefusal = deps.agent.refuses?.({ cwd: opts.cwd, mode: 'ask', trusted: this.trusted, binary });
     const args = deps.agent.args({ dataDir: deps.dataDir, trusted: this.trusted, binary });
     this.guard = deps.agent.guardName?.(args);
-    this.proc = new AcpProcess({ binary, args, env, cwd: opts.cwd, registry: deps.registry, log: deps.log, label: opts.threadId, timings: deps.timings, forms: true });
+    this.proc = new AcpProcess({ binary, args, env, cwd: opts.cwd, registry: deps.registry, log: deps.log, label: opts.threadId, timings: deps.timings, forms: true, lowered: true });
     this.proc.onNotification = (method, params) => this.notification(method, params);
     this.proc.onRequest = (id, method, params) => this.request(id, method, params);
     this.proc.onExit = (err) => this.exited(err);
@@ -459,6 +587,7 @@ export class AcpSession implements AgentSession {
 
   private notification(method: string, params: unknown): void {
     if (this.guard && !this.replaying && this.checkGuard(method, params)) return;
+    if (!this.replaying) this.noteFailure(method, params);
     if (this.replaying || method !== 'session/update' || !isPlainObject(params)) return;
     if (this.sessionId && params.sessionId !== undefined && params.sessionId !== this.sessionId) return;
     this.noteFrame(params.update);
@@ -469,6 +598,18 @@ export class AcpSession implements AgentSession {
       if (update.sessionUpdate === 'available_commands_update' && Array.isArray(update.availableCommands)) this.noteCommands(update.availableCommands);
     }
     this.emit(this.normalizer.handle(update));
+  }
+
+  // Grok says why a turn failed in its own notes, not only in the prompt's
+  // answer: a retry_state that failed ("API error (status 402 Payment
+  // Required): Grok Build usage balance exhausted"), then turn_completed with
+  // the error and its data. Kept for the turn, for failureFor.
+  private noteFailure(method: string, params: unknown): void {
+    const turn = this.turn;
+    if (!turn || !isPlainObject(params)) return;
+    if (this.sessionId && params.sessionId !== undefined && params.sessionId !== this.sessionId) return;
+    const note = failureNote(method, params.update);
+    if (note) turn.failure = laterFailure(turn.failure, note);
   }
 
   // Grok reports each hook it ran (hook_execution) as a prompt goes in and
@@ -958,7 +1099,7 @@ export class AcpSession implements AgentSession {
   }
 
   private async runTurn(input: UserInput): Promise<void> {
-    const turn = { id: input.id, startedAt: this.now(), interrupted: false, dropped: [] as string[] };
+    const turn: Turn = { id: input.id, startedAt: this.now(), interrupted: false, dropped: [] };
     this.turn = turn;
     this.state = 'turn';
     let result: TurnResult;
@@ -989,21 +1130,68 @@ export class AcpSession implements AgentSession {
       if (e instanceof AcpExitedError) return; // the exit handler reports it
       this.emit(this.normalizer.closeOpen('Failed'));
       const auth = e instanceof AcpRpcError && e.code === AUTH_REQUIRED;
-      result = { outcome: turn.interrupted ? 'interrupted' : 'failed', durationMs: Math.max(0, this.now() - turn.startedAt), ...(turn.interrupted ? {} : { error: (e as Error).message }), ...(auth ? { errorKind: 'auth' as const } : {}) };
+      result = { outcome: turn.interrupted ? 'interrupted' : 'failed', durationMs: Math.max(0, this.now() - turn.startedAt), ...(auth ? { errorKind: 'auth' as const } : {}) };
+      if (!turn.interrupted) Object.assign(result, auth ? { error: (e as Error).message } : this.failureFor(turn, e));
     }
     if (this.turn !== turn) return;
+    turn.dispatched = dispatched;
     this.turn = undefined;
     if (this.state === 'turn') this.state = 'ready';
     if (this.mode === 'plan' && result.outcome === 'completed') {
       const text = this.normalizer.takeLastAssistantText();
       if (text) this.sink.output({ kind: 'planProposed', itemId: `${turn.id ?? 'plan'}-plan`, text });
     }
-    const answered = [...(turn.id ? [turn.id] : []), ...turn.dropped];
-    this.sink.output({ kind: 'result', result: { ...result, ...(turn.id ? { answers: turn.id } : {}), answered, unreceived: [...(!dispatched && turn.id ? [turn.id] : []), ...turn.dropped], queuedTurns: this.held.length, ...(this.normalizer.costUsd !== undefined ? { totalCostUsd: this.normalizer.costUsd } : {}) } });
+    this.sendResult(turn, result);
+    // After the result, not before it: the runner records a reading under
+    // the login this CLI runs on (sessionAccountId), wherever the result
+    // moves the thread, and a read held before it could be lost to an exit.
+    void this.limitsAfter(result);
     this.next();
   }
 
-  private resultFor(turn: { startedAt: number; interrupted: boolean }, stop: string | undefined): TurnResult {
+  private sendResult(turn: Turn, result: TurnResult): void {
+    const answered = [...(turn.id ? [turn.id] : []), ...turn.dropped];
+    this.sink.output({ kind: 'result', result: { ...result, ...(turn.id ? { answers: turn.id } : {}), answered, unreceived: [...(!turn.dispatched && turn.id ? [turn.id] : []), ...turn.dropped], queuedTurns: this.held.length, ...(this.normalizer.costUsd !== undefined ? { totalCostUsd: this.normalizer.costUsd } : {}) } });
+  }
+
+  // What a failed turn says, and whether it failed because the login is out
+  // of usage (errorKind usageLimit: the runner marks it out and a pool
+  // thread moves on, as for Claude and Codex). The agent's own words first:
+  // an error's data (AcpRpcError prefers it to JSON-RPC's "Internal
+  // error"), then what it said in the turn's notes.
+  private failureFor(turn: Turn, e?: unknown): Pick<TurnResult, 'error' | 'errorKind'> {
+    const rpc = e instanceof AcpRpcError ? e : undefined;
+    const thrown = e instanceof Error ? e.message : e === undefined ? undefined : String(e);
+    const fromRpc = rpc && rpc.message !== rpc.rpcMessage ? rpc.message : undefined;
+    const noted = turn.failure && !genericRpcMessage(turn.failure.message) ? turn.failure.message : undefined;
+    const detail = fromRpc ?? noted ?? thrown ?? turn.failure?.message ?? 'The agent stopped with an error.';
+    const httpStatus = rpc?.httpStatus ?? turn.failure?.httpStatus;
+    if (!outOfUsage({ message: detail, httpStatus })) return { error: detail };
+    const name = providerName(this.deps.agent.provider);
+    return { error: `${this.opts.account.id} is out of ${name} usage, so ${name} stopped before doing anything (${detail.replace(/[.\s]+$/, '')}).`, errorKind: 'usageLimit' };
+  }
+
+  // A reading of the login's limits on this thread's own process, for an
+  // agent that can say with a request (AcpAgent.limits' method, Grok; a
+  // usage command would be a prompt in the thread's own session, so Gemini's
+  // is read after turns by limit-recheck.ts instead): after a turn that ran out of
+  // usage, and at most every LIMITS_EVERY_MS after others. It gives up
+  // after TURN_LIMITS_MS, and a failure (the process gone) is only logged.
+  private async limitsAfter(result: TurnResult): Promise<void> {
+    const limits = this.deps.agent.limits;
+    if (!limits || !('method' in limits) || !this.proc.alive || result.outcome === 'interrupted') return;
+    const ran = result.errorKind === 'usageLimit';
+    if (!ran && (result.outcome !== 'completed' || (this.limitsReadAt !== undefined && this.now() - this.limitsReadAt < LIMITS_EVERY_MS))) return;
+    this.limitsReadAt = this.now();
+    try {
+      const reading = limits.read(await this.proc.request(limits.method, {}, TURN_LIMITS_MS));
+      if (reading) this.sink.output(reading);
+    } catch (e) {
+      this.deps.log.info('could not read the login\'s limits', { threadId: this.opts.threadId, error: String(e) });
+    }
+  }
+
+  private resultFor(turn: Turn, stop: string | undefined): TurnResult {
     const durationMs = Math.max(0, this.now() - turn.startedAt);
     switch (stop) {
       case 'cancelled':
@@ -1014,6 +1202,9 @@ export class AcpSession implements AgentSession {
         return { outcome: 'failed', durationMs, error: 'The reply reached the model\'s length limit.' };
       case 'max_turn_requests':
         return { outcome: 'failed', durationMs, error: 'The turn reached the agent\'s limit on steps.' };
+      // Not one of ACP's, but an agent that says so means it.
+      case 'error':
+        return { outcome: 'failed', durationMs, ...this.failureFor(turn) };
       default:
         return { outcome: turn.interrupted ? 'interrupted' : 'completed', durationMs };
     }

@@ -512,7 +512,8 @@ pub fn mouse_report(
 
 // ---------------------------------------------------------------- shell blocks
 
-/// A ```sh, ```bash, ```zsh or ```shell block in a reply: a command the agent
+/// A ```sh, ```bash, ```zsh or ```shell block in a reply, or a block with no
+/// language that's one line (Mike asked for those too, 24 Nov): a command the agent
 /// is handing over, often one only Mike can run (ShellBlock.swift). The play
 /// icon on it types the command into the thread's Terminal and stops short of
 /// Return, so a person always reads what's about to run.
@@ -530,21 +531,35 @@ pub struct ShellBlock {
 /// Past this it's a script, not a command to hand someone.
 pub const MAX_SOURCE: usize = 8_000;
 
+/// An untagged one-liner longer than this is a sentence or a log line.
+pub const MAX_UNTAGGED: usize = 500;
+
 impl ShellBlock {
     /// The command for a fence's info string (only its first word counts), or
     /// None for any other fence, or one that can't safely be typed.
     pub fn from(language: Option<&str>, code: &str) -> Option<ShellBlock> {
-        let word = language?
-            .split([' ', '\t', '{'])
-            .find(|w| !w.is_empty())?
-            .to_lowercase();
-        if !matches!(word.as_str(), "sh" | "bash" | "zsh" | "shell") {
+        let word = language
+            .and_then(|l| l.split([' ', '\t', '{']).find(|w| !w.is_empty()))
+            .map(str::to_lowercase);
+        let untagged = word.is_none();
+        if !untagged && !matches!(word.as_deref(), Some("sh" | "bash" | "zsh" | "shell")) {
             return None;
         }
         let mut source = code.replace("\r\n", "\n");
         while source.ends_with('\n') {
             source.pop();
         }
+        // Untagged, only a single line passes: past that it's as likely output,
+        // a listing or prose as a command. Typing never runs it, so a one-line
+        // path or URL that gets play costs nothing.
+        if untagged && (source.trim().contains('\n') || source.chars().count() > MAX_UNTAGGED) {
+            return None;
+        }
+        let source = if untagged {
+            source.trim().to_owned()
+        } else {
+            source
+        };
         if source.trim().is_empty() || source.chars().count() > MAX_SOURCE || !is_plain(&source) {
             return None;
         }
@@ -555,8 +570,8 @@ impl ShellBlock {
 
     /// Whether a reply's text could hold one, so only those are looked at.
     pub fn may_hold(text: &str) -> bool {
-        // sh, bash, zsh and shell all have it.
-        (text.contains("```") || text.contains("~~~")) && text.to_lowercase().contains("sh")
+        // Untagged blocks count too, so any fence might.
+        text.contains("```") || text.contains("~~~")
     }
 }
 
@@ -645,7 +660,8 @@ pub fn shell_blocks(text: &str) -> Vec<ShellBlock> {
                     && closing.chars().count() >= o.length
                     && closing.chars().all(|c| c == o.mark)
                 {
-                    if let Some(block) = ShellBlock::from(Some(o.language), &o.code.join("\n")) {
+                    let language = Some(o.language).filter(|l| !l.is_empty());
+                    if let Some(block) = ShellBlock::from(language, &o.code.join("\n")) {
                         out.push(block);
                     }
                     open = None;
@@ -1501,16 +1517,31 @@ mod tests {
                 "{language}"
             );
         }
-        for language in [
-            Some("python"),
-            Some("bashful"),
-            Some("console"),
-            Some(""),
-            None,
-        ] {
+        for language in [Some("python"), Some("bashful"), Some("console")] {
             assert_eq!(ShellBlock::from(language, "ls"), None, "{language:?}");
         }
         assert_eq!(ShellBlock::from(Some("bash"), " \n\n"), None);
+    }
+
+    #[test]
+    fn an_untagged_block_counts_only_as_one_line() {
+        for language in [None, Some(""), Some("  ")] {
+            assert_eq!(
+                ShellBlock::from(language, "  npm test\n").map(|b| b.command),
+                Some("npm test".to_owned()),
+                "{language:?}"
+            );
+        }
+        assert_eq!(ShellBlock::from(None, "npm i\nnpm test"), None);
+        assert_eq!(ShellBlock::from(None, "\n"), None);
+        assert_eq!(ShellBlock::from(None, &"a".repeat(MAX_UNTAGGED + 1)), None);
+        assert_eq!(ShellBlock::from(None, "echo\u{1b}[201~"), None);
+        assert_eq!(
+            shell_blocks("```\nls -la\n```\n```\na\nb\n```\n```rust\nx\n```"),
+            vec![ShellBlock {
+                command: "ls -la".to_owned()
+            }]
+        );
     }
 
     #[test]
@@ -1557,8 +1588,8 @@ mod tests {
     #[test]
     fn may_hold() {
         assert!(ShellBlock::may_hold("x\n```bash\nls\n```"));
+        assert!(ShellBlock::may_hold("```\nls\n```"));
         assert!(!ShellBlock::may_hold("no fence, just bash"));
-        assert!(!ShellBlock::may_hold("```python\nx\n```"));
     }
 
     #[test]

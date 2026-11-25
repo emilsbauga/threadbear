@@ -9,40 +9,50 @@ color: #3b2f6b
 
 ## About
 
-With lots of threads a day, each one starting fresh, you end up telling agents
-the same things more than once: "I thought we fixed that", "don't ask me, try it
-yourself", "that's the wrong folder". Each time it gets fixed in that one thread
-and comes back in the next.
+I run a lot of threads, and each one starts fresh, so I kept telling agents
+the same things over and over: "I thought we fixed that", "don't ask me, try
+it yourself", "that's the wrong folder". It would get fixed in that one thread
+and then come back in the next.
 
-This looks over the whole day once a night. It reads what you typed to your
-threads, finds the corrections, repeats and tool trouble, and fixes the thing
-that should have caught it: a line in your standing instructions, a memory, a
-skill. For a real bug in a tool it starts a thread to fix the cause. It counts
-a complaint after its fix, so you can see whether the fix held.
-
-Mike has run it since 30 Oct 2026. It found him repeating "I thought we..."
-about twice a day, which no single thread could see, and it's behind several
-of the rules his agents follow now.
+So each night an agent reads what I typed to my threads that day, finds where
+I had to correct or repeat myself, and fixes whatever should have caught it,
+like a line in my instructions or a memory. If it's a bug in a tool, it starts
+a thread to fix that. It also keeps count, so I can see whether a fix actually
+held.
 
 ## Example
+
+Title: Nightly retro
 
 **Retro for Thursday 19 November**
 
 Read 142 of your messages in 31 threads.
 
 **Fixed**
-- You told three agents to do a step themselves instead of handing it to you.
-  Added to your standing instructions: "Before asking me to do a step, try it
-  yourself, and say what you tried."
-- "Use the staging database" came up twice in the shop repo. Added to that
-  repo's CLAUDE.md.
+- You told three agents to do a step themselves instead of handing it to you. Added to your standing instructions: "Before asking me to do a step, try it yourself, and say what you tried."
+- "Use the staging database" came up twice in the shop repo. Added to that repo's CLAUDE.md.
 
 **Started**
-- A thread in the browser tool: a tab it opened twice in a hidden window.
+- A thread in the browser tool: it opened the same tab twice in a hidden window.
 
 **Watching**
-- "Where's the thread for X?" 4 times today. If it keeps up, a search that
-  matches folder names would help.
+- "Where's the thread for X?" came up 4 times today. If it keeps up, a search that matches folder names would help.
+
+Card: 2 fixed, 1 thread started
+Options: Looks good | Undo the instructions change
+
+## Example 2
+
+Title: Nightly retro
+
+**Retro for Sunday 22 November**
+
+Read 18 of your messages in 4 threads. A quiet day, and nothing you had to correct.
+
+Last week's fix for agents asking you to restart the server held: it came up 0 times this week, down from 5.
+
+Card: Nothing to fix today
+Options: Thanks
 
 ## Setting it up
 

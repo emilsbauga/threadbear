@@ -156,6 +156,37 @@ export function readVideoInfo(file: string): ImageInfo | null {
   }
 }
 
+// A sound file's type, from its first bytes (MP3, AAC, WAV), or an MPEG-4
+// one's: an M4A brand, or any MP4 named .m4a, as some makers use isom.
+export function sniffAudio(buf: Buffer, name = ''): ImageInfo | null {
+  if (buf.length < 12) return null;
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WAVE') return { mediaType: 'audio/wav' };
+  if (buf.toString('ascii', 0, 3) === 'ID3') return { mediaType: 'audio/mpeg' };
+  if (buf.toString('ascii', 4, 8) === 'ftyp') {
+    if (/^(M4A |M4B |M4P |F4A |F4B )$/.test(buf.toString('ascii', 8, 12))) return { mediaType: 'audio/mp4' };
+    return /\.m4[ab]$/i.test(name) && sniffVideo(buf) ? { mediaType: 'audio/mp4' } : null;
+  }
+  // A frame's sync word: 11 bits set, then layer 0 is AAC's ADTS, the rest MP3's.
+  if (buf[0] !== 0xff || (buf[1] & 0xe0) !== 0xe0) return null;
+  if (((buf[1] >> 1) & 3) === 0) return (buf[1] & 0xf6) === 0xf0 && ((buf[2] >> 2) & 0xf) < 13 ? { mediaType: 'audio/aac' } : null;
+  return ((buf[1] >> 3) & 3) !== 1 && buf[2] >> 4 !== 15 && ((buf[2] >> 2) & 3) !== 3 ? { mediaType: 'audio/mpeg' } : null;
+}
+
+export function readAudioInfo(file: string): ImageInfo | null {
+  let fd: number | null = null;
+  try {
+    if (!fs.statSync(file).isFile()) return null;
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(64 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    return sniffAudio(buf.subarray(0, n), file);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
 export function imageRefFor(file: string, fallbackType?: string): ImageRef {
   const info = readImageInfo(file);
   const ref: ImageRef = { path: file, mediaType: info?.mediaType ?? fallbackType ?? 'application/octet-stream' };

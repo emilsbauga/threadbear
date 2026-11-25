@@ -7,3 +7,5 @@
 !bin
 !src
 !box/entrypoint.sh
+!box/debs.lock
+!box/debs.ts

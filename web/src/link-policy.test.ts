@@ -55,3 +55,14 @@ test('links follow the shared cases', () => {
     assert.equal(kind === 'never' ? 'refuse' : kind, c.expect, c.name);
   }
 });
+
+// Daybreak 167 (22 Nov 2026) and its reviews: what could hide part of an
+// address in its question is never a link, half a surrogate pair included.
+test('characters that hide part of an address are never a link', () => {
+  for (const href of ['x-app://do?to=me\u202e&to=you', 'x-app://do?\ud800', 'x-app://do?\udc00x', 'x-app://a\u3000b', 'x-app://a\u200bb']) {
+    assert.deepEqual(classifyLink(href, BASE), { kind: 'never' }, JSON.stringify(href));
+  }
+  assert.equal(classifyLink('x-app://do?\ud83d\ude00', BASE).kind, 'ask', 'a whole pair is fine');
+  assert.equal(classifyLink('x-app://do?' + 'a'.repeat(1013), BASE).kind, 'ask');
+  assert.equal(classifyLink('x-app://do?' + 'a'.repeat(1014), BASE).kind, 'never', 'too long to show whole in the apps');
+});

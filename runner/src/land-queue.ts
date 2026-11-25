@@ -79,7 +79,26 @@ export type QueueEntry = {
   // holder's group, each halving down to it and landing only the holder,
   // for over four hours. `why` is what its tb says when it gets there.
   alone?: { why: string; at: number };
+  // When a holder first put it in a group check. From then on it stays in
+  // the line after its tb has gone (waiting(), isCarried), and each holder
+  // after stacks it, until a check with it passes and it lands, it's
+  // refused or set aside, or its branch no longer has what it asked to land
+  // (worktrees.ts, stillAsked). On 23 Nov two landings whose agents' time
+  // limits killed their tbs during a group check were dropped: the passing
+  // check didn't land (another's branch had moved; GitHub went red), and the
+  // next holder never saw them, as their entries went with their tbs.
+  inCheckAt?: number;
 };
+
+// How long a landing whose tb has gone is carried after its first check:
+// long enough for a day's line, not forever for one nobody comes back to.
+export const CARRY_MS = 12 * 3600_000;
+
+// A landing whose tb has gone that the holders still land: it was in a
+// check, and hasn't landed, been refused or been set aside to be checked
+// alone (only its own tb does that).
+export const isCarried = (e: QueueEntry, now = Date.now()): boolean =>
+  e.inCheckAt !== undefined && !e.result && !e.refused && !e.alone && now - e.inCheckAt < CARRY_MS;
 
 // A fix that goes first in every group check and outside the limit, on
 // this main: one not yet shown to be just another landing (ordinaryAt).
@@ -133,8 +152,9 @@ function alive(pid: number): boolean {
 }
 
 // Everyone waiting, first come first, without results yet. An entry whose
-// tb has gone (killed by an agent's time limit, say) is removed: nobody's
-// asking for it any more.
+// tb has gone (killed by an agent's time limit, say) before any check of it
+// started is removed: nobody's asking for it any more. One already in a
+// check stays (carried), for the holders to land.
 export function waiting(common: string): QueueEntry[] {
   let names: string[];
   try {
@@ -147,7 +167,8 @@ export function waiting(common: string): QueueEntry[] {
     const e = readJson<QueueEntry>(path.join(queueDir(common), n));
     if (!e || typeof e.pid !== 'number') continue;
     if (!alive(e.pid)) {
-      leaveQueue(common, e.id);
+      if (isCarried(e)) found.push(e);
+      else leaveQueue(common, e.id);
       continue;
     }
     if (!e.result && !e.refused) found.push(e);

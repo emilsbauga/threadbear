@@ -10,7 +10,7 @@ import type { PocketCardInput, PocketCardSummary } from '../../src/sync.ts';
 import { Librarian, type LibrarianPocket, librarianMethods, saysNoFit, disclaims, mainCheckout, PICK_CHECKS_PER_LOOK, SETTLE_MS, CATCH_UP_MS, CATCH_UP_MIN_CHARS, FIRST_MESSAGE_MS, SWEEP_MS, KEYWORDS_SYSTEM } from '../../src/librarian.ts';
 import { buildThreadbearTools } from '../../src/threadbear-mcp.ts';
 import { PROJECT_STEP_NUDGE } from '../../src/needs.ts';
-import { AGENT_MESSAGE_PREFIX } from '../../src/protocol.ts';
+import { AGENT_MESSAGE_PREFIX, type Schedule } from '../../src/protocol.ts';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger, type Logger } from '../../src/log.ts';
 import { ErrorCode, RpcError } from '../../src/protocol.ts';
@@ -932,6 +932,85 @@ test("end_turn: a Done card in a project still going is told once of the project
   hs.text('h1', 'Fixed.');
   const hr = (await helperEnd.handler({ needs: 'nothing' } as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
   assert.ok(!hr.isError, hr.content[0].text);
+});
+
+// 23 Nov 2026: a thread with a review job, a `tb land` and a */5 schedule to
+// check the landing all going got the project-step note three turns running.
+// What will run it again is what the note asks for, so it stays quiet.
+function projectStepThread(schedules?: Parameters<typeof buildThreadbearTools>[3]) {
+  const { h, repo, projects, create } = setup();
+  const app = repo('dev/cal');
+  const { thread } = create();
+  const tools = buildThreadbearTools(h.runner, thread.id, Date.now, schedules, projects, undefined, { oneReply: () => true, plainCardNote: false, tryFirstNote: false, sleep: async () => {} });
+  const tool = (name: string) => tools.find((x) => x.name === name)!;
+  let s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+  let n = 0;
+  const endTurn = async (input: Record<string, unknown>) => {
+    const itemId = `e${++n}`;
+    s.out({ kind: 'event', event: { type: 'tool.call', itemId, name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input } });
+    const r = (await tool('end_turn').handler(input as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
+    const text = r.content.map((c) => c.text).join('');
+    s.out({ kind: 'event', event: { type: 'tool.result', itemId, ok: !r.isError, text, truncated: false, images: [] } });
+    return { text, error: Boolean(r.isError) };
+  };
+  const nextTurn = (text: string) => {
+    s.result('completed');
+    h.runner.send(thread.id, text);
+    s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+    s.init();
+    s.text(`m${++n}`, 'Done.');
+    return s;
+  };
+  return {
+    thread,
+    endTurn,
+    start: async () => {
+      await tool('create_project').handler({ title: 'Calendar', folders: [app], goals: 'Voting site', state: 'Landing the fix.' } as never, {} as never);
+      s = h.adapter.sessions.filter((x) => x.opts.threadId === thread.id).at(-1)!;
+      s.init();
+      s.text('m0', 'Started the landing.');
+      return s;
+    },
+    nextTurn,
+  };
+}
+
+test('end_turn: no project-step note while a schedule of its own is booked to send to this thread', async () => {
+  let booked: Schedule[] = [];
+  const sched = (p: Partial<Schedule>): Schedule => ({ id: `s${booked.length}`, title: 'Check the landing', text: 'check', whenText: 'every 5 minutes', paused: false, createdAt: '', updatedAt: '', runs: 0, ...p });
+  const schedules = { list: async () => booked, create: async () => booked[0], find: async () => booked[0], update: async () => booked[0], delete: async () => {} } as unknown as Parameters<typeof buildThreadbearTools>[3];
+  const t = projectStepThread(schedules);
+  await t.start();
+  // Paused, finished, or sending somewhere else: none of them runs this thread again.
+  booked = [sched({ threadId: t.thread.id, cron: '*/5 * * * *', paused: true }), sched({ threadId: t.thread.id, at: '2026-11-23T00:00:00Z', finishedAt: '2026-11-23T00:00:00Z' }), sched({ threadId: 'another', cron: '*/5 * * * *', nextRunAt: '2099-01-01T00:00:00Z' })];
+  let r = await t.endTurn({ needs: 'nothing' });
+  assert.ok(r.text.startsWith(PROJECT_STEP_NUDGE), r.text);
+  t.nextTurn('keep going');
+  // A live one to this thread is what the note asks for.
+  booked.push(sched({ threadId: t.thread.id, cron: '*/5 * * * *', nextRunAt: '2099-01-01T00:00:00Z' }));
+  r = await t.endTurn({ needs: 'nothing' });
+  assert.equal(r.error, false, r.text);
+  assert.ok(!r.text.startsWith(PROJECT_STEP_NUDGE), r.text);
+});
+
+test('end_turn: no project-step note while a background job or sub-agent of its own is still running', async () => {
+  const t = projectStepThread();
+  let s = await t.start();
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'tb land' }] });
+  let r = await t.endTurn({ needs: 'nothing' });
+  assert.equal(r.error, false, r.text);
+  assert.ok(!r.text.startsWith(PROJECT_STEP_NUDGE), r.text);
+  s.out({ kind: 'tasks', tasks: [] });
+  s = t.nextTurn('landed');
+  s.out({ kind: 'subagent', update: { id: 'a1', started: true, status: 'running', background: true, description: 'Review the fix' } });
+  r = await t.endTurn({ needs: 'nothing' });
+  assert.equal(r.error, false, r.text);
+  assert.ok(!r.text.startsWith(PROJECT_STEP_NUDGE), r.text);
+  s.out({ kind: 'subagent', update: { id: 'a1', status: 'completed' } });
+  // With nothing left going, the note comes back.
+  t.nextTurn('reviewed');
+  r = await t.endTurn({ needs: 'nothing' });
+  assert.ok(r.text.startsWith(PROJECT_STEP_NUDGE), r.text);
 });
 
 // The primary's side of a handover in these tests: projects with no

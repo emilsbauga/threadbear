@@ -10,14 +10,14 @@ Feature: A folder in the side pane
   Scenario: The Files panel lists the thread's folder, folders first
     When I open the thread "Rebuild the three landing pages"
     And I show the "threadbear.files" section of the pane
-    Then the folder lists "docs, logs, mockups, screens, src" first
+    Then the folder lists "docs, logs, mockups, recordings, screens, src" first
     And the folder says it's sorted by "name up"
 
   @folder.list
   Scenario: Sorting by name the other way turns the list round
     Given the thread's folder is showing in the pane for "Rebuild the three landing pages"
     When I sort the folder by "name" descending
-    Then the folder lists "src, screens, mockups, logs, docs" first
+    Then the folder lists "src, screens, recordings, mockups, logs, docs" first
     And the folder says it's sorted by "name down"
 
   @folder.list

@@ -6,26 +6,43 @@
 # isn't ours to publish (Mike, 19 Nov): Fly pulls it for that app's
 # machines with no credentials, and no one else can.
 #
-# - a push to main that changes what the image holds: `<commit>` and
-#   `latest`. New boxes take `latest` (the service's default image,
-#   convex/boxes.ts defaultBoxImage), so they run the runner from the
-#   main that Mike's backend is deployed from;
+# - a push to main that changes what the image holds: `<commit>`. Once the
+#   runner's tests pass on that commit (the `tests` job), new boxes of a
+#   virtual runner that follows main (convex/boxes.ts defaultBoxImage) boot
+#   that image by the digest this run pushed, when the `promote` job
+#   promotes it (convex/boxImage.ts), never by tag;
 # - a release tag (release/YYYY-MM-DD, runner/src/upstream.ts):
 #   `<commit>` and `release-YYYY-MM-DD`, for a virtual runner pinned to a
-#   release;
-# - by hand (workflow_dispatch): `<commit>`, and `latest` from main.
+#   release (a release is only tagged on a commit every workflow passed on);
+# - by hand (workflow_dispatch): `<commit>`, promoted from main after the
+#   tests as for a push.
+#
+# Until 23 Nov new boxes booted a `latest` tag, which went out with only
+# the smoke test in front of it, so a main whose runner failed its tests
+# still became every new box's runner. The tests run here, in this workflow, rather than waiting on
+# runner.yml's run: that one has its own paths (a change to only this file
+# runs it not at all) and its Windows and Mac jobs, which the box doesn't
+# need and which take up to an hour. They're runner.yml's Linux job on
+# Node 24 (the box's Node), check.sh's runner typecheck and unit tests, run
+# beside the image's build; `promote` waits for both.
 #
 # The app is the repo variable FLY_BOX_APP (the deployment's FLY_APP), and
 # the secret FLY_BOX_IMAGE_TOKEN a Fly token that reaches that app only
 # (`fly tokens create deploy -a <app>`, or an org token narrowed with
 # `fly tokens attenuate`). Without them (a fork that hasn't set up boxes)
-# the image is still built and checked, just not pushed.
+# the image is still built and checked, just not pushed, and the tests
+# don't run, as nothing waits on them.
 #
-# Free, as runner.yml's must be (Mike, 9 Nov): a standard hosted runner, no
+# The build installs Debian packages only as runner/box/debs.lock names them,
+# each checked by its SHA-256 before dpkg runs (box/debs.ts), so the same
+# commit builds from the same files whenever it's built; box/lock-debs.sh
+# moves the lock on to a newer snapshot of Debian's archive (Daybreak, 24 Nov).
+#
+# Free, as runner.yml's must be (Mike, 9 Nov): standard hosted runners, no
 # schedule, a newer push cancelling the run before it, and only when the
 # image's files changed (the paths below: what the Dockerfile copies, the
-# image's own files, and this file). No action but checkout, pinned as
-# workflow-pins.test.ts wants; plain docker for the rest.
+# image's own files, and this file). Actions pinned as workflow-pins.test.ts
+# wants (checkout, and setup-node for the tests); plain docker for the rest.
 name: Box image
 
 on:
@@ -42,6 +59,8 @@ on:
       - 'runner/.dockerignore'
       - 'runner/box/Dockerfile'
       - 'runner/box/entrypoint.sh'
+      - 'runner/box/debs.lock'
+      - 'runner/box/debs.ts'
       - 'runner/box/smoke.sh'
       - '.github/workflows/box-image.yml'
   workflow_dispatch:
@@ -57,6 +76,10 @@ jobs:
   image:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      image: ${{ steps.names.outputs.image }}
+      push: ${{ steps.names.outputs.push }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -78,7 +101,6 @@ jobs:
           fi
           tags="$image:$SHA"
           case "$REF" in
-            refs/heads/main) tags="$tags $image:latest" ;;
             refs/tags/release/*) tags="$tags $image:release-${REF#refs/tags/release/}" ;;
           esac
           {
@@ -96,19 +118,24 @@ jobs:
         run: printf '%s' "$TOKEN" | docker login registry.fly.io -u x --password-stdin
 
       - name: Build
-        # The last `latest` as a cache, when there is one: the Claude Code and
-        # packages layers only change when their versions do.
+        # From scratch, with no cache from the registry: whoever can push
+        # there could plant cache layers the build would take in place of
+        # running its steps (Daybreak 171's second review).
         env:
           IMAGE: ${{ steps.names.outputs.image }}
           SHA: ${{ github.sha }}
           BUILT_AT: ${{ steps.names.outputs.built_at }}
           SOURCE: ${{ github.server_url }}/${{ github.repository }}
         run: |
+          # The Debian packages' lock, by hash and snapshot, on the image too.
+          debs="sha256:$(sha256sum < runner/box/debs.lock | cut -d' ' -f1)"
+          snapshot=$(sed -n 's/^# snapshot: //p' runner/box/debs.lock)
           docker build --platform linux/amd64 -f runner/box/Dockerfile \
-            --cache-from "$IMAGE:latest" --build-arg BUILDKIT_INLINE_CACHE=1 \
             --build-arg COMMIT="$SHA" --build-arg BUILT_AT="$BUILT_AT" \
             --label org.opencontainers.image.source="$SOURCE" \
             --label org.opencontainers.image.revision="$SHA" \
+            --label dev.threadbear.box.debs-lock="$debs" \
+            --label dev.threadbear.box.debs-snapshot="$snapshot" \
             --label org.opencontainers.image.description="Threadbear virtual runner box: the runner in box mode and Claude Code" \
             -t "$IMAGE:$SHA" runner
           docker image ls "$IMAGE"
@@ -116,14 +143,148 @@ jobs:
       - name: Smoke test
         run: runner/box/smoke.sh "${{ steps.names.outputs.image }}:${{ github.sha }}"
 
+      # The digest is the one this push of the image just built and tested
+      # reports, never read back from the registry later: that's what a box
+      # boots once the `promote` job promotes it (convex/boxImage.ts).
       - name: Push
+        id: push
         if: steps.names.outputs.push == 'true'
         env:
           IMAGE: ${{ steps.names.outputs.image }}
           SHA: ${{ github.sha }}
           TAGS: ${{ steps.names.outputs.tags }}
         run: |
+          set -o pipefail
+          docker push "$IMAGE:$SHA" | tee "$RUNNER_TEMP/push.log"
+          digest=$(sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' "$RUNNER_TEMP/push.log" | tail -1)
+          [ -n "$digest" ] || { echo "::error::docker push didn't report a digest"; exit 1; }
+          # Docker works that digest out from what it pushed. As a second
+          # check, the manifest the registry now holds under it must hash to
+          # it and name this build's own config (whose layer list containerd
+          # checks each layer against when a box unpacks it), or nothing is
+          # promoted (Daybreak 171's second review).
+          docker buildx imagetools inspect --raw "$IMAGE@$digest" > "$RUNNER_TEMP/manifest.json"
+          [ "sha256:$(sha256sum < "$RUNNER_TEMP/manifest.json" | cut -d' ' -f1)" = "$digest" ] || { echo "::error::The registry's manifest for $digest doesn't hash to it"; exit 1; }
+          config=$(jq -r .config.digest "$RUNNER_TEMP/manifest.json")
+          built=$(docker image inspect --format '{{.Id}}' "$IMAGE:$SHA")
+          [ "$config" = "$built" ] || { echo "::error::The manifest at $digest names config $config, not this build's $built"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Pushed $IMAGE@$digest"
           for tag in $TAGS; do
-            [ "$tag" = "$IMAGE:$SHA" ] || docker tag "$IMAGE:$SHA" "$tag"
+            [ "$tag" = "$IMAGE:$SHA" ] && continue
+            docker tag "$IMAGE:$SHA" "$tag"
             docker push "$tag"
           done
+
+  # The runner's typecheck and unit tests, as runner.yml's Linux job on Node 24
+  # runs them (its comments say why each step is there). Only where an image
+  # can be promoted: main, in a repo with the boxes' app set.
+  tests:
+    if: github.ref == 'refs/heads/main' && vars.FLY_BOX_APP != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            runner/package-lock.json
+
+      - name: Image tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q imagemagick librsvg2-bin
+
+      - name: Packages
+        run: |
+          npm ci --no-audit --no-fund
+          (cd runner && npm ci --no-audit --no-fund)
+
+      - name: Runner typecheck and unit tests
+        run: THREADBEAR_NODE="$(command -v node)" ./check.sh --runner --local
+
+  # New boxes get this commit's image only when it was built, passed the
+  # smoke test and was pushed, and the runner's tests passed (a failed or
+  # skipped job before it skips this one), and only while this commit is
+  # still the head of main, by GitHub's own account: a re-run of an older
+  # main run (its github.sha is still the old commit) would otherwise put
+  # the older runner back (Codex's review, 23 Nov). Nothing about the
+  # registry is read for that: until the second review of Daybreak 171 it
+  # came from `latest`'s revision label, which whoever can push there can
+  # write.
+  #
+  # It promotes that image, by the digest its push reported, to the backend
+  # (vars.BOX_PROMOTE_URL, the deployment's CONVEX_SITE_URL): new boxes boot
+  # only a promoted digest, never a tag (Daybreak 171, convex/boxImage.ts).
+  # The proof is this job's GitHub OIDC token, made for that address: the
+  # backend takes one only from this workflow on main in the repo its
+  # BOX_IMAGE_REPO names, so FLY_BOX_IMAGE_TOKEN, which can push images,
+  # can't promote one. No `latest` tag is pushed any more, and the build
+  # takes no cache from the registry: a pushed cache could hand the build
+  # layers it never ran (the same review).
+  promote:
+    needs: [image, tests]
+    if: needs.image.outputs.push == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Promote it for new boxes
+        env:
+          URL: ${{ vars.BOX_PROMOTE_URL }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Without it nothing is promoted: new boxes keep the image promoted
+          # before, or, with none, aren't made. Never a tag in its place.
+          while [ "${URL%/}" != "$URL" ]; do URL="${URL%/}"; done
+          case "$URL" in
+            https://*) ;;
+            "") echo "::warning::The repo variable BOX_PROMOTE_URL isn't set, so this image isn't promoted for new boxes. Set it to the backend's CONVEX_SITE_URL once virtual runners are on (docs/virtual-runners.md)."; exit 0 ;;
+            *) echo "::error::BOX_PROMOTE_URL must be the backend's CONVEX_SITE_URL, https://..."; exit 1 ;;
+          esac
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "::error::The image job reported no digest."; exit 1 ;;
+          esac
+          # Main may have moved on with commits that don't change the image
+          # (this workflow only runs for those that do): fine. One that does
+          # is a newer image's to promote, so this one stays out. A file
+          # renamed out of the image counts, by its old name.
+          status=$(gh api "repos/$REPO/compare/$SHA...heads/main" --jq .status)
+          case "$status" in
+            identical) ;;
+            ahead)
+              newer=$(gh api "repos/$REPO/compare/$SHA...heads/main" --jq '[.files[] | .filename, (.previous_filename // empty)] | (length >= 300), (map(select(test("^(runner/(src|bin)/|runner/(package\\.json|package-lock\\.json|\\.npmrc|\\.dockerignore)$|runner/box/(Dockerfile|entrypoint\\.sh|debs\\.lock|debs\\.ts|smoke\\.sh)$|\\.github/workflows/box-image\\.yml$)"))) | length)')
+              if [ "$(sed -n 1p <<<"$newer")" != false ] || [ "$(sed -n 2p <<<"$newer")" != 0 ]; then
+                echo "::notice::main has newer changes to the image since ${SHA:0:8}, so this older image isn't promoted."
+                exit 0
+              fi ;;
+            *) echo "::notice::${SHA:0:8} is $status of main, so it isn't promoted."; exit 0 ;;
+          esac
+          token=$(curl -sSf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$(jq -rn --arg a "$URL" '$a|@uri')" | jq -r .value)
+          echo "::add-mask::$token"
+          body=$(jq -cn --arg image "$IMAGE@$DIGEST" '{image: $image}')
+          for try in 1 2 3 4 5 6; do
+            rm -f "$RUNNER_TEMP/promote.json"
+            code=$(curl -sS --max-time 30 -o "$RUNNER_TEMP/promote.json" -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+              --data "$body" "$URL/box-image/promote") || code=000
+            [ ! -s "$RUNNER_TEMP/promote.json" ] || { cat "$RUNNER_TEMP/promote.json"; echo; }
+            [ "$code" = 200 ] && { echo "Promoted $IMAGE@$DIGEST"; exit 0; }
+            # 404 or 503: the backend with the route may still be deploying.
+            case "$code" in 404|503|000|5*) sleep 30 ;; *) exit 1 ;; esac
+          done
+          exit 1

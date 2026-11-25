@@ -1143,7 +1143,7 @@ impl ThreadPane {
 
     /// A reply's markdown with a live mark's link before each link to a
     /// thread the app has (threadbear_core::link_marks, thread_link_marks.rs).
-    /// With the inlinePrs experiment, a PR's state mark before each link to
+    /// A PR's state mark before each link to
     /// a PR too (pr_view.rs's `PrMarks`), its state asked of the runner the
     /// first time.
     pub(crate) fn with_link_marks(&self, text: String, cx: &mut App) -> String {
@@ -1157,9 +1157,6 @@ impl ThreadPane {
             std::borrow::Cow::Owned(marked) => marked,
             std::borrow::Cow::Borrowed(_) => text,
         };
-        if !crate::pr_view::on(app.read(cx)) {
-            return text;
-        }
         let prs = threadbear_core::pull_requests::pr_links(&text);
         if prs.is_empty() {
             return text;

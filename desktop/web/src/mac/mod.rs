@@ -15,3 +15,4 @@ pub mod panel;
 pub mod preview;
 pub mod rich;
 pub mod sealed;
+mod status;

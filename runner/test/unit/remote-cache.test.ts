@@ -4,11 +4,11 @@
 // checkouts are all in use, so low disk has to give room back as well.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { testSkippedOnWindows } from '../helpers/platform.ts';
+import { closedTmpParent } from '../helpers/closed-tmp.ts';
 
 // These run Mike's build-host scripts for a Linux or Mac box with a stand-in
 // df and du on PATH, so there is nothing on Windows to run them against.
@@ -25,7 +25,7 @@ const STUCK = 240_000;
 // A df that answers from how many target folders are left, so deleting one
 // really does free room. Each is worth 6 GiB.
 function host(t: TestContext, freeGib: number, folders: Record<string, number>) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-remote-cache-'));
+  const root = fs.mkdtempSync(path.join(closedTmpParent(), '.tb-remote-cache-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, 'bin');
   const base = path.join(root, 'home', '.cache', 'threadbear-check', 'gpui');

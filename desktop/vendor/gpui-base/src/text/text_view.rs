@@ -21,6 +21,12 @@ use crate::{GlobalState, TextSelection, text::TextViewStyle};
 pub(crate) type CodeBlockActionsFn =
     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+/// Type for a code block's header generator (Threadbear): drawn in the flow
+/// at the top of the block, above the code, in place of the corner label and
+/// actions.
+pub(crate) type CodeBlockHeaderFn =
+    dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
+
 pub(crate) type CodeBlockHighlighterFn =
     dyn Fn(&CodeBlock) -> Vec<(Range<usize>, gpui::HighlightStyle)> + Send + Sync;
 
@@ -165,6 +171,7 @@ pub struct TextView {
     scrollable: bool,
     max_lines: Option<usize>,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    code_block_header: Option<Arc<CodeBlockHeaderFn>>,
     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
@@ -215,6 +222,7 @@ impl TextView {
             scrollable: false,
             max_lines: None,
             code_block_actions: None,
+            code_block_header: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -242,6 +250,7 @@ impl TextView {
             scrollable: false,
             max_lines: None,
             code_block_actions: None,
+            code_block_header: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -269,6 +278,7 @@ impl TextView {
             scrollable: false,
             max_lines: None,
             code_block_actions: None,
+            code_block_header: None,
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
@@ -388,6 +398,20 @@ impl TextView {
     {
         self.code_block_actions = Some(Arc::new(move |code_block, window, cx| {
             f(&code_block, window, cx).into_any_element()
+        }));
+        self
+    }
+
+    /// A header drawn across the top of every code block, in the flow above
+    /// the code (Threadbear's language-and-copy bar). With one, the kit's
+    /// corner language label and `code_block_actions` are left out.
+    pub fn code_block_header<F, E>(mut self, f: F) -> Self
+    where
+        F: Fn(&CodeBlock, &mut Window, &mut App) -> E + Send + Sync + 'static,
+        E: IntoElement,
+    {
+        self.code_block_header = Some(Arc::new(move |code_block, window, cx| {
+            f(code_block, window, cx).into_any_element()
         }));
         self
     }
@@ -751,6 +775,7 @@ impl Element for TextView {
                 state.preserve_selection_for_reflow();
             }
             state.code_block_actions = self.code_block_actions.clone();
+            state.code_block_header = self.code_block_header.clone();
             state.code_block_highlighter = code_block_highlighter;
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();

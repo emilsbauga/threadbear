@@ -459,14 +459,20 @@ export const notify = internalAction({
     // back at the Mac by now (a Mac that slept with him at it, its held
     // pushes sent by sync:sendStaleHeldPushes, woke before this ran): then
     // it's held again (Codex's review).
+    // An alert some phone really got can be taken down by one clear
+    // (devices:alerted, sync:upsertThreads wantsClear, Daybreak 169).
+    const delivered = async (r: SendSummary): Promise<SendSummary> => {
+      if (r.sent > 0) await ctx.runMutation(internal.devices.alerted, { threadId });
+      return r;
+    };
     if (held) {
-      if (!t.atMac) return await sendAlert(ctx, alert, (n) => n === 'away');
+      if (!t.atMac) return await delivered(await sendAlert(ctx, alert, (n) => n === 'away'));
       await ctx.runMutation(internal.devices.holdPush, { threadId, ...(retried ? { retried } : {}) });
       return { sent: 0, failed: 0, skipped: 'atMac' };
     }
-    if (!t.atMac) return await sendAlert(ctx, alert);
+    if (!t.atMac) return await delivered(await sendAlert(ctx, alert));
     await ctx.runMutation(internal.devices.holdPush, { threadId });
-    const r = await sendAlert(ctx, alert, (n) => n === 'always');
+    const r = await delivered(await sendAlert(ctx, alert, (n) => n === 'always'));
     return r.skipped === 'noDevices' ? { ...r, skipped: 'atMac' } : r;
   },
 });
@@ -517,6 +523,8 @@ export const clear = internalAction({
             else {
               failed++;
               console.warn(`[apns] clear ${failureText(r.status, r.reason)} for …${r.token.slice(-6)}`);
+              // A phone Apple says is gone goes, as after a send.
+              if (r.status === 410 || r.reason === 'BadDeviceToken' || r.reason === 'Unregistered') await ctx.runMutation(internal.devices.drop, { apnsToken: r.token });
             }
           }
         } finally {
@@ -536,11 +544,14 @@ export const clear = internalAction({
         }).catch(() => null);
         // A relay from before /clear: nothing to do, and no use trying the rest.
         if (res?.status === 404) return { sent, failed };
-        const r = ((await res?.json().catch(() => ({}))) ?? {}) as { ok?: boolean; status?: number; reason?: string };
+        const r = ((await res?.json().catch(() => ({}))) ?? {}) as { ok?: boolean; status?: number; reason?: string; gone?: boolean };
         if (r.ok) sent++;
         else {
           failed++;
           console.warn(`[relay] clear ${failureText(typeof r.status === 'number' ? r.status : (res?.status ?? 0), r.reason)} for …${t.apnsToken.slice(-6)}`);
+          // A phone the relay says is gone goes, as after a send: each clear
+          // to it uses up the relay's bad-token allowance (Daybreak 169).
+          if (r.gone) await ctx.runMutation(internal.devices.drop, { apnsToken: t.apnsToken });
         }
       }
     }

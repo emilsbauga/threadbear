@@ -30,6 +30,7 @@ mod app;
 mod app_log;
 mod app_update;
 mod archive_flight;
+mod archive_search;
 #[cfg(feature = "automation")]
 mod automation;
 #[cfg(feature = "automation")]
@@ -38,6 +39,7 @@ mod automation_compat;
 mod automation_screenshot;
 mod backlog;
 mod chips;
+mod code_colours;
 mod colour_space;
 mod composer;
 mod composer_account;
@@ -83,7 +85,6 @@ mod highlights_project;
 mod highlights_store;
 mod home_page;
 mod icons;
-mod inbox_feed;
 mod input_probe;
 mod installed;
 mod key_hints;
@@ -106,12 +107,12 @@ mod patches;
 mod pinned_panels;
 mod pr_view;
 mod prefs;
-mod project_decisions;
 mod project_page;
 mod projects;
 mod projects_list;
 mod projects_page;
 mod push_button;
+mod quiet_inbox;
 mod quit_prompt;
 mod rails;
 mod recipes;
@@ -142,14 +143,17 @@ mod slash_palette;
 mod slash_resize;
 mod spinner;
 mod style;
+mod svg_worker;
 mod swift_import;
 mod swipe_nav;
 mod terminal;
 mod terminal_element;
 mod text_services;
 mod thread;
+mod thread_canvas;
 mod thread_link_marks;
 mod thread_map;
+mod thread_palette;
 mod thread_panels;
 mod tips;
 mod token_card;
@@ -325,7 +329,17 @@ fn initial_bounds(settings: &Settings, cx: &App) -> Bounds<Pixels> {
     }
 }
 
+/// The system allocator, held to a limit in the drawing process only
+/// (svg_worker.rs).
+#[global_allocator]
+static ALLOCATOR: svg_worker::Capped = svg_worker::Capped;
+
 fn main() {
+    // Started again to draw one picture's SVG: does that and exits, before
+    // anything else (svg_worker.rs).
+    svg_worker::serve_if_asked();
+    // Pictures' SVGs are drawn by that process from here on.
+    gpui_kit::set_picture_drawer(svg_worker::draw);
     // A scripted app against the real data folder stops here, and one that
     // goes on gets a pasteboard of its own, before the platform reads it
     // (scripted.rs).

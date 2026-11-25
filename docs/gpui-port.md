@@ -243,7 +243,7 @@ drops leaving keyboard mode before hover hit tests, so dropping after typing
 still works, and with an `img` playing a GIF whether or not its window is the
 key one (upstream froze it on its first frame in a window behind another app's),
 woken at the GIF's own pace rather than drawn at every display frame
-(`desktop/gpui/tests/gif_frames.rs`). GPUI exposes no input-mode setter for an
+(`desktop/gpui/tests/gif_frames.rs`). Its pictures are decoded within `image_budget`'s limits (`src/image_budget.rs`, Daybreak 170): `Image::to_image_data` and the `img` path loader decode through it, and its SVGs are drawn at up to 4 million pixels with their `<image>`s left out, never gzipped, and only when their layers nest at most 8 deep, so a picture drawn any way is held to what the app's own budget (`desktop/gpui/src/fit_picture.rs`) allows one picture. GPUI exposes no input-mode setter for an
 app shim. The published
 crates are separate commits from our changes; retain those patches on an
 update, or remove a patch once upstream includes it.
@@ -396,8 +396,8 @@ change.
 
 - The Mac rows that don't pass yet in [PARITY.md](gpui-port/PARITY.md):
   `dock.titlebar`, `dock.frame`, `sidebar.hibernate.pick`,
-  `terminal.panel`, `terminal.putcommand`, `projects.decisions` (pending)
-  and `composer.contextring` (partly). Each passes, or Mike drops it.
+  `terminal.panel`, `terminal.putcommand` and `composer.contextring`
+  (partly). Each passes, or Mike drops it.
 - People on forks are moved across. Today the Swift app offers it
   (`app/Sources/Threadbear/NewApp.swift`: a window once and a sidebar card,
   whose button starts a thread in the checkout that runs
@@ -524,23 +524,26 @@ for real browsing. I'd skip it: two engines means two sandboxes to prove.
 
 ### Keeping Chromium current
 
-Checked on 13 Nov 2026 against [Spotify's CEF index](https://cef-builds.spotifycdn.com/index.json),
+Checked on 24 Nov 2026 against [Spotify's CEF index](https://cef-builds.spotifycdn.com/index.json),
 [cef-rs releases](https://crates.io/crates/cef) and
 [Chrome's security releases](https://chromereleases.googleblog.com/search/label/Stable%20updates):
-the former CEF 156.0.15 used Chromium 156.0.8078.80 (31 Oct).
-CEF stable is 156.0.28, Chromium 156.0.8078.88 (11 Nov).
-The newest published Rust bindings are cef/cef-dll-sys 156.4.0+156.0.26,
-so Threadbear uses that exact CEF build (7 Nov), with the same Chromium
-156.0.8078.88. Compatibility with CEF 156.0.28 has not been proved.
-Chrome desktop is already 157.0.8103.78/.79 (11 Nov), with further security
-fixes. Updating CEF to the newest supported build doesn't close that upstream
-gap; no published cef-rs bindings for Chrome 157 were available at this check.
+CEF stable is 158.0.3, Chromium 158.0.8127.18 (20 Nov). The newest
+published Rust bindings are cef/cef-dll-sys 156.7.0+156.0.31 (19 Nov), so
+Threadbear uses that exact CEF build, 156.0.31 with Chromium
+156.0.8078.100 (18 Nov), up from 156.0.26 (Chromium 156.0.8078.88). The
+bindings' C API didn't change (the generated loader came out the same).
+No cef-rs bindings for CEF 157 or 158 were published at this check.
 
 The installed Mac runner checks the CDN index once a day while a web runtime
 is installed, starting a minute after launch. CEF-only patches count too;
 they can fix the embedding even when the Chromium version is unchanged.
 It warns in Updates (including its icon's tooltip) and `tb status` after a newer stable CEF has been available for 14 days, or after
-three days of failed checks. Beta builds don't count. A later patch doesn't
+three days of failed checks. The same check reads cef-rs's releases from
+crates.io's index (`index.crates.io/3/c/cef`): when a published `cef` crate
+binds a CEF newer than the pin, the warning asks for an update to it;
+when none does, no agent can move the pin, so it's only a quiet line in the
+Updates panel saying it's waiting on cef-rs (`webRuntimeNote`): the icon,
+its tooltip and `tb status` stay clear. Beta builds don't count. A later patch doesn't
 reset the age of a pin that's already behind. Its small cache survives a
 restart and network failures. The warning describes this runner release's
 pin, so an older app can still need its pending app update. Dev runners and
@@ -565,7 +568,7 @@ specs; Rust builds stay on check hosts. Update this checked-date note.
 
 - **Where it comes from.** Threadbear has no place of its own to publish the
   runtime yet, so the app downloads CEF's official minimal build from
-  Spotify's CDN (cef-builds.spotifycdn.com), pinned to 156.0.26, the build
+  Spotify's CDN (cef-builds.spotifycdn.com), pinned to 156.0.31, the build
   the `cef` crate's bindings were made from. It's held to the size and the
   SHA-1 Spotify publishes for it and a SHA-256 worked out from that same
   file, all before anything is unpacked (`desktop/core/src/web_runtime.rs`).

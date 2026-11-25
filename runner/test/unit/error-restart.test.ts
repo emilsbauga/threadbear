@@ -158,7 +158,11 @@ test('a runner nothing supervises (a test, one started by hand) logs the error a
   const r = startRunner(home, { THREADBEAR_TEST_THROW: 'rejection', THREADBEAR_TEST_THROW_MS: '100' }, false);
   try {
     await r.listening;
-    await patiently(() => /ERROR unhandled rejection/.test(logOf(home)));
+    // For the line after the error, not the error: the log is written a line
+    // at a time, and looking just after the error's line came, the next one
+    // wasn't always there yet (24 Nov, a full run on the cloud box).
+    await patiently(() => /nothing would start this runner again/.test(logOf(home)));
+    assert.match(logOf(home), /ERROR unhandled rejection/);
     assert.match(logOf(home), /nothing would start this runner again, so it carries on/);
     assert.equal(r.proc.exitCode, null);
     assert.deepEqual(readErrorExits(home), { exits: [] });

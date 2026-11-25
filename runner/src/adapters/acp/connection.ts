@@ -2,6 +2,7 @@
 // newline-delimited JSON-RPC 2.0 over its stdio, in its own process group.
 import type { ChildProcess } from 'node:child_process';
 import { LineReader, MAX_LINE_BYTES, type OversizedLine } from '../codex/appserver.ts';
+import { asAgent } from '../../background.ts';
 import { RUNNER_VERSION } from '../../config.ts';
 import type { Logger } from '../../log.ts';
 import { groupAlive, groupSpawner, killGroup, type ProcessRegistry } from '../../proc.ts';
@@ -11,15 +12,96 @@ export type RequestId = number | string;
 // Numbered as ACP's errors are; -32000 is its auth_required.
 export const AUTH_REQUIRED = -32000;
 
+// JSON-RPC's own words for its error codes, which say nothing about what
+// went wrong. An agent that puts the real reason in `data` (Grok: "Internal
+// error", with data.message "API error (status 402 Payment Required): Grok
+// Build usage balance exhausted", 23 Nov 2026) is read from there instead.
+const GENERIC_RPC_MESSAGES = new Set(['internal error', 'server error', 'invalid params', 'invalid request', 'parse error', 'method not found', 'unknown error', 'error']);
+export function genericRpcMessage(m: string): boolean {
+  return GENERIC_RPC_MESSAGES.has(m.trim().toLowerCase().replace(/[.!]+$/, ''));
+}
+
+// The reason an error's `data` gives, when it gives one in words: a string,
+// or an object's message, error or detail.
+export function rpcDataMessage(data: unknown): string | undefined {
+  if (typeof data === 'string') return data.trim() || undefined;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const d = data as Record<string, unknown>;
+  for (const k of ['message', 'error', 'detail']) {
+    const v = d[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+// The HTTP status an error's `data` names (Grok's http_status), if any.
+export function rpcDataStatus(data: unknown): number | undefined {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const d = data as Record<string, unknown>;
+  const v = d.http_status ?? d.httpStatus ?? d.status;
+  return typeof v === 'number' && Number.isInteger(v) && v >= 100 && v < 600 ? v : undefined;
+}
+
 export class AcpRpcError extends Error {
   readonly code: number;
   readonly data: unknown;
+  // What the agent itself said, before `data` was preferred over it.
+  readonly rpcMessage?: string;
+  readonly httpStatus?: number;
   constructor(method: string, body: { code?: unknown; message?: unknown; data?: unknown }) {
-    super(typeof body?.message === 'string' ? body.message : `${method} failed`);
+    const said = typeof body?.message === 'string' && body.message.trim() ? body.message.trim() : undefined;
+    const detail = rpcDataMessage(body?.data);
+    const generic = !said || genericRpcMessage(said);
+    super((generic ? detail : undefined) ?? said ?? `${method} failed`);
     this.name = 'AcpRpcError';
     this.code = typeof body?.code === 'number' ? body.code : -32603;
     this.data = body?.data;
+    if (said) this.rpcMessage = said;
+    const status = rpcDataStatus(body?.data);
+    if (status !== undefined) this.httpStatus = status;
   }
+}
+
+// An agent's words for a login that has run out of what it pays with: a
+// balance, credits, a spending cap or a usage limit (Grok 1.0.92's own
+// strings for these, and its 402). Not a rate limit, which passes by itself
+// in seconds and the agent retries.
+const OUT_OF_USAGE = /usage balance exhausted|out of credits|run out of credits|spending[- ]limit|usage limit reached|credit limit|insufficient (credits|balance)|payment required|free usage limit/i;
+
+// What an agent's own note says went wrong in a turn, outside the prompt's
+// answer: Grok's retry_state that failed ("API error (status 402 Payment
+// Required): Grok Build usage balance exhausted") and its turn_completed with
+// the error and its data, sent as _x.ai/session_notification. undefined for
+// any other note.
+export function failureNote(method: string, update: unknown): { message: string; httpStatus?: number } | undefined {
+  if (!method.startsWith('_') || !update || typeof update !== 'object' || Array.isArray(update)) return undefined;
+  const u = update as Record<string, unknown>;
+  let message: string | undefined;
+  let httpStatus: number | undefined;
+  if (u.sessionUpdate === 'retry_state' && u.type === 'failed' && typeof u.message === 'string') message = u.message;
+  else if (u.sessionUpdate === 'turn_completed' && (u.stop_reason === 'error' || (!!u.error && typeof u.error === 'object'))) {
+    const err = u.error && typeof u.error === 'object' && !Array.isArray(u.error) ? (u.error as Record<string, unknown>) : {};
+    message = rpcDataMessage(err.data) ?? (typeof u.agent_result === 'string' ? u.agent_result : undefined) ?? (typeof err.message === 'string' ? err.message : undefined);
+    httpStatus = rpcDataStatus(err.data);
+  }
+  message = message?.trim();
+  if (!message) return undefined;
+  return httpStatus === undefined ? { message } : { message, httpStatus };
+}
+
+// Keeps the newest note's words, unless they're only JSON-RPC's "Internal
+// error" after an earlier note said why, and any status an earlier one gave.
+export function laterFailure(was: { message: string; httpStatus?: number } | undefined, now: { message: string; httpStatus?: number }): { message: string; httpStatus?: number } {
+  const status = now.httpStatus ?? was?.httpStatus;
+  const message = was && genericRpcMessage(now.message) ? was.message : now.message;
+  return status === undefined ? { message } : { message, httpStatus: status };
+}
+
+// Whether an agent's failure says the login is out of usage, from its HTTP
+// status (402 Payment Required) or its words.
+export function outOfUsage(o: { message?: string; httpStatus?: number }): boolean {
+  if (o.httpStatus === 402) return true;
+  return !!o.message && OUT_OF_USAGE.test(o.message);
 }
 
 export class AcpExitedError extends Error {
@@ -62,6 +144,10 @@ export type AcpProcessOptions = {
   timings?: Partial<AcpTimings>;
   // Offer form elicitation (questions for Mike): only a thread can show one.
   forms?: boolean;
+  // A thread's agent, which runs builds and tests: started at the job
+  // priority (asAgent). The model list and small jobs run nothing, so they
+  // start as they are, kept clear of their timeouts on a busy Mac.
+  lowered?: boolean;
 };
 
 // The ACP version this client speaks; initialize's answer must match it.
@@ -105,7 +191,9 @@ export class AcpProcess {
     const { opts } = this;
     this.abort = new AbortController();
     const spawn = groupSpawner(opts.registry, opts.log, (line) => this.stderr(line), opts.label);
-    const child = spawn({ command: opts.binary, args: opts.args, cwd: opts.cwd, env: opts.env, signal: this.abort.signal } as never) as unknown as ChildProcess;
+    // At the job priority, so the builds and tests it runs are too (asAgent).
+    const [command, args] = opts.lowered ? asAgent('acp', opts.binary, opts.args) : [opts.binary, opts.args];
+    const child = spawn({ command, args, cwd: opts.cwd, env: opts.env, signal: this.abort.signal } as never) as unknown as ChildProcess;
     this.child = child;
     this.pid = child.pid;
     this.exited = false;

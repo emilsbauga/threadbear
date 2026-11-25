@@ -1,27 +1,11 @@
 // Rows the model derives rather than reads from events: a port of
 // Transcript/WorkGroups.swift and the words from Threads/BackgroundWork.swift.
 use super::diff::DiffBuilder;
-use super::event::{BackgroundKind, BackgroundTask, EditDiff, ToolKind};
-use super::row::{Row, RowContent, ToolItem};
+use super::event::{BackgroundKind, BackgroundTask, ToolKind};
+use super::row::{ChangedFile, ChangedFiles, Row, RowContent, ToolItem, WorkGroup};
 use super::text;
 use super::tool_presentation::{PathDisplay, ToolPresentation};
 use std::collections::HashSet;
-
-/// A run of work inside one turn folded into one line (`WorkGroup`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct WorkGroup {
-    /// Row ids of the folded items, oldest first.
-    pub member_ids: Vec<String>,
-    /// "Read 3 files, searched twice, ran 4 commands".
-    pub summary: String,
-    /// Tool calls in the group that failed.
-    pub failed_count: usize,
-    pub is_expanded: bool,
-    /// The last group of a turn that's still running.
-    pub is_live: bool,
-    /// While live, what's happening now ("Running npm test"), if anything is.
-    pub current_action: Option<String>,
-}
 
 impl WorkGroup {
     pub fn new(member_ids: Vec<String>, summary: &str) -> WorkGroup {
@@ -53,30 +37,6 @@ impl WorkGroup {
 }
 
 /// The "Working for 12s" line at the end of a running turn (`WorkingStatus`).
-/// The view counts the seconds itself, so the row doesn't change as they
-/// pass.
-#[derive(Clone, Debug, PartialEq)]
-pub struct WorkingStatus {
-    pub turn_id: String,
-    /// When the turn started (seconds since 1970), if the loaded events say.
-    pub started_at: Option<f64>,
-}
-
-/// The line at the end of a thread whose turn is over but whose CLI still
-/// has sub-agents or jobs running in the background (`BackgroundStatus`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct BackgroundStatus {
-    pub tasks: Vec<BackgroundTask>,
-}
-
-/// The "Edited 3 files" card at the end of a turn that changed files
-/// (`ChangedFiles`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChangedFiles {
-    pub turn_id: String,
-    pub files: Vec<ChangedFile>,
-}
-
 impl ChangedFiles {
     pub fn title(&self) -> String {
         if self.files.len() == 1 {
@@ -98,21 +58,6 @@ impl ChangedFiles {
     pub fn expansion_key(turn_id: &str, path: &str) -> String {
         format!("cf:{turn_id}|{path}")
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChangedFile {
-    pub path: String,
-    pub added: i64,
-    pub removed: i64,
-    /// Every successful edit to the file in the turn, in order.
-    pub diffs: Vec<EditDiff>,
-    /// Its diff is open under it in the card.
-    pub is_expanded: bool,
-    /// Its open diff shows every line, not just the first few.
-    pub shows_all: bool,
-    /// The thread's working folder.
-    pub root: Option<String>,
 }
 
 impl ChangedFile {

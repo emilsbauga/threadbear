@@ -20,7 +20,8 @@ import { box as boxMachine, cloudToken as tokenMachine, command as commandMachin
 import { BOOT_MS } from './boxStates';
 import { checkRunnerId, forbidden, MACHINE_ID, runnerAuth, sha256, withoutCredentials } from './lib';
 import { commandArgs } from './relay';
-import { PROVIDERS } from './boxProviders/types';
+import { isPinnedImage, PROVIDERS } from './boxProviders/types';
+import { followMainImage } from './boxImage';
 import { FLY_SUSPEND_MAX_MB } from './boxProviders/fly';
 import { UNSTARTED, WAKES_FROM } from './boxHooks';
 import { MOVE_GOING } from './moves';
@@ -292,17 +293,19 @@ async function addBox(ctx: MutationCtx, a: NewBox): Promise<Id<'boxes'>> {
 
 const SERVICE_NAME = /^[^\u0000-\u001f\u007f]{1,80}$/;
 const IMAGE = /^[\x21-\x7e]{1,300}$/;
-// A virtual runner's image when none is given: the box image this repo's
-// workflow builds from main and pushes to the Fly app the boxes live in
-// (runner/box/Dockerfile, .github/workflows/box-image.yml), so
-// registry.fly.io/<FLY_APP>:latest. It's private to that Fly organisation,
-// as it holds Claude Code, which isn't ours to publish: Fly pulls it for the
-// app's machines with no credentials. A fork's workflow pushes to its own
-// app (docs/forking.md).
+// A virtual runner's image when none is given: it follows main, booting the
+// box image this repo's workflow built from main, tested and promoted for
+// the Fly app the boxes live in (runner/box/Dockerfile,
+// .github/workflows/box-image.yml), by digest (boxImage.ts bootImage); its
+// row keeps registry.fly.io/<FLY_APP>:latest as the sign for that, never
+// booted as a tag. It's private to that Fly organisation, as it holds
+// Claude Code, which isn't ours to publish: Fly pulls it for the app's
+// machines with no credentials. A fork's workflow pushes to its own app
+// (docs/forking.md).
 function defaultBoxImage(provider: string): string {
   const app = setting('FLY_APP')?.trim();
   if (provider !== 'fly' || !app) throw bad("image must be given: there's no default box image without FLY_APP set on this deployment");
-  return `registry.fly.io/${app}:latest`;
+  return followMainImage(app);
 }
 const REGION = /^[a-z0-9-]{1,20}$/;
 // Each limit's whole-number range.
@@ -373,6 +376,9 @@ export const setRunnerService = mutation({
     // for now, only sizes the provider can pause.
     if (a.provider === 'fly' && a.box.memoryMb > FLY_SUSPEND_MAX_MB) throw bad(`box.memoryMb must be ${FLY_SUSPEND_MAX_MB} or less: Fly can't pause a bigger box.`);
     if (a.image !== undefined && !IMAGE.test(a.image)) throw bad('image must be an image reference, up to 300 characters with no spaces');
+    // A tag can be moved by whoever can push to the registry, and the image
+    // gets the box's boot token (boxImage.ts): leave it out to follow main.
+    if (a.image !== undefined && !isPinnedImage(a.image)) throw bad('image must be pinned by digest (registry/name@sha256:<64 hex>), not a tag; leave it out to follow main');
     if (!Number.isSafeInteger(a.box.cpus) || a.box.cpus < 1 || a.box.cpus > 16) throw bad('box.cpus must be a whole number from 1 to 16');
     if (!Number.isSafeInteger(a.box.memoryMb) || a.box.memoryMb < 256 || a.box.memoryMb > 65536 || a.box.memoryMb % 256) throw bad('box.memoryMb must be a multiple of 256 from 256 to 65536');
     // A box's runner holds a save in memory to write it and to restore it

@@ -180,11 +180,13 @@ type ThreadSummary = {
   live: boolean         // a CLI process is attached right now
   needsYou: boolean     // waiting, or a turn finished after lastSeenSeq
                         // that didn't end with needs "nothing", with no
-                        // sub-agents still working (Needs you)
+                        // sub-agents still working, nor a shell job its
+                        // asks wait for (Needs you)
   needs?: "you" | "nothing" // what the last completed turn said; absent
                         // when it said neither (see Needs you)
   asks?: OpenAsk[]      // that turn's asks, when needs is "you"
   asksSeq?: number      // seq of the turn.completed they came with
+  asksAfterJobs?: true  // those asks wait until the thread's own shell jobs end (Needs you)
   createdAt: string
   updatedAt: string
   lastActivityAt: string
@@ -218,8 +220,6 @@ type ThreadSummary = {
                         // nest under it in the sidebar (Nested threads)
   asked?: string        // Mike's last message to it, one line, <= 140 chars
                         // (What Mike last asked)
-  request?: string      // Mike's first message to it, one line, <= 200
-                        // chars (What Mike first asked)
   keywords?: string     // the librarian's search words, lowercase and
                         // space-separated, <= 200 chars (Search)
   recap?: string        // the librarian's recap (The recap box)
@@ -235,6 +235,12 @@ type ThreadSummary = {
                         // while archivedAt is set (Who archived a thread)
   archiveVerdict?: "worked" | "didntWork" | "notNeeded" | "didntNeedToSee" | "gladISaw" | "notSure" // how it went, Mike's
                         // pick from the done card's Archive menu
+  quietlyArchived?: { at: string, why: string } // archived by the quiet
+                        // inbox for Mike's own threads (experiment
+                        // quietInboxMine): when, and the strong model's one
+                        // line on why he didn't need to see it. Only while
+                        // archivedAt is set and archivedBy is "threadbear"
+                        // (threads.md, "Inbox guess")
   starredAt?: string    // Mike starred it, at this time: it stays in the
                         // Starred section above the Inbox, hibernating or
                         // not, oldest star first. Kept while archived, when

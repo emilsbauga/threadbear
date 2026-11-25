@@ -61,20 +61,28 @@ test('the reason names the way to wait instead', () => {
   assert.ok(WAIT_LOOP_REASON.includes(SHORT_WAIT_MARK));
 });
 
-test('a long command is read in linear time', () => {
-  // 10 KB of unclosed loops took 300 ms with the first regex (Codex's review).
-  // CPU time, the best of up to five, under 500 ms: a busy Linux
-  // follower's update build took 78 ms of the clock (18 Nov), and the old
-  // regex's quadratic time on this 60 KB would be seconds.
-  const big = 'while x; do '.repeat(5000);
+// CPU time of fn, the best of up to five runs while it's over limit: the
+// clock alone fails on a busy machine (a Linux follower's update build took
+// 78 ms, 18 Nov; Ville's Mac at a load of 37 took 169 ms, 20 Nov), and a
+// quadratic read of these inputs would take seconds.
+function cpuMs(fn: () => void, limit: number): number {
   let ms = Infinity;
-  for (let i = 0; i < 5 && ms >= 500; i++) {
+  for (let i = 0; i < 5 && ms >= limit; i++) {
     const t = process.cpuUsage();
-    isWaitCommand(big);
-    isWaitCommand(big + ' sleep 5');
+    fn();
     const d = process.cpuUsage(t);
     ms = Math.min(ms, (d.user + d.system) / 1000);
   }
+  return ms;
+}
+
+test('a long command is read in linear time', () => {
+  // 10 KB of unclosed loops took 300 ms with the first regex (Codex's review).
+  const big = 'while x; do '.repeat(5000);
+  const ms = cpuMs(() => {
+    isWaitCommand(big);
+    isWaitCommand(big + ' sleep 5');
+  }, 500);
   assert.ok(ms < 500, `took ${ms} ms of CPU`);
 });
 
@@ -102,9 +110,8 @@ test('foreground timers are refused; quick polls and CI watches in the turn are 
 
 test('many gh pr checks without --watch are read in linear time', () => {
   const big = 'gh pr checks '.repeat(4000);
-  const t = performance.now();
-  isWaitCommand(big);
-  assert.ok(performance.now() - t < 50, `took ${performance.now() - t} ms`);
+  const ms = cpuMs(() => isWaitCommand(big), 250);
+  assert.ok(ms < 250, `took ${ms} ms of CPU`);
 });
 
 test('round 3: here-strings, bash -lc, ssh commands, substitutions, quoted lengths, printed text in a script', () => {
@@ -122,7 +129,6 @@ test('round 3: here-strings, bash -lc, ssh commands, substitutions, quoted lengt
 
 test('a long line before a heredoc is read in linear time', () => {
   const big = 'true;'.repeat(8000) + 'cat <<EOF\nx\nEOF';
-  const t = performance.now();
-  isWaitCommand(big);
-  assert.ok(performance.now() - t < 50, `took ${performance.now() - t} ms`);
+  const ms = cpuMs(() => isWaitCommand(big), 250);
+  assert.ok(ms < 250, `took ${ms} ms of CPU`);
 });

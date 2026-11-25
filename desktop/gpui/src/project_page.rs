@@ -18,8 +18,7 @@ use threadbear_core::highlights::patches::{gives, source_name};
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::new_thread::abbreviate_home;
 use threadbear_core::projects::{
-    self as rules, Project, ProjectTab, Section, Sections, Task, TaskColumn, TaskKind, Tasks,
-    TextField,
+    self as rules, Project, Section, Sections, Task, TaskColumn, TaskKind, Tasks, TextField,
 };
 use threadbear_core::sidebar::local_now;
 
@@ -43,19 +42,6 @@ impl Threadbear {
                 .collect();
         let header = self.render_page_header(&project, threads.len(), window, cx);
         let mut column = v_flex().w_full().gap(px(30.)).child(header);
-        // The projectDecisions experiment: the page is in two tabs, its
-        // decisions (its parts' too) and everything else (Mike, 12 Nov). Off,
-        // it's the page as it always was. A half-typed edit of the goals,
-        // state or notes lives in `projects.editing`, so it's still there on
-        // the way back from Decisions.
-        if self.project_decisions_on() {
-            let tab = self.project_tab(&project.id);
-            column = column.child(self.render_project_tab_bar(&project, tab, cx));
-            if tab == ProjectTab::Decisions {
-                column = column.child(self.render_decisions_tab(&project, window, cx));
-                return self.project_page_scroller(&project, column);
-            }
-        }
         if let Some(parts) = self.render_parts_section(&project, cx) {
             column = column.child(parts);
         }
@@ -89,148 +75,6 @@ impl Threadbear {
                 ),
             )
             .into_any_element()
-    }
-
-    /// `ProjectTabBar`: Decisions and Project under the header. The
-    /// decisions' count is in the needs-you orange, as everywhere they're
-    /// counted; the rest is quiet. A click shows the tab at once; ⇧⌘[ and
-    /// ⇧⌘] step between them (Go menu).
-    fn render_project_tab_bar(
-        &self,
-        project: &Project,
-        tab: ProjectTab,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let decisions = self.project_decision_count(&project.id);
-        let mut bar = h_flex()
-            .w_full()
-            .gap(px(2.))
-            .pb(px(4.))
-            .border_b(gpui_kit::px(0.5))
-            .border_color(style::hairline(cx));
-        for each in ProjectTab::ALL {
-            let selected = each == tab;
-            let count = (each == ProjectTab::Decisions && decisions > 0).then_some(decisions);
-            let tip = match each {
-                ProjectTab::Decisions => "What its threads are waiting on you for (⇧⌘[)",
-                ProjectTab::Project => "Its goals, state, notes and threads (⇧⌘])",
-            };
-            let id = project.id.clone();
-            let label = div()
-                .text_size(px(style::size::LABEL))
-                .line_height(px(16.))
-                .text_color(if selected {
-                    cx.theme().foreground
-                } else {
-                    style::secondary_text(cx)
-                })
-                .when(selected, |s| s.font_semibold())
-                .child(each.title());
-            let button =
-                crate::highlights::tipped(
-                    div().id(SharedString::from(format!("project-tab-{}", each.name()))),
-                    tip,
-                )
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.))
-                .px(px(10.))
-                .py(px(5.))
-                .rounded(px(6.))
-                .cursor_pointer()
-                .when(selected, |s| s.bg(style::primary_opacity(cx, 0.08)))
-                .when(!selected, |s| s.hover(|s| s.bg(style::sidebar_hover(cx))))
-                .child(label)
-                .when_some(count, |s, n| {
-                    s.child(
-                        div()
-                            .text_size(px(style::size::DETAIL))
-                            .line_height(px(15.))
-                            .font_semibold()
-                            .text_color(style::needs_you(cx))
-                            .child(n.to_string()),
-                    )
-                })
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.pick_project_tab(&id, each, cx)
-                }));
-            bar = bar.child(button);
-        }
-        bar.into_any_element()
-    }
-
-    // ---- The page's tabs (the projectDecisions experiment) ----
-
-    /// Decisions waiting in the project and its parts.
-    pub(crate) fn project_decision_count(&self, id: &str) -> usize {
-        let threads = self.decision_threads_for(id);
-        rules::decision_count(&threads.iter().collect::<Vec<_>>())
-    }
-
-    /// The tab showing on a project's page (`ProjectTabs.current`).
-    pub(crate) fn project_tab(&self, id: &str) -> ProjectTab {
-        match self
-            .projects
-            .tabs_picked
-            .get(id)
-            .or(self.projects.tabs_opened_on.get(id))
-        {
-            Some(tab) => *tab,
-            None => ProjectTab::opening(self.project_decision_count(id)),
-        }
-    }
-
-    /// A new visit to a project's page, however it came (the list, Back, a
-    /// link): the tab it opens on, unless one was picked for it before
-    /// (`projectPageOpened`). Called whenever the app changes; does nothing
-    /// unless the page showing has.
-    pub(crate) fn note_project_visit(&mut self) {
-        let now = self.open_project().map(|p| p.id.clone());
-        if now == self.projects.tab_visit {
-            return;
-        }
-        if let Some(id) = now.as_deref().filter(|_| self.project_decisions_on()) {
-            let tab = ProjectTab::opening(self.project_decision_count(id));
-            self.projects.tabs_opened_on.insert(id.to_owned(), tab);
-        }
-        self.projects.tab_visit = now;
-    }
-
-    /// A tab picked: kept for the project while the app runs. Picking the
-    /// one showing changes nothing, so it isn't kept as a choice either (a
-    /// press that did nothing would later hold the page there).
-    pub(crate) fn pick_project_tab(&mut self, id: &str, tab: ProjectTab, cx: &mut Context<Self>) {
-        if tab == self.project_tab(id) {
-            return;
-        }
-        self.projects.tabs_picked.insert(id.to_owned(), tab);
-        cx.notify();
-    }
-
-    /// Whether ⇧⌘[ (-1) or ⇧⌘] (1) has a tab to go to: only on a project's
-    /// page in tabs, and they stop at the ends.
-    pub(crate) fn can_step_project_tab(&self, by: i32, _cx: &App) -> bool {
-        if !self.project_decisions_on() {
-            return false;
-        }
-        let Some(project) = self.open_project() else {
-            return false;
-        };
-        let tab = self.project_tab(&project.id);
-        tab.step(by) != tab
-    }
-
-    /// ⇧⌘[ and ⇧⌘] on a project's page.
-    pub(crate) fn step_project_tab(&mut self, by: i32, cx: &mut Context<Self>) {
-        if !self.can_step_project_tab(by, cx) {
-            return;
-        }
-        let Some(id) = self.open_project().map(|p| p.id.clone()) else {
-            return;
-        };
-        let tab = self.project_tab(&id).step(by);
-        self.pick_project_tab(&id, tab, cx);
     }
 
     /// The icon (a menu to choose another), the title, who made it and
@@ -384,15 +228,13 @@ impl Threadbear {
     }
 
     /// `PartsSection`: a parent's parts, each with its state's first line and
-    /// its decisions (with the projectDecisions experiment) or how many
-    /// threads it has. A row opens the part's page.
+    /// how many threads it has. A row opens the part's page.
     fn render_parts_section(
         &mut self,
         project: &Project,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let decisions_on = self.project_decisions_on();
-        let parts: Vec<(Project, usize, usize)> = {
+        let parts: Vec<(Project, usize)> = {
             let sections = Sections::build(
                 &self.projects.list,
                 self.threads.values().map(|t| &**t),
@@ -401,17 +243,7 @@ impl Threadbear {
             sections
                 .parts_of(&project.id)
                 .iter()
-                .map(|s: &&Section| {
-                    (
-                        s.project.clone(),
-                        s.threads.len(),
-                        if decisions_on {
-                            rules::decision_count(&s.threads)
-                        } else {
-                            0
-                        },
-                    )
-                })
+                .map(|s: &&Section| (s.project.clone(), s.threads.len()))
                 .collect()
         };
         if parts.is_empty() {
@@ -423,21 +255,13 @@ impl Threadbear {
             None,
             cx,
         ));
-        for (part, threads, decisions) in parts {
+        for (part, threads) in parts {
             let key = format!("part:{}", part.id);
             let hovering = self.projects.hovered.as_deref() == Some(key.as_str());
             let id = part.id.clone();
-            let right: AnyElement = if decisions > 0 {
-                div()
-                    .text_color(style::needs_you(cx))
-                    .child(rules::decision_label(decisions))
-                    .into_any_element()
-            } else {
-                div()
-                    .text_color(style::faint_text(cx))
-                    .child(rules::thread_count_words(threads))
-                    .into_any_element()
-            };
+            let right = div()
+                .text_color(style::faint_text(cx))
+                .child(rules::thread_count_words(threads));
             section = section.child(
                 crate::highlights::tipped(
                     h_flex()
@@ -1483,9 +1307,8 @@ fn icon_button(
     .into_any_element()
 }
 
-/// A small push button (`.controlSize(.small)`), for Save, Cancel and a
-/// decision's Open thread.
-pub(crate) fn small_push_button(
+/// A small push button (`.controlSize(.small)`), for Save and Cancel.
+fn small_push_button(
     id: impl Into<ElementId>,
     label: &'static str,
     tip: impl Into<SharedString>,

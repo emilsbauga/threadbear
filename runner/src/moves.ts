@@ -19,6 +19,7 @@ import { archive, chunks, MAX_SEALED_BYTES, sealInfo, sha256, unarchive, biggest
 import { sealBytes } from './secrets.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { withoutCredentials } from './move-git.ts';
+import { isPermissionMode, type PermissionMode } from './protocol.ts';
 
 export type MoveState = 'asking' | 'ready' | 'packing' | 'unpacking' | 'claimed' | 'done' | 'failed' | 'cancelled';
 
@@ -163,7 +164,9 @@ export function stillRunner(runnerId: string, runnerName: string, all: readonly 
 // to a thread runs on the thread's), no other runner. A check is set
 // again on the runner that runs it, with its own card (security review,
 // 10 Nov 2026). `dropped` counts the checks left off, for the thread's note.
-export type MovedSchedule = { text: string; title?: string; cron?: string; at?: string; timezone?: string; paused?: boolean; createdBy?: string };
+// `ceiling`: the one it had there (schedules.ts, "Ceilings"), which can
+// only lower the one it gets here.
+export type MovedSchedule = { text: string; title?: string; cron?: string; at?: string; timezone?: string; paused?: boolean; createdBy?: string; ceiling?: PermissionMode };
 export function movedSchedules(raw: unknown, threadId: string): { schedules: MovedSchedule[]; dropped: number } {
   const schedules: MovedSchedule[] = [];
   let dropped = 0;
@@ -178,7 +181,7 @@ export function movedSchedules(raw: unknown, threadId: string): { schedules: Mov
     if (!text || !cron === !at) continue;
     const title = str('title', 200);
     const timezone = str('timezone', 100);
-    schedules.push({ text, ...(title ? { title } : {}), ...(cron ? { cron } : { at: at! }), ...(timezone ? { timezone } : {}), ...(o.paused === true ? { paused: true } : {}), ...(o.createdBy === threadId ? { createdBy: threadId } : {}) });
+    schedules.push({ text, ...(title ? { title } : {}), ...(cron ? { cron } : { at: at! }), ...(timezone ? { timezone } : {}), ...(o.paused === true ? { paused: true } : {}), ...(o.createdBy === threadId ? { createdBy: threadId } : {}), ...(isPermissionMode(o.ceiling) ? { ceiling: o.ceiling === 'plan' ? 'ask' : o.ceiling } : {}) });
   }
   return { schedules, dropped };
 }
@@ -356,6 +359,9 @@ export type MovesHost = {
   // Places it beside the live threads (its staging folder, worktree, git
   // work and transcript), not yet one of them. Throws to fail the move.
   place(row: MoveRow, entries: PackEntry[]): Promise<void>;
+  // Whether place() finished for this move here already (before a restart),
+  // so only the claim is left. Optional: a host without it places again.
+  placed?(row: MoveRow): boolean;
   // After the switch: makes it one of this runner's threads. Idempotent.
   adopt(row: MoveRow): Promise<void>;
   // The move failed or was cancelled: what place() made goes.
@@ -402,6 +408,9 @@ export class Moves {
   // back from its end, so it's left alone (security review, 17 Nov 2026: a
   // cancelled move's row put back at unpacking).
   private ended = new Set<string>();
+  // Moves whose thread T has placed (asTarget, unpacking): from then on only
+  // the claim is asked again, never the thread placed twice.
+  private placed = new Set<string>();
   private stop?: () => void;
   private idleTimer?: { cancel(): void };
   // Steps to try again (see `retry`), by move, with how many tries so far.
@@ -467,8 +476,10 @@ export class Moves {
     const me = this.d.self();
     const key = `${row.moveId}:${row.state}`;
     if (this.done.has(key)) return;
-    if (ENDED.includes(row.state)) this.ended.add(row.moveId);
-    else if (this.ended.has(row.moveId)) return;
+    if (ENDED.includes(row.state)) {
+      this.ended.add(row.moveId);
+      this.placed.delete(row.moveId);
+    } else if (this.ended.has(row.moveId)) return;
     // A step is running: the row it's on may be stale by the time it ends
     // (cancelled while packing), and the backend says nothing more unless
     // the row changes again, so the newest one goes once it does.
@@ -491,7 +502,15 @@ export class Moves {
       // nothing to fail, and a move left claimed would keep the thread from
       // ever moving again: the same step again shortly (adopt can run
       // again), not the move given up.
-      if (row.state === 'claimed') {
+      // T's claim not going through after it placed the thread: asked again,
+      // not the move failed. Its reply may only have been lost (a POST
+      // timeout, a reset) with the claim made, and a claimed move can't
+      // fail: taken as ended here, its claimed row was dropped and the
+      // thread was on neither runner until T restarted (review, 23 Nov
+      // 2026). moveClaim answers a claimed move as done, so asking again is
+      // safe either way, and one that never goes through ends at the
+      // backend's thirty minutes (TOO_SLOW), whose failed row discards it.
+      if (row.state === 'claimed' || (row.state === 'unpacking' && this.placed.has(row.moveId))) {
         this.d.log.warn('a move step will be tried again', { moveId: row.moveId, state: row.state, error: note });
         this.retry(row);
         return;
@@ -635,12 +654,23 @@ export class Moves {
         return;
       }
       case 'unpacking': {
+        const backend = this.backend();
+        // Placed already, its claim tried again (step), or placed whole
+        // before this runner restarted: only the claim is left.
+        // The main Mac's runner still has to have started it (vouches),
+        // as when it was placed; one restarted since places afresh and
+        // fails there, as before.
+        const resumed = !this.placed.has(row.moveId) && !!host.placed?.(row) && (!this.d.vouches || (!!row.expect && this.d.vouches(row.expect, row.moveId)));
+        if (this.placed.has(row.moveId) || resumed) {
+          this.placed.add(row.moveId);
+          await backend.call('moveClaim', { moveId: row.moveId });
+          return;
+        }
         // Again before anything comes: placing plans afresh from the same
         // description (runner/moves.ts placeMove), never from the row's plan.
         const plan = await host.plan(row);
         if ('problem' in plan) throw new Error(plan.problem);
         this.mustMatchPreview(row, plan);
-        const backend = this.backend();
         const urls = (await backend.call('moveChunks', { moveId: row.moveId })) as string[];
         const parts: Buffer[] = [];
         for (const url of urls) parts.push(await backend.download(url));
@@ -650,6 +680,7 @@ export class Moves {
         // Cancelled while it downloaded: nothing placed.
         if (this.ended.has(row.moveId)) throw new Error('The move ended while its thread was on its way.');
         await host.place(row, entries);
+        this.placed.add(row.moveId);
         await backend.call('moveClaim', { moveId: row.moveId });
         return;
       }

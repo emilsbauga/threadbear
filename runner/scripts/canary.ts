@@ -29,7 +29,13 @@ import { forTerminal } from '../src/terminal-text.ts';
 
 type Ev = { seq: number; type: string; text?: string; outcome?: string; asks?: { action: string; options?: string[]; optionNotes?: string[] }[] };
 type Runner = { id: string; name: string; online: boolean };
-type Login = { id: string; provider: string; models?: { id: string }[] };
+type Login = { id: string; provider: string; models?: { id: string }[]; usage?: { blocked?: boolean; windows?: { remainingPercent?: number; resetsAt?: string }[] } };
+
+// A login's usage limit isn't Threadbear breaking: on 25 Nov every runner's
+// claude-main was out for the week and all three checks failed with "its
+// first turn failed". So the canary takes a Claude login with usage left, and
+// when there's none it says so as a skip, not a FAIL.
+const LIMIT = /hit your (weekly|session|usage) limit|out of usage|usage limit/i;
 
 // Network blips worth trying a read again for (read(), below).
 const BLIP = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|aborted due to timeout/i;
@@ -88,17 +94,22 @@ process.exit(results.every((x) => x.ok) ? 0 : 1);
 
 async function check(r: Runner): Promise<void> {
   const logins = (await step("reading its logins", () => read('remoteThreads.logins', { runnerId: r.id }))) as { accounts: Login[] };
-  const claude = logins.accounts.find((a) => a.provider === 'claude');
+  const claudes = logins.accounts.filter((a) => a.provider === 'claude');
+  const claude = claudes.find((a) => !a.usage?.blocked);
+  if (claudes.length && !claude) return say(true, `${r.name}: skipped, every Claude login there is out of usage${resets(claudes)}`);
   const haiku = claude?.models?.find((m) => /haiku/i.test(m.id))?.id;
   const made = (await step('starting a thread there', () => client.call('threads.create', { runnerId: r.id, text: BRIEF, title: 'Canary: Threadbear daily check', ...(claude ? { accountId: claude.id } : {}), ...(haiku ? { model: haiku } : {}) }))) as { thread: { id: string } };
   const id = made.thread.id;
   try {
     const first = await turnEnd(id, 0);
-    // A turn that failed there (a signed-out login, 13 Nov on bruce) is
-    // one line, not three FAILs that read as a broken runner. The relay
-    // says only that it failed; the reason is in the thread on that runner.
+    // A failed turn is one line, not three FAILs that read as a broken
+    // runner. The relay says only that it failed; the reason is in that
+    // runner's thread. Only the CLI's own usage-limit words count as a skip.
     if (first.card?.outcome === 'failed') {
-      return say(false, `${r.name}: its first turn failed (thread ${id}; its events on ${r.name} say why, and \`claude auth status\` there shows a signed-out login)`);
+      // Its usage read can be hours old, so a limit still shows up here.
+      const said = reply(first.events, first.from);
+      if (LIMIT.test(said)) return say(true, `${r.name}: skipped, its login ran out of usage (${said.slice(0, 80)})`);
+      return say(false, `${r.name}: its first turn failed (thread ${id}; its events on ${r.name} say why)`);
     }
     say(/\bready\b/i.test(reply(first.events, first.from)), `${r.name}: a new thread started there and answered`);
 
@@ -192,6 +203,12 @@ async function turnEnd(id: string, after: number): Promise<{ events: Ev[]; from:
     await new Promise((res) => setTimeout(res, 3000));
   }
   throw new Error(`no answer within ${TURN_MS / 60_000} minutes`);
+}
+
+// When the soonest of these logins' limits ends, for the skip line.
+function resets(logins: Login[]): string {
+  const at = logins.flatMap((l) => (l.usage?.windows ?? []).filter((w) => w.remainingPercent === 0 && w.resetsAt).map((w) => Date.parse(w.resetsAt!))).filter(Number.isFinite);
+  return at.length ? ` until ${new Date(Math.min(...at)).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '';
 }
 
 function reply(events: Ev[], after: number): string {

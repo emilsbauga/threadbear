@@ -14,7 +14,10 @@ public indirect enum MarkdownBlock: Sendable, Hashable {
     case heading(level: Int, text: String)
     /// `marker` is "•" or "3."; `task` is nil, or whether its box is ticked.
     case listItem(text: String, marker: String, depth: Int, task: Bool?)
-    case code(String)
+    /// A fenced block drawn as code. `language` is the first word of the
+    /// fence's info string as written ("ts" for ```ts), nil for a bare
+    /// fence; `languageName` turns it into what the block's header shows.
+    case code(String, language: String? = nil)
     /// A ```mermaid or ```html block, drawn as the diagram or page it
     /// describes, with a switch back to its source (RichBlockView).
     case rich(kind: RichKind, source: String)
@@ -62,6 +65,42 @@ public indirect enum MarkdownBlock: Sendable, Hashable {
         public init?(info: String) {
             guard let word = info.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "{" }).first else { return nil }
             self.init(rawValue: word.lowercased())
+        }
+    }
+
+    /// The language a fence's info string names: its first word, as written,
+    /// without Pandoc's `{.lang}` braces and dot. Nil for none.
+    public static func language(info: String) -> String? {
+        guard let word = info.split(whereSeparator: { $0 == " " || $0 == "\t" }).first else { return nil }
+        let language = word.trimmingCharacters(in: CharacterSet(charactersIn: "{}."))
+        return language.isEmpty ? nil : language
+    }
+
+    /// What a code block's header calls its language: the usual name for
+    /// common fence words ("ts" is TypeScript), otherwise the word as written.
+    public static func languageName(_ language: String) -> String {
+        switch language.lowercased() {
+        case "ts", "typescript": "TypeScript"
+        case "tsx": "TSX"
+        case "js", "javascript": "JavaScript"
+        case "jsx": "JSX"
+        case "sql": "SQL"
+        case "bash": "Bash"
+        case "sh", "shell": "Shell"
+        case "zsh": "Zsh"
+        case "json": "JSON"
+        case "yaml", "yml": "YAML"
+        case "toml": "TOML"
+        case "rust", "rs": "Rust"
+        case "swift": "Swift"
+        case "kotlin", "kt": "Kotlin"
+        case "python", "py": "Python"
+        case "go": "Go"
+        case "html": "HTML"
+        case "css": "CSS"
+        case "md", "markdown": "Markdown"
+        case "diff": "Diff"
+        default: language
         }
     }
 
@@ -221,7 +260,7 @@ private struct Parser {
                    let kind = MarkdownBlock.RichKind(info: info) {
                     blocks.append(.rich(kind: kind, source: body))
                 } else {
-                    blocks.append(.code(body))
+                    blocks.append(.code(body, language: MarkdownBlock.language(info: info)))
                 }
                 continue
             }

@@ -3,24 +3,15 @@
 // sent with the same settings.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarness, tick, tmpDir, type Harness } from '../helpers/fakes.ts';
 import { CallerGate } from '../../src/rpc-gate.ts';
 
-function setup(on = true): Harness & { work: string } {
-  const home = tmpDir();
-  fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ experiments: { warmStart: on } }));
-  const h = makeHarness(home);
+function setup(): Harness & { work: string } {
+  const h = makeHarness(tmpDir());
   const work = tmpDir('tb-warm-work-');
   return { ...h, work };
 }
-
-test('with the experiment off, warming starts nothing', () => {
-  const h = setup(false);
-  assert.deepEqual(h.runner.warm({ cwd: h.work }, 1), {});
-  assert.equal(h.adapter.sessions.length, 0);
-});
 
 test('a new thread sent with the warm id takes the CLI started for it', async () => {
   const h = setup();

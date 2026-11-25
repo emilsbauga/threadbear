@@ -6,15 +6,15 @@
 // than leaving the lock wait as the last word.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { closedTmpParent } from '../helpers/closed-tmp.ts';
 
 const root = path.resolve(import.meta.dirname, '../../..');
 
 test('remote.sh sends keep-alives on every ssh and says when the connection drops mid-run', (t) => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-remote-drop-'));
+  const work = fs.mkdtempSync(path.join(closedTmpParent(), '.tb-remote-drop-'));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const home = path.join(work, 'home');
   const bin = path.join(work, 'bin');

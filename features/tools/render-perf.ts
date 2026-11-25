@@ -48,9 +48,6 @@ if (!fixtures) {
 }
 process.env.TB_MOCK_FIXTURES = fixtures;
 process.env.TB_MOCK_PERF_PROJECTS ??= '1186';
-// Projects folded to a row each, saying how many decisions wait in them: the
-// decisions experiment, which Mike has on.
-process.env.TB_MOCK_DECISIONS ??= '1';
 const gesture = swiftTool('post-gesture');
 const dragger = swiftTool('realdrag');
 

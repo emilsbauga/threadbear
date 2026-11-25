@@ -222,12 +222,33 @@ enum Keeping {
     },
 }
 
-/// A picture's thumbnail: on its way, made, or not to be had.
+/// A picture's thumbnail: on its way, made, not to be had, or no room to
+/// make it then (tried again after that, if it's still shown).
 #[derive(Clone)]
 enum Thumb {
     Making,
-    Made(Arc<Image>),
+    /// And when it was last shown.
+    Made(Arc<Image>, Instant),
     None,
+    Busy(Instant),
+}
+
+/// The most thumbnails kept, across folders: past it the ones longest out
+/// of sight go, and are made again if they're shown again. Each is a small
+/// PNG; its pixels are drawn through the picture budget (fit_picture.rs),
+/// which lets them go when they're out of sight. Thumbnails are asked for
+/// only for the rows on screen, so the ones going are never those.
+const THUMBS_KEPT: usize = 2000;
+
+/// The picture for a row or tile the list is drawing, asked of the pane.
+fn shown_image(
+    pane: &WeakEntity<SidePane>,
+    entry: &FolderEntry,
+    away: bool,
+    cx: &mut App,
+) -> Arc<Image> {
+    pane.update(cx, |this, cx| this.entry_image(entry, away, cx))
+        .unwrap_or_else(|_| document_image())
 }
 
 /// Every open folder browser's state.
@@ -290,30 +311,37 @@ fn document_image() -> Arc<Image> {
         .clone()
 }
 
+/// How a row's or tile's picture is drawn: the folder and the page as they
+/// are, a thumbnail through the picture budget.
+fn entry_source(image: Arc<Image>) -> ImageSource {
+    if Arc::ptr_eq(&image, &folder_image()) || Arc::ptr_eq(&image, &document_image()) {
+        ImageSource::Image(image)
+    } else {
+        crate::fit_picture::bytes_source(image)
+    }
+}
+
 /// A picture's own thumbnail, made off the main thread from the file on this
 /// machine, small (the tile's 84 points at 2x), never more than 256 MB
 /// decoded, whatever the file says.
-fn make_thumbnail(path: &str) -> Option<Arc<Image>> {
+fn make_thumbnail(path: &str) -> Result<Arc<Image>, crate::fit_picture::Missed> {
     use image::imageops::FilterType;
-    let bytes =
-        threadbear_core::open_policy::local_read(std::path::Path::new(path), 24 * 1024 * 1024)
+    // Read and decoded in its turn, within the picture budget (fit_picture.rs), kept small.
+    let read = || {
+        threadbear_core::open_policy::local_read(std::path::Path::new(path), 24 * 1024 * 1024).ok()
+    };
+    let plan = crate::fit_picture::Plan::small(4 * 1024 * 1024);
+    let png = crate::fit_picture::decode_now(read, plan, |picture| {
+        let small = image::DynamicImage::ImageRgba8(picture)
+            .resize(168, 168, FilterType::Triangle)
+            .to_rgba8();
+        let mut png = Vec::new();
+        small
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .ok()?;
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let mut limits = image::Limits::default();
-    // Any shape, a full-page phone shot too: max_alloc is what holds it.
-    limits.max_image_width = Some(65_536);
-    limits.max_image_height = Some(65_536);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
-    let picture = reader.decode().ok()?;
-    let small = picture.resize(168, 168, FilterType::Triangle).to_rgba8();
-    let mut png = Vec::new();
-    small
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    Some(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
+        Some(png)
+    })?;
+    Ok(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
 }
 
 impl SidePane {
@@ -337,25 +365,63 @@ impl SidePane {
             entry.size.unwrap_or(0),
             entry.modified_ms.unwrap_or(0)
         );
-        match self.folders.thumbs.get(&key) {
-            Some(Thumb::Made(image)) => return image.clone(),
+        let now = Instant::now();
+        match self.folders.thumbs.get_mut(&key) {
+            Some(Thumb::Made(image, shown)) => {
+                *shown = now;
+                return image.clone();
+            }
+            Some(Thumb::Busy(again)) if now >= *again => {}
             Some(_) => return document_image(),
             None => {}
+        }
+        let thumbs = &mut self.folders.thumbs;
+        if thumbs.len() >= THUMBS_KEPT {
+            // The longest out of sight go (ones with no picture first), down
+            // to three quarters; ones being made stay.
+            let mut idle: Vec<(Option<Instant>, String)> = thumbs
+                .iter()
+                .filter_map(|(key, thumb)| match thumb {
+                    Thumb::Making => None,
+                    Thumb::Made(_, shown) => Some((Some(*shown), key.clone())),
+                    Thumb::None | Thumb::Busy(_) => Some((None, key.clone())),
+                })
+                .collect();
+            idle.sort();
+            let extra = thumbs.len().saturating_sub(THUMBS_KEPT * 3 / 4);
+            for (_, key) in idle.into_iter().take(extra) {
+                thumbs.remove(&key);
+            }
         }
         self.folders.thumbs.insert(key.clone(), Thumb::Making);
         let path = entry.path.clone();
         cx.spawn(async move |this, cx| {
+            let turn = cx.update(crate::fit_picture::decode_now_turn);
+            let _turn = turn.await;
             let made = cx
                 .background_executor()
                 .spawn(async move { make_thumbnail(&path) })
                 .await;
+            let busy = matches!(made, Err(crate::fit_picture::Missed::Busy));
             this.update(cx, |this, cx| {
-                this.folders
-                    .thumbs
-                    .insert(key, made.map_or(Thumb::None, Thumb::Made));
+                let thumb = match made {
+                    Ok(image) => Thumb::Made(image, Instant::now()),
+                    Err(crate::fit_picture::Missed::Busy) => {
+                        Thumb::Busy(Instant::now() + crate::fit_picture::BUSY_AGAIN)
+                    }
+                    Err(crate::fit_picture::Missed::Failed) => Thumb::None,
+                };
+                this.folders.thumbs.insert(key, thumb);
                 cx.notify();
             })
             .ok();
+            if busy {
+                // Drawn again then, so it's tried again if it's still shown.
+                cx.background_executor()
+                    .timer(crate::fit_picture::BUSY_AGAIN)
+                    .await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            }
         })
         .detach();
         document_image()
@@ -737,29 +803,18 @@ impl SidePane {
         let ringed = view.menu_row.clone().filter(|_| self.menu.is_some());
         let expanded = view.expanded.clone();
         let scroll = view.scroll.clone();
-        let images: Vec<Arc<Image>> = rows
-            .iter()
-            .map(|(e, _)| e.clone())
-            .collect::<Vec<_>>()
-            .iter()
-            .map(|e| self.entry_image(e, away, cx))
-            .collect();
         let entity = cx.entity().downgrade();
         let (show_date, show_size) = (self.width >= HIDE_DATE_UNDER, self.width >= HIDE_SIZE_UNDER);
         let ring = style::control_accent(cx);
         let selected_fill = style::sidebar_selected(cx);
-        let rows: std::rc::Rc<Vec<(FolderEntry, usize, Arc<Image>)>> = std::rc::Rc::new(
-            rows.into_iter()
-                .zip(images)
-                .map(|((e, d), i)| (e, d, i))
-                .collect(),
-        );
+        let rows: std::rc::Rc<Vec<(FolderEntry, usize)>> = std::rc::Rc::new(rows);
         let count = rows.len();
         let (thread2, preview2, key2) = (thread.clone(), preview.clone(), key.to_owned());
-        let list = uniform_list("folder-rows", count, move |range, _window, _cx| {
+        let list = uniform_list("folder-rows", count, move |range, _window, cx| {
             let mut out = Vec::with_capacity(range.len());
             for index in range {
-                let (entry, depth, image) = rows[index].clone();
+                let (entry, depth) = rows[index].clone();
+                let image = shown_image(&entity, &entry, away, cx);
                 let row = FolderRow {
                     index,
                     is_open: entry.is_folder && expanded.contains(&entry.path),
@@ -848,25 +903,21 @@ impl SidePane {
         let ringed = view.menu_row.clone().filter(|_| self.menu.is_some());
         let scroll = view.grid_scroll.clone();
         let (columns, tile_width) = rules::grid_columns(self.width);
-        let images: Vec<Arc<Image>> = entries
-            .iter()
-            .map(|e| self.entry_image(e, away, cx))
-            .collect();
-        let tiles: std::rc::Rc<Vec<(FolderEntry, Arc<Image>)>> =
-            std::rc::Rc::new(entries.into_iter().zip(images).collect());
+        let tiles: std::rc::Rc<Vec<FolderEntry>> = std::rc::Rc::new(entries);
         let row_count = tiles.len().div_ceil(columns.max(1));
         let entity = cx.entity().downgrade();
         let pick = style::control_accent(cx).opacity(0.45);
         let ring = style::control_accent(cx);
         let (thread2, preview2, key2) = (thread.clone(), preview.clone(), key.to_owned());
-        let grid = uniform_list("folder-tiles", row_count, move |range, _window, _cx| {
+        let grid = uniform_list("folder-tiles", row_count, move |range, _window, cx| {
             let mut out = Vec::with_capacity(range.len());
             for row in range {
                 // Every row the same height, as the list measures its first
                 // for all of them: the inset over the first is the list's own.
                 let mut line = h_flex().px(px(rules::GRID_INSET)).pb(px(TILE_GAP));
                 for index in row * columns..((row + 1) * columns).min(tiles.len()) {
-                    let (entry, image) = tiles[index].clone();
+                    let entry = tiles[index].clone();
+                    let image = shown_image(&entity, &entry, away, cx);
                     let tile = FolderTile {
                         index,
                         selected: selected.contains(&entry.path),
@@ -1255,7 +1306,7 @@ impl FolderRow {
         name_row = name_row
             // Hidden files look it, as they do in the Finder.
             .child(
-                img(ImageSource::Image(image))
+                img(entry_source(image))
                     .flex_none()
                     .ml(px(1.))
                     .mr(px(6.))
@@ -1430,7 +1481,7 @@ impl FolderTile {
                     .items_center()
                     .gap(px(4.))
                     .child(
-                        img(ImageSource::Image(image))
+                        img(entry_source(image))
                             .flex_none()
                             .size(px(rules::TILE_PICTURE))
                             .object_fit(ObjectFit::Contain),

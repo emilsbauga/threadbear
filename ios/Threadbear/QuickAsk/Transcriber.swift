@@ -1,7 +1,7 @@
 import AVFoundation
 import Speech
 
-enum TranscriberError: Error, Equatable {
+nonisolated enum TranscriberError: Error, Equatable {
     case unavailable(String)
     case failed(String)
 
@@ -9,6 +9,15 @@ enum TranscriberError: Error, Equatable {
         switch self {
         case .unavailable(let detail): "\(detail) Tap the mic to try again."
         case .failed(let detail): "Speech recognition stopped (\(detail)). Tap the mic to try again."
+        }
+    }
+}
+
+extension TranscriberError: QuickAskLogCategorized {
+    nonisolated var logCategory: String {
+        switch self {
+        case .unavailable: "unavailable"
+        case .failed: "failed"
         }
     }
 }

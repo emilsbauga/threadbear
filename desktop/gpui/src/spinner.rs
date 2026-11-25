@@ -300,8 +300,7 @@ impl Render for ArcLayer {
                 // As the dock draws it: a collapsed sidebar (⌘/) is left out,
                 // and a tab with nothing to show gives way to the next.
                 let in_front = dock_view.read(cx).shows(panel, cx);
-                let dragging =
-                    dock.read(cx).controller.drag.is_some() || dock_view.read(cx).is_landing();
+                let dragging = dock.read(cx).is_dragging() || dock_view.read(cx).is_landing();
                 if !in_front {
                     PLACED.with(|p| {
                         if let Some(arcs) =

@@ -7,7 +7,7 @@ Part of the runner protocol. [docs/protocol.md](../protocol.md) has the rules fo
 ### Design reviews
 
 `show_options` gives the calling thread a durable review of pictures,
-videos and pages. It returns
+videos, sounds and pages. It returns
 promptly, with the review's id and the `review:<id>` link that opens it
 from an ask or a message (see Needs you); the agent may finish its turn
 while Mike reviews the options.
@@ -22,7 +22,7 @@ their own (A2, A3) that couldn't be picked; Mike also picked more than one
 or none, and answered most reviews in the thread in his own words (4 Nov
 2026), hence several picks, `none` and `reply`.
 
-It's only for options that are seen: images, videos, page designs. A
+It's only for options that are seen or heard: images, videos, sounds, page designs. A
 thread put a research shortlist in one as a page of text per option, and
 Mike found comparing words there pointless (20 Nov 2026), so the tool and
 the instructions send options in words to the reply instead.
@@ -41,8 +41,10 @@ a paragraph.
 // images: pictures pasted into the reply, each placed by a [Picture N] in
 // reply, as a message's are (see Reply pictures, below).
 type ReviewDraft = { pickedId?: string, pickedIds?: string[], notes: Record<string, string>, reply?: string, images?: ImageRef[], none?: true }
-// media: a video (video/mp4, video/quicktime) or an HTML page (text/html)
-// the window plays or shows in place of image, which is then its still.
+// media: a video (video/mp4, video/quicktime), a sound (audio/mpeg,
+// audio/mp4, audio/aac, audio/wav) or an HTML page (text/html) the window
+// plays or shows in place of image, which is then its still (a sound's is
+// its waveform).
 type ReviewShot = { title?: string, image: ImageRef, media?: ImageRef }
 type DesignReview = {
   id: string
@@ -55,7 +57,7 @@ type DesignReview = {
     note?: string
     reference?: boolean // can have notes, cannot be picked
     image: ImageRef     // the first shot: a copy owned by the thread, never the source path
-    shots?: ReviewShot[] // every shot in order, image first; only when more than one, the one has a title, or it has media
+    shots?: ReviewShot[] // every shot in order, image first; only when more than one, the one has a title, media or marks (so marks always live on options[i].shots[j].marks, never on the option)
     url?: string        // http(s): where it runs live
   }[]
   status: "pending" | "answered" | "cancelled" | "superseded"
@@ -81,22 +83,28 @@ The following RPCs take full thread/review IDs. Unknown IDs are errors.
 
 Creation validates the whole request and imports supported files before
 publishing the card. A shot's `path` is a picture (PNG, JPEG, GIF, WebP), a
-video (MP4 or QuickTime, by its header) or a page (`.html`/`.htm`). Agents
-had to hand Mike stills of clips that only made sense moving (6 Nov 2026).
-A video or page is copied in as the shot's `media`, and its still, made by
-Quick Look on a Mac or ffmpeg for a video elsewhere (a plain dark card when
-neither can), is its `image`, which thumbnails and older clients show. A
+video (MP4 or QuickTime, by its header), a sound (MP3, M4A, AAC or WAV, by
+its header, or an MP4 named `.m4a`) or a page (`.html`/`.htm`). Agents
+had to hand Mike stills of clips that only made sense moving (6 Nov 2026),
+and Mike wanted to compare music beds and sounds as options (24 Nov 2026).
+A video, sound or page is copied in as the shot's `media`, and its still, made by
+Quick Look on a Mac or ffmpeg for a video elsewhere, and for a sound
+ffmpeg's waveform, light on dark (a plain dark card when
+none can), is its `image`, which thumbnails and older clients show. A
 page comes in a folder of its own with the files it names (`src`, `href`,
 `url()`, a stylesheet's own) from its folder down, at most 100 files and
 50 MB; never anything above its folder, nor other pages it links to. The
 Mac window shows the page the way the side pane does: scripts off, nothing
 loaded from outside, and Open in Browser for a page with scripts. A video
 loops. On the stage it has controls and plays with sound; side by side
-with the others in the grid it's muted. Paths can be absolute, home-relative or
+with the others in the grid it's muted. A sound shows its waveform on the
+stage with a play bar along its bottom, paused at the start, so stepping
+through music beds doesn't start each; in the grid it's its waveform with a
+music badge, never playing by itself. Paths can be absolute, home-relative or
 relative to the thread's folder. An option's shots are `path` then
 `shots`, or `shots` alone; it needs at least one. Limit: 12 options, 8
-shots each and 40 in all, each image at most 25 MB, video 200 MB and page
-5 MB (videos and pages 500 MB in all), nonempty unique option
+shots each and 40 in all, each image at most 25 MB, video 200 MB, sound
+100 MB and page 5 MB (videos, sounds and pages 500 MB in all), nonempty unique option
 IDs and titles, title/note at most 200/4000 characters, `url` http or https.
 Draft notes are at most 4000 characters per option and the reply 8000;
 unknown option IDs, picks of reference options and `none` with picks are
@@ -135,6 +143,72 @@ picture again keeps one copy, and a retried answer naming the inbox copy
 is the same answer. The saved draft names those copies, and the window
 takes them in place of its own. Pictures alone are an answer. The agent's
 message carries them as its `images`.
+
+#### Marks: the canvas (the `reviewCanvas` experiment)
+
+Mike, 22 Nov 2026: after an audit of how other apps show options with
+several pictures, he asked for the review as a canvas you drag and zoom
+around, with the agent drawing "little helpful arrows pointing out things
+visually", in the doodle style of Convex Explained (handwritten notes, a
+curled pointer, wobbly circles), a switch to hide them, and tools of his own
+to circle, highlight or pin a part, each a chip in the reply he can talk
+about.
+
+The agent's marks ride on shots. In `reviews.create` (and `show_options`) a
+shot may carry `marks`, and an option's own `marks` belong to its `path`
+shot. Coordinates are fractions of the shot's picture (its still, for a
+video or page), 0 to 1 from the top left, so they survive any size it's
+drawn at. Unknown fields are ignored; clients that don't draw marks show
+the pictures as before.
+
+```ts
+// kind: circle goes round box; underline runs along box's bottom edge;
+// highlight is a marker swipe over box; arrow points at box's centre.
+// ink: yellow points something out (the default), green is what solves
+// it, rose is a cost. note: a few handwritten words beside the picture,
+// joined to the mark by a curled pointer.
+type ReviewMarkKind = "circle" | "underline" | "highlight" | "arrow"
+type AgentMark = { kind: ReviewMarkKind, box: [number, number, number, number], note?: string, ink?: "yellow" | "green" | "rose" }
+type ReviewShot = { title?: string, image: ImageRef, media?: ImageRef, marks?: AgentMark[] }
+```
+
+Limits: at most 6 marks a shot and 30 a review; `box` is four numbers in
+0..1 with x0 <= x1 and y0 <= y1; a note is at most 80 characters. An
+option's own `marks` need its `path`; with only `shots`, they go on a shot.
+`ink` is stored only when given. With the experiment off, `show_options`
+doesn't offer marks and the runner drops any it's given, unread. A moved
+or recovered review keeps the marks that pass, notes cut to 80 characters.
+
+Mike's marks ride on the draft. Each is numbered from 1 in the order he
+made it, and `reply` places each with a `[Mark N]` marker where he was
+typing, as pictures are placed.
+
+```ts
+// kind: circle and highlight follow his stroke (path, fractions of the
+// picture); pin is a single spot (path holds one point). box bounds the
+// stroke. image: a cut-out of the picture around box, made by the app and
+// imported with media.import, kept as reply pictures are.
+type ReviewUserMark = { n: number, kind: "circle" | "highlight" | "pin", optionId: string, shot: number, box: [number, number, number, number], path?: [number, number][], image?: ImageRef }
+type ReviewDraft = { /* as above */ marks?: ReviewUserMark[] }
+```
+
+`shot` is the 0-based index into the option's shots (its one `image` when
+it has no `shots`). At most 20 marks, each `n` a whole number from 1 used
+once, a path at most 400 points, each point clamped into 0..1 (a stroke can
+run past the edge; `box` itself must be in 0..1). A mark whose option or
+shot doesn't exist, or a reference option's, is invalid; a mark on its own
+is an answer. The runner stores marks in `n` order. Like `images`, a draft
+with no `marks` key keeps the saved ones (a client that doesn't draw them,
+or the phone, which never sees them); `marks: []` takes them away. Draft
+marks are taken whether or not the experiment is on. The agent's message,
+after the reply and before the notes, has one paragraph with a line per mark
+(joined by single newlines): `[Mark 1] circle on A. <title>, picture 2
+(<shot title>), across 36-50% and down 83-92% of it.`; the shot title in
+brackets only when it has one, and a span whose ends round the same reads as
+one number (`across 40% and down 20% of it`, a pin). Each mark's cut-out
+goes with the message's `images`, after the reply's pictures, in mark order.
+Saved drafts keep marks, so a closed window comes back with them drawn. A
+moved review keeps the draft's marks that still fit, without cut-outs.
 
 Every change persists a `review.updated` event with `{ review: DesignReview }`.
 An option's `url` is an http or https page; the Mac app drops any other
@@ -176,7 +250,7 @@ MCP tool definitions, bound to the calling thread. Its schema matches
 `reviews.create` without `threadId`; it returns the review ID and explains
 that the choice/notes will arrive as a later message. The existing URL
 patch panels are independent of these review windows. Reviews take
-pictures, videos and pages, with a live `url` per option opened in the
+pictures, videos, sounds and pages, with a live `url` per option opened in the
 browser; overlays are deferred.
 
 #### Reviews on the phone
@@ -213,8 +287,10 @@ comes with `preview: false`, so the phone says so rather than waiting.
 
 The phone's Reviews sheet opens from the pending-review button or a
 `review:<id>` link. It shows reference and recommended options, each shot's
-still, multiple picks, none, per-option notes and a reply. HTML and video
-originals stay on the Mac; the phone labels their stills. Loading and
+still, multiple picks, none, per-option notes and a reply. HTML, video and
+sound originals stay on the Mac; the phone labels their stills (a shot's
+`kind` is `image`, `video`, `audio` or `page`; an unknown one reads as a
+still). Loading and
 failed submissions keep the user's draft. A stale revision reloads the
 review and requires another deliberate send. Older backends keep the
 Mac-only explanation.
@@ -289,7 +365,11 @@ is refused). Pressing it adds that panel to the pressing thread's
 job, so it's never spent, and the agent hears nothing of it. The panel's
 `badge` and `summary` run in its folder whenever the thread's patches are
 read, as for that folder's own threads, which is what starts a patch's
-server (the YouTube patch's badge starts its page's). Its `id` is
+server (the YouTube patch's badge starts its page's). A press runs that
+one panel's `badge` and `summary` and shows it, without waiting for the
+rest of the thread's patches (on a busy runner that wait once kept the
+panel away for 13 minutes, 23 Nov 2026). A client handed a `panelRequest` for a panel the summary
+doesn't have yet waits for the summary that brings it. Its `id` is
 `<panelId>@<8 hex of its folder's hash>` and it has `from`, its folder,
 so nothing takes the thread for one of that folder's (the YouTube page
 lists the threads that have its panel as ones to ask in). Its url's
@@ -381,7 +461,7 @@ Persisted event types (stored in `events.ndjson`, returned by `threads.events`):
 
 | type | fields |
 |---|---|
-| `user.message` | `text`, `images: ImageRef[]`, `answers?: AskAnswer[]` (the open card's asks it answers, as `threads.send` gave them: for showing, the agent only gets `text`), `origin?: "runner" \| "schedule" \| "phone"` (`runner` when the runner sent the message by itself, such as the resume after a restart; `schedule` when a schedule sent it, with `scheduleId`; `phone` when it came from the phone through the Convex mirror (Sync), and the agent then gets it after a line saying so and whether the user is at the Mac, though `text` keeps what was typed; absent for anything a person or client sent; a message typed by the user that starts a turn 12 hours or more after the thread's last turn ended, and doesn't answer a card or a review, also reaches the agent after a line asking it to open with what the thread is for and where it stands, and `text` keeps what was typed), `wakeReason?: string` (only for runner messages: what woke the thread, shown on its turn divider), `scheduleId?`, `editOf?: number` (the seq of the message this one replaced, see Editing a message) |
+| `user.message` | `text`, `images: ImageRef[]`, `attachments?: AttachmentRef[]`, `answers?: AskAnswer[]` (the open card's asks it answers, as `threads.send` gave them: for showing, the agent only gets `text`), `origin?: "runner" \| "schedule" \| "phone"` (`runner` when the runner sent the message by itself, such as the resume after a restart, or one of its own tools did, such as `tb red-watch`'s news of CI on main (connection.md, `threads.send`); `schedule` when a schedule sent it, with `scheduleId`; `phone` when it came from the phone through the Convex mirror (Sync), and the agent then gets it after a line saying so and whether the user is at the Mac, though `text` keeps what was typed; absent for anything a person or client sent), `wakeReason?: string` (only with `origin: "runner"`: what happened, in a few words, such as "The Threadbear GPUI app restarted onto daabd88f7"; a turn the runner's message started gets the same "14 h later" divider as one background work woke, saying this, or "Threadbear woke it" without one, unless a "Woke up" note already said so), `scheduleId?`, `editOf?: number` (the seq of the message this one replaced, see Editing a message), `sentAs?: string` (the `turnId` `threads.send` returned for a message that waited in the queue and then went into this running turn, as one sent while a cold thread compacts does; `tb send --wait` follows this turn instead) |
 | `assistant.text` | `itemId`, `text` (complete markdown for that block), `summary?: true` (the turn's summary, written by the runner from `end_turn`; see "Needs you"), `givesWay?: true` (on a summary, with bullet replies off: see "The summary"), `narration?: true` (Claude sent this as a narration block, whose text reaches the runner only as a short summary of what the agent wrote, not its words: see Transient events), `final?: true` (with one reply, the agent's message after `end_turn`, the turn's reply: see "Needs you", One reply). A later `assistant.text` with the same `itemId` replaces the earlier one where it stands |
 | `reasoning` | `itemId`, `text` (summary) |
 | `tool.call` | `itemId`, `name` (raw tool name), `kind` (`command` \| `read` \| `edit` \| `write` \| `search` \| `web` \| `mcp` \| `task` \| `todo` \| `image` \| `other`; `image` is image generation), `title` (one line, e.g. "npm test" or "Edit src/a.ts"), `input` (object, large strings truncated to 16 KB) |

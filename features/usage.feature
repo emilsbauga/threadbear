@@ -35,7 +35,18 @@ Feature: The Usage panel and its honey pot
     And in the "Claude" card, "alex+4@example.com"'s line starts "Used up, back"
     When a Grok login with no reading is added
     Then in the "Not in a pool" card, "Grok" has the "grok" logo and no ring
-    And in the "Not in a pool" card, "Grok" says why: "Grok reports its limit only from its background service"
+    And in the "Not in a pool" card, "Grok" says why: "Not read yet"
+
+  # Mike's Gemini login showed no figures (23 Nov 2026). The runner reads its
+  # Google plan with antigravity-acp's own /usage: the Gemini models' 5-hour
+  # and weekly windows decide its room, and the Claude and GPT group's week
+  # gets a meter of its own that never does.
+  @usage.pools @swift-pending
+  Scenario: A Gemini login shows how much of its Google plan is left
+    When I click the honey pot in the activity bar
+    And a Gemini login with its plan's usage is added
+    Then in the "Not in a pool" card, "Gemini" has the "antigravity" logo and a ring at 55%
+    And in the "Not in a pool" card, "Gemini" has "5-hour 91% left, Weekly 55% left, Weekly Claude and GPT 100% left"
 
   # Option A of Mike's 20 Nov review: a card per login with its own chart
   # took a screen for two or three logins, so each is one row now, and its

@@ -67,24 +67,27 @@ path_without_self() {
 }
 PATH="$(path_without_self)"
 export PATH
-command -v cargo >/dev/null 2>&1 || { echo "shared-cargo: no cargo on the PATH after this one" >&2; exit 127; }
+# Or the one check.sh picked (rustup's, for rust-toolchain.toml's pin), as a
+# Homebrew cargo earlier on the PATH would win a lookup (Codex's review).
+real="${THREADBEAR_SHARED_CARGO_REAL:-cargo}"
+command -v "$real" >/dev/null 2>&1 || { echo "shared-cargo: no cargo on the PATH after this one" >&2; exit 127; }
 
 base="${THREADBEAR_SHARED_CARGO_BASE:-}"
 copy="${THREADBEAR_SHARED_CARGO_SRC:-}"
 if [ -z "$base" ] || [ -z "$copy" ] || [ -n "${THREADBEAR_SHARED_CARGO_HELD:-}" ]; then
-  exec cargo "$@"
+  exec "$real" "$@"
 fi
 # Commands that read the sources but build nothing don't need a slot.
 case "${1:-}" in
-  -V|--version|version|help|--help|-h|fmt|metadata|locate-project|tree|pkgid|read-manifest|verify-project) exec cargo "$@" ;;
+  -V|--version|version|help|--help|-h|fmt|metadata|locate-project|tree|pkgid|read-manifest|verify-project) exec "$real" "$@" ;;
 esac
 here="$(pwd -P)"
 named="${copy%/}"
-copy="$(cd "$copy" && pwd -P)" || exec cargo "$@"
+copy="$(cd "$copy" && pwd -P)" || exec "$real" "$@"
 case "$here/" in
   "$copy"/*) rel="${here#"$copy"}" ;;
   # Not in the checkout's copy: nothing to build from a slot.
-  *) exec cargo "$@" ;;
+  *) exec "$real" "$@" ;;
 esac
 out="${CARGO_TARGET_DIR:-$copy/desktop/target}"
 key="${THREADBEAR_SHARED_CARGO_KEY:-$(basename "$copy")}"
@@ -152,7 +155,8 @@ printf '%s\n' "$key" >"$dir/.last-key" 2>/dev/null || true
 touch "$dir/.in-use" "$target" 2>/dev/null || true
 
 # The checkout's copy, by content. The same leave-outs as remote.sh's copy,
-# and node_modules, which cargo never reads and is most of a copy's size.
+# and node_modules, which cargo never reads and is most of a copy's size, and
+# .git, which a check without a host has (the worktree itself is the copy).
 # A path that became a link, or stopped being one, since this slot last had a
 # copy (scripts/fix-link-kinds.sh): rsync can't swap those over itself.
 if [ -f "$copy/scripts/fix-link-kinds.sh" ]; then
@@ -160,20 +164,22 @@ if [ -f "$copy/scripts/fix-link-kinds.sh" ]; then
   while IFS= read -r l; do links+=("$l"); done < <(bash "$copy/scripts/fix-link-kinds.sh" --links "$copy")
   bash "$copy/scripts/fix-link-kinds.sh" "$dir/src" ${links[@]+"${links[@]}"}
 fi
-if ! rsync -rlpDc --delete --exclude node_modules --exclude .build --exclude target --exclude reports \
+if ! rsync -rlpDc --delete --exclude node_modules --exclude .build --exclude target --exclude reports --exclude .git \
   --exclude .fixtures --exclude .swiftpm --exclude dist --exclude DerivedData --exclude .DS_Store \
   "$copy/" "$dir/src/"; then
   echo "shared-cargo: couldn't copy $copy into $dir/src" >&2
   exit 1
 fi
-# The copy's node_modules, linked where they are there: the client's tests
+# The copy's node_modules, linked where they are there (a folder, or the link
+# a worktree has to the main checkout's: check.sh runs this on a worktree
+# itself when there's no check host; Codex's and Gemini's reviews): the client's tests
 # start the mock runner (mock-runner/) from the slot's copy, and it
 # needs its packages (Codex's review). rsync leaves what it excludes alone, so
 # the links stay through the next copy and are only made again.
 find "$dir/src" -name node_modules -prune -type l -exec rm -f {} + 2>/dev/null || true
 while IFS= read -r nm; do
   ln -sfn "$nm" "$dir/src/${nm#"$copy"/}" 2>/dev/null || true
-done < <(find "$copy" -name node_modules -prune -type d 2>/dev/null)
+done < <(find "$copy" -name node_modules -prune \( -type d -o -type l \) 2>/dev/null)
 # The programs and libraries at the top of each profile folder (the ones with
 # a deps folder: debug, release, a custom profile, <triple>/debug), each with
 # its inode, time and size: one that's different after cargo was built by it.
@@ -217,7 +223,7 @@ fi
 rc=0
 (
   cd "$dir/src$rel" || exit 1
-  CARGO_TARGET_DIR="$target" THREADBEAR_SHARED_CARGO_HELD=1 exec cargo ${args[@]+"${args[@]}"}
+  CARGO_TARGET_DIR="$target" THREADBEAR_SHARED_CARGO_HELD=1 exec "$real" ${args[@]+"${args[@]}"}
 ) || rc=$?
 
 # What goes back to the checkout's own target: a program this cargo built,

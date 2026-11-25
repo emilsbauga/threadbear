@@ -8,7 +8,7 @@ import { claudeCommands } from '../../src/claude-trust.ts';
 import { trackedNodeModules } from '../../src/tracked-packages.ts';
 import { git as worktreeGit } from '../../src/worktrees.ts';
 import { changedFiles } from '../../src/move-git.ts';
-import { untrustedGit, untrustedGitSync } from '../../src/safe-git.ts';
+import { untrustedGit, untrustedGitSync, parseConfigListBytes, repoProofConfig } from '../../src/safe-git.ts';
 
 // A folder that arrived with its own .git (a zip, a shared drive), whose
 // .git/config names an fsmonitor program. Nothing the runner does before
@@ -221,4 +221,30 @@ test('untrustedGit runs no diff.external, and only the commands it has been look
   assert.ok((await untrustedGit(repo, ['worktree', 'list', '--porcelain'], quiet)).ok);
   assert.equal(fs.existsSync(marker), false);
   assert.throws(() => untrustedGitSync(repo, ['diff']), /listings/);
+});
+
+// Codex's review of Daybreak 179, 24 Nov 2026: a setting named with a byte
+// that isn't UTF-8 (a config hook's name) read as text comes back as U+FFFD,
+// and switching that off on the command line names another setting.
+test("a config setting whose name isn't UTF-8 can't be switched off, so git isn't run", () => {
+  const listing = (key: Buffer, value: string) => Buffer.concat([Buffer.from('local\0'), key, Buffer.from(`\n${value}\0`)]);
+  assert.deepEqual(parseConfigListBytes(listing(Buffer.from('hook.é.command'), 'x')), [{ scope: 'local', key: 'hook.é.command', value: 'x' }]);
+  assert.throws(() => parseConfigListBytes(listing(Buffer.concat([Buffer.from('hook.'), Buffer.from([0xff]), Buffer.from('.command')]), 'x')), /isn't UTF-8/);
+});
+
+// Gemini's review of Daybreak 179: `.` skips line separators, and `.+` an
+// empty name, so a filter, diff driver or protocol named either way stayed on.
+test('a filter, diff driver, protocol or credential helper with any name is switched off', () => {
+  for (const name of ['a b', 'a\rb', '']) {
+    const config = repoProofConfig([
+      { scope: 'local', key: `filter.${name}.clean`, value: 'evil' },
+      { scope: 'local', key: `diff.${name}.textconv`, value: 'evil' },
+      { scope: 'local', key: `protocol.${name}x.allow`, value: 'always' },
+      { scope: 'local', key: `credential.${name}.helper`, value: 'evil' },
+    ], 'remote');
+    assert.ok(config.includes(`filter.${name}.clean=`), JSON.stringify(name));
+    assert.ok(config.includes(`diff.${name}.textconv=`), JSON.stringify(name));
+    assert.ok(config.includes(`protocol.${name}x.allow=never`), JSON.stringify(name));
+    assert.ok(config.includes('credential.helper='), JSON.stringify(name));
+  }
 });

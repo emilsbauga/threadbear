@@ -136,10 +136,8 @@
     },
     "Rename a thread on the iPhone from its ... menu, or by pressing and holding its row",
     "OpenCode 2's questions show as question cards",
-    "Pull requests open in a tab beside the thread, with checks, the diff, comments and Merge, and PR links in replies show whether they're open, draft, merged or closed (an experiment)",
-    "Archive's menu asks whether you needed to see the thread, to learn which ones you don't, and archives nothing by itself (an experiment)",
-    "Your main Mac's CLAUDE.md and memory reach the threads on your other machines (an experiment)",
-    "A long Claude thread woken after its cache has run out tidies itself up first, which costs less (an experiment)"
+    "Pull requests open in a tab beside the thread, with checks, the diff, comments and Merge, and PR links in replies show whether they're open, draft, merged or closed",
+    "A long Claude thread woken after its cache has run out tidies itself up first, which costs less"
   ],
   "changed": [
     "A thread waiting on a card (a secret, a question, a permission) stays at the top of the Inbox whichever way you sort it, as the card can run out",

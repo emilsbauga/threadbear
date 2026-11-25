@@ -414,6 +414,9 @@ pub struct ReviewDraft {
     /// window went in as its file path).
     pub images: Vec<ImageRef>,
     pub none: bool,
+    /// Mike's own marks on the pictures (the `reviewCanvas` experiment),
+    /// each placed in `reply` by a `[Mark N]`.
+    pub marks: Vec<UserMark>,
 }
 
 impl ReviewDraft {
@@ -463,6 +466,16 @@ impl ReviewDraft {
             reply: string(c, "reply").map(|r| review_text(r, REVIEW_REPLY_MAX)),
             images,
             none: boolean(c, "none").unwrap_or(false),
+            marks: c
+                .get("marks")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .take(REVIEW_MARKS_MAX)
+                        .filter_map(UserMark::decode)
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -472,6 +485,159 @@ pub struct ReviewShot {
     pub title: Option<String>,
     pub image: ImageRef,
     pub media: Option<ImageRef>,
+    /// The agent's notes and arrows on the picture (the `reviewCanvas`
+    /// experiment, docs/protocol/events.md "Marks: the canvas").
+    pub marks: Vec<AgentMark>,
+}
+
+/// A box on a picture: fractions of its width and height from the top left,
+/// x0, y0, x1, y1, so it holds at any size the picture is drawn.
+pub type MarkBox = [f64; 4];
+
+fn mark_box(v: Option<&Value>) -> Option<MarkBox> {
+    let list = v?.as_array()?;
+    if list.len() != 4 {
+        return None;
+    }
+    let mut out = [0.; 4];
+    for (i, n) in list.iter().enumerate() {
+        out[i] = n.as_f64().filter(|n| n.is_finite())?.clamp(0., 1.);
+    }
+    (out[0] <= out[2] && out[1] <= out[3]).then_some(out)
+}
+
+/// What the agent's mark draws: round the box, along its bottom, over it as
+/// a marker swipe, or an arrow to its centre.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    Circle,
+    Underline,
+    Highlight,
+    Arrow,
+}
+
+/// Colours with jobs: yellow points something out, green is what solves it,
+/// rose is a cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MarkInk {
+    #[default]
+    Yellow,
+    Green,
+    Rose,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentMark {
+    pub kind: MarkKind,
+    pub bbox: MarkBox,
+    pub note: Option<String>,
+    pub ink: MarkInk,
+}
+
+/// What the runner takes (runner/src/reviews.ts): 6 a shot, a note of 80.
+pub const REVIEW_SHOT_MARKS_MAX: usize = 6;
+pub const REVIEW_MARK_NOTE_MAX: usize = 80;
+/// Mike's marks on a draft, and the points in one stroke.
+pub const REVIEW_MARKS_MAX: usize = 20;
+pub const REVIEW_MARK_POINTS_MAX: usize = 400;
+
+impl AgentMark {
+    fn decode(v: &Value) -> Option<AgentMark> {
+        let c = v.as_object()?;
+        let kind = match c.get("kind")?.as_str()? {
+            "circle" => MarkKind::Circle,
+            "underline" => MarkKind::Underline,
+            "highlight" => MarkKind::Highlight,
+            "arrow" => MarkKind::Arrow,
+            _ => return None,
+        };
+        let ink = match c.get("ink").and_then(Value::as_str) {
+            Some("green") => MarkInk::Green,
+            Some("rose") => MarkInk::Rose,
+            _ => MarkInk::Yellow,
+        };
+        Some(AgentMark {
+            kind,
+            bbox: mark_box(c.get("box"))?,
+            note: string(c, "note")
+                .map(|n| review_text(n.trim().to_owned(), REVIEW_MARK_NOTE_MAX))
+                .filter(|n| !n.is_empty()),
+            ink,
+        })
+    }
+}
+
+/// How Mike marked a part: a loop round it, a marker swipe, or a pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserMarkKind {
+    Circle,
+    Highlight,
+    Pin,
+}
+
+impl UserMarkKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            UserMarkKind::Circle => "circle",
+            UserMarkKind::Highlight => "highlight",
+            UserMarkKind::Pin => "pin",
+        }
+    }
+}
+
+/// One of Mike's marks: on which option's which shot, the box round it, the
+/// stroke he drew (fractions of the picture), and a cut-out of the picture
+/// there that goes to the agent with his words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserMark {
+    pub n: u32,
+    pub kind: UserMarkKind,
+    pub option_id: String,
+    pub shot: usize,
+    pub bbox: MarkBox,
+    pub path: Vec<[f64; 2]>,
+    pub image: Option<ImageRef>,
+}
+
+impl UserMark {
+    fn decode(v: &Value) -> Option<UserMark> {
+        let c = v.as_object()?;
+        let kind = match c.get("kind")?.as_str()? {
+            "circle" => UserMarkKind::Circle,
+            "highlight" => UserMarkKind::Highlight,
+            "pin" => UserMarkKind::Pin,
+            _ => return None,
+        };
+        let path = c
+            .get("path")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .take(REVIEW_MARK_POINTS_MAX)
+                    .filter_map(|p| {
+                        let p = p.as_array()?;
+                        let x = p.first()?.as_f64().filter(|n| n.is_finite())?;
+                        let y = p.get(1)?.as_f64().filter(|n| n.is_finite())?;
+                        Some([x.clamp(0., 1.), y.clamp(0., 1.)])
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(UserMark {
+            n: u32::try_from(c.get("n")?.as_u64()?)
+                .ok()
+                .filter(|n| *n > 0)?,
+            kind,
+            option_id: c.get("optionId")?.as_str()?.to_owned(),
+            shot: usize::try_from(c.get("shot")?.as_u64()?).ok()?,
+            bbox: mark_box(c.get("box"))?,
+            path,
+            image: match c.get("image") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(ImageRef::decode(v)?),
+            },
+        })
+    }
 }
 
 impl ReviewShot {
@@ -489,6 +655,16 @@ impl ReviewShot {
             title,
             image,
             media,
+            marks: c
+                .get("marks")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(AgentMark::decode)
+                        .take(REVIEW_SHOT_MARKS_MAX)
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -727,6 +903,31 @@ impl ReviewAnswer {
                 label,
                 text: reply.to_owned(),
             });
+        }
+        // A line for each of his marks ("[Mark 1] circle on A. ..."), told
+        // to the agent; his bubble says how many.
+        if !response.marks.is_empty() {
+            rest = rest.strip_prefix("\n\n")?;
+            let end = rest.find("\n\n").unwrap_or(rest.len());
+            let block: Vec<&str> = rest[..end].split('\n').collect();
+            if block.len() != response.marks.len() || !block.iter().all(|l| l.starts_with("[Mark "))
+            {
+                return None;
+            }
+            let count = response.marks.len();
+            lines.push(ReviewAnswerLine {
+                label: if lines.is_empty() {
+                    title.clone()
+                } else {
+                    String::new()
+                },
+                text: if count == 1 {
+                    "Marked a part".to_owned()
+                } else {
+                    format!("Marked {count} parts")
+                },
+            });
+            rest = &rest[end..];
         }
         // "Notes on <id> (<option title>): <note>", in the review's option
         // order, which the draft doesn't keep, so whichever comes next.

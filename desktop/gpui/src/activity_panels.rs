@@ -38,7 +38,7 @@ impl PanelView {
         // On show and gone again, as the dock has it: a tab behind another
         // isn't on show, as the Swift view isn't drawn there either.
         let dock_changed = cx.observe(dock, |this: &mut Self, dock, cx| {
-            let showing = dock.read(cx).controller.is_showing(this.panel);
+            let showing = dock.read(cx).is_showing(this.panel);
             if showing != this.showing {
                 this.showing = showing;
                 this.tell_app(showing, cx);
@@ -136,7 +136,7 @@ impl Threadbear {
 
     /// Whether one of these panels is on show, for its button in the bar.
     pub(crate) fn activity_panel_showing(&self, panel: &str, cx: &App) -> bool {
-        self.dock.read(cx).controller.is_showing(panel)
+        self.dock.read(cx).is_showing(panel)
     }
 }
 

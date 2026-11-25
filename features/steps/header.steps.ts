@@ -60,6 +60,16 @@ Then('the share popover says the thread is shared with a link', async function (
   assert.match(out, /link http/, out);
 });
 
+// Looked at for a while: a row that drops the share would put it out
+// some time after the step before it.
+Then('the share button stays lit', async function (this: ThreadbearWorld) {
+  for (let n = 0; n < 15; n += 1) {
+    const d = await this.app.dump();
+    assert.equal(d.header?.shared, true, `the share button went out after ${n * 100} ms`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+});
+
 // A real click on the bar's share icon, by its tooltip.
 When('I click the share button', async function (this: ThreadbearWorld) {
   await this.until('the share button', (d) => d.selection != null);

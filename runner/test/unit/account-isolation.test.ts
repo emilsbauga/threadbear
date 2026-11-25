@@ -153,6 +153,34 @@ test('unit-test workers preserve guarded caller homes across preloads', () => {
   }
 });
 
+// Hetzner Cloud's self-update, 23 Nov: the process lookup's readlink of
+// /proc/<pid>/fd/1 failed the file, as the updater's output goes to a log in
+// the real data folder. readlink and lstat read the link, not where it points.
+test('unit-test guard lets readlink and lstat see a link to a real account, not read through it', () => {
+  // A guarded home whose login file really exists, as the link's target must.
+  const home = tmpDir();
+  fs.mkdirSync(path.join(home, '.codex'));
+  fs.writeFileSync(path.join(home, '.codex', 'probe'), '');
+  const target = JSON.stringify(path.join(home, '.codex', 'probe'));
+  const run = (operation: string) => child(`
+    import fs from 'node:fs';
+    const link = process.env.HOME + '/to-login';
+    fs.symlinkSync(${target}, link);
+    const dir = process.env.HOME + '/to-codex';
+    fs.symlinkSync(${JSON.stringify(path.join(home, '.codex'))}, dir);
+    try { ${operation}; } catch {}
+  `, { HOME: home });
+  for (const operation of [`fs.readlinkSync(link)`, `fs.lstatSync(link)`, `fs.lstatSync(dir)`, `await fs.promises.readlink(link)`, `await fs.promises.lstat(link)`]) {
+    const result = run(operation);
+    assert.equal(result.status, 0, operation + ': ' + result.stderr);
+  }
+  for (const operation of [`fs.readFileSync(link)`, `fs.statSync(link)`, `await fs.promises.readlink(${target})`, `fs.lstatSync(${target})`, `fs.lstatSync(dir + '/')`, `fs.lstatSync(dir + '/.')`, `fs.lstatSync(dir + '/x/..')`]) {
+    const result = run(operation);
+    assert.equal(result.status, 1, operation + ': ' + result.stderr);
+    assert.match(result.stderr, /Unit tests accessed real account folders/);
+  }
+});
+
 test('unit-test guard follows a fixture symlink back to a real account', () => {
   for (const replace of [
     `fs.unlinkSync(alias); fs.symlinkSync(os.userInfo().homedir, alias);`,

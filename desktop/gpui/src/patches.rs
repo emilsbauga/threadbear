@@ -27,14 +27,29 @@ use threadbear_core::inbox::ThreadSummary;
 /// (`ListPanel`), an image panel every 3 seconds, 5 while it has no picture.
 const LIST_REFRESH: Duration = Duration::from_secs(15);
 
+/// The most picture bytes image panels keep, across threads (and the one
+/// just fetched).
+const PICTURES_KEPT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// A panel's picture fetched this recently is showing: an image panel on
+/// screen is fetched again every 3 seconds (5 with no picture).
+const ON_SCREEN: Duration = Duration::from_secs(10);
+
 /// What patch panels hold between frames.
 #[derive(Default)]
 pub(crate) struct PanelsState {
     /// Each panel's last answer, by "<thread>/<panel>".
     pub renders: HashMap<String, PanelRender>,
-    pictures: HashMap<String, Arc<Image>>,
+    /// The picture's bytes, drawn through the picture budget (fit_picture.rs),
+    /// and when they came. At most PICTURES_KEPT_BYTES in all: a panel
+    /// that's showing fetches its picture again every few seconds, so the
+    /// ones longest since are out of sight, and go first.
+    pictures: HashMap<String, (Arc<Image>, std::time::Instant)>,
     /// Panels being polled, so one timer each.
     polling: HashSet<String>,
+    /// Panels being fetched, so one fetch each: a slow runner's answers
+    /// don't pile up behind the poll.
+    fetching: HashSet<String>,
     /// Patch versions whose Trust has been pressed (`trustingPatches`).
     pub trusting: HashSet<String>,
     /// Actions running now, by "<thread>/<action>" (`runningActions`).
@@ -231,7 +246,6 @@ impl SidePane {
         app.read(cx)
             .dock
             .read(cx)
-            .controller
             .is_showing(&threadbear_core::pinned_panels::panel(thread_id, panel_id))
     }
 
@@ -242,6 +256,9 @@ impl SidePane {
         panel_id: String,
         cx: &mut Context<Self>,
     ) {
+        if !self.panels.fetching.insert(key.clone()) {
+            return;
+        }
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
             let res = call(
@@ -258,40 +275,72 @@ impl SidePane {
                 },
             };
             // The picture comes from the runner, so another Mac's works too.
+            let mut room = None;
             let picture = match render.image.as_ref() {
                 Some(image) => {
-                    let read = call(client, "files.read", json!({ "path": image.path }))
-                        .await
-                        .ok()
-                        .as_ref()
-                        .and_then(threadbear_core::folders::FileRead::decode);
-                    match read {
-                        // Shrunk, off this thread, when it's bigger than the GPU draws (fit_picture.rs).
-                        Some(read) => {
-                            let jpeg = image.media_type.contains("jpeg");
-                            let format = if jpeg {
-                                ImageFormat::Jpeg
-                            } else {
-                                ImageFormat::Png
-                            };
-                            // One too big to shrink shows nothing, as one that can't be read.
-                            cx.background_executor()
-                                .spawn(
-                                    async move { crate::fit_picture::fit_bytes(format, read.data) },
+                    // Room for its bytes before they're asked for, as for
+                    // another Mac's pictures (fit_picture.rs, `reader`).
+                    room = Some(
+                        crate::fit_picture::reader(
+                            crate::fit_picture::Reads::Remote,
+                            crate::fit_picture::answer_bytes(crate::fit_picture::FILE_MAX_BYTES),
+                            cx,
+                        )
+                        .await,
+                    );
+                    let params = json!({ "path": image.path, "maxBytes": crate::fit_picture::FILE_MAX_BYTES });
+                    let answer = call(client, "files.read", params).await.ok();
+                    // Off this thread, and not past what was asked for.
+                    let read = cx
+                        .background_executor()
+                        .spawn(async move {
+                            answer.and_then(|value| {
+                                threadbear_core::folders::FileRead::decode_at_most(
+                                    &value,
+                                    crate::fit_picture::FILE_MAX_BYTES,
                                 )
-                                .await
-                        }
-                        None => None,
-                    }
+                            })
+                        })
+                        .await
+                        // Only its start won't draw, nor more than was asked for.
+                        .filter(|read| {
+                            !read.truncated
+                                && read.data.len() as u64 <= crate::fit_picture::FILE_MAX_BYTES
+                        });
+                    // encoded: its bytes, drawn through the picture budget (fit_picture.rs).
+                    read.map(|read| Arc::new(Image::from_bytes(ImageFormat::Png, read.data)))
                 }
                 None => None,
             };
             this.update(cx, |t, cx| {
+                t.panels.fetching.remove(&key);
                 match picture {
-                    Some((format, bytes)) => {
-                        t.panels
-                            .pictures
-                            .insert(key.clone(), Arc::new(Image::from_bytes(format, bytes)));
+                    Some(image) => {
+                        let pictures = &mut t.panels.pictures;
+                        pictures.insert(key.clone(), (image, std::time::Instant::now()));
+                        let bytes = |p: &HashMap<String, (Arc<Image>, std::time::Instant)>| {
+                            p.values().map(|(i, _)| i.bytes().len() as u64).sum::<u64>()
+                        };
+                        // Past the limit, the longest fetched go, this one
+                        // aside, whether showing or not: the limit holds.
+                        // One on screen keeps its answer, so it's shown again
+                        // at its next poll rather than fetched straight back
+                        // (panels showing at once mustn't evict each other in
+                        // a loop); one out of sight loses it too, so it's
+                        // fetched when it's next drawn.
+                        let now = std::time::Instant::now();
+                        while bytes(pictures) > PICTURES_KEPT_BYTES {
+                            let oldest = pictures
+                                .iter()
+                                .filter(|(k, _)| **k != key)
+                                .min_by_key(|(_, (_, at))| *at)
+                                .map(|(k, (_, at))| (k.clone(), *at));
+                            let Some((oldest, at)) = oldest else { break };
+                            pictures.remove(&oldest);
+                            if now.duration_since(at) > ON_SCREEN {
+                                t.panels.renders.remove(&oldest);
+                            }
+                        }
                     }
                     None if render.image.is_none() => {
                         t.panels.pictures.remove(&key);
@@ -304,6 +353,7 @@ impl SidePane {
                 cx.notify();
             })
             .ok();
+            drop(room);
         })
         .detach();
     }
@@ -405,7 +455,7 @@ impl SidePane {
                 },
             },
             "image" => {
-                let picture = self.panels.pictures.get(&key).cloned();
+                let picture = self.panels.pictures.get(&key).map(|(i, _)| i.clone());
                 if !self.panels.renders.contains_key(&key) {
                     self.refresh_panel(&thread.id, id, cx);
                 }
@@ -418,7 +468,7 @@ impl SidePane {
                             .justify_center()
                             .p(px(16.))
                             .child(
-                                img(ImageSource::Image(image))
+                                img(crate::fit_picture::bytes_source(image))
                                     .size_full()
                                     .object_fit(ObjectFit::Contain),
                             );
@@ -1717,7 +1767,7 @@ fn project_badge_face(mark: crate::patch_icons::ProjectMark, p: Palette) -> AnyE
             ..
         }) => {
             let letter = mark.letter.clone();
-            img(std::path::PathBuf::from(path))
+            img(crate::fit_picture::icon_source(&path))
                 .size(px(14.))
                 .rounded(px(3.))
                 .object_fit(ObjectFit::Contain)

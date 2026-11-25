@@ -89,8 +89,12 @@ fetch the bytes and load them into their sealed views.
    and a policy ahead of the page that it can only narrow; no alerts. Full
    screen from the card.
 4. Website and Android.
-5. Telling agents: the guide, and a line in what agents read about showing
-   things (within the context budget).
+5. Telling agents (built, 24 Nov): at the check-in the only page shown in
+   five days was one the build thread asked for, so Mike chose to keep
+   trying it with agents told. `LIVE_PAGES_LINE` in threadbear-mcp.ts goes
+   in Claude's server instructions and Codex's and ACP agents' guidance,
+   only with the experiment on (outside the context budget, under 400
+   bytes).
 
 ## What the reviews found (Codex and Gemini, 19 Nov)
 

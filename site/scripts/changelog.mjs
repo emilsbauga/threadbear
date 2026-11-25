@@ -89,6 +89,13 @@ export function readReleases(dir, people = readPeople(dir)) {
     });
     r.highlights.forEach((h, i) => checkCredit(h.credit, `${where} highlight ${i + 1}`));
     for (const k of KINDS) r[k].forEach((l) => checkCredit(l.credit, `${where} ${k} line "${(l.text ?? l).slice(0, 40)}"`));
+    // Only what's live for everyone (Mike, 22 Nov: "You shouldn't put anything that's not live
+    // in the updates"): an experiment goes on the page the day it's made standard.
+    if (r.release >= "2026-11-21") {
+      const texts = [...r.highlights.flatMap((h) => [h.title, h.text]), ...KINDS.flatMap((k) => r[k].map((l) => l.text ?? l))];
+      const bad = texts.find((t) => /experiment/i.test(t));
+      if (bad) throw new Error(`${where}: "${bad.slice(0, 60)}" is an experiment, which isn't live for everyone; leave it out until it's made standard`);
+    }
     if (!r.highlights.length && !KINDS.some((k) => r[k].length)) throw new Error(`${where} has nothing in it`);
     return r;
   });

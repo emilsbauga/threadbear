@@ -24,12 +24,43 @@ class LinkPolicyTest {
         assertEquals(LinkPolicy.Kind.Refuse, LinkPolicy.kind("https://"))
     }
 
-    @Test fun aLongLinkIsCutInTheMiddle() {
-        val long = "https://x.dev/" + "a".repeat(400) + "END"
-        val shown = LinkPolicy.shown(long)
-        assertEquals(200 + 1 + 100, shown.length)
-        assert(shown.startsWith("https://x.dev/") && shown.endsWith("END") && "…" in shown)
-        assertEquals("https://x.dev", LinkPolicy.shown("https://x.dev"))
+    /** Daybreak 167: the question showed the first 200 and last 100 characters, and opened all of it. */
+    @Test fun theQuestionShowsTheWholeLinkItOpens() {
+        val long = "x-app://do?" + "a=1&".repeat(200) + "send=everything"
+        val ask = assertIs<LinkPolicy.Kind.Ask>(LinkPolicy.kind(long))
+        assertEquals(long, ask.url, "what opens is the link as written")
+        val (title, detail) = LinkPolicy.question(ask)
+        assertEquals("Open this x-app link?", title)
+        assertTrue(detail.endsWith("\n\n" + long), "the whole link, byte for byte, as it opens")
+    }
+
+    @Test fun oneLengthLimitBeforeTheScheme() {
+        val ask = "x-app://" + "a".repeat(LinkPolicy.MAX_ASK_LINK - 8)
+        assertIs<LinkPolicy.Kind.Ask>(LinkPolicy.kind(ask))
+        assertEquals(LinkPolicy.Kind.Refuse, LinkPolicy.kind(ask + "a"), "an asking link too long to show whole")
+        assertEquals(LinkPolicy.Kind.Refuse, LinkPolicy.kind("mailto:" + "a".repeat(10_000)))
+        val web = "https://x.dev/" + "a".repeat(LinkPolicy.MAX_LINK - 14)
+        assertIs<LinkPolicy.Kind.Web>(LinkPolicy.kind(web), "a web page opens without a question")
+        assertEquals(LinkPolicy.Kind.Refuse, LinkPolicy.kind(web + "a"))
+        assertEquals(LinkPolicy.Kind.Refuse, LinkPolicy.kind("file:///" + "a".repeat(LinkPolicy.MAX_LINK)))
+        assertIs<LinkPolicy.Kind.Ask>(LinkPolicy.kind("mailto:mike@example.com?subject=Hi%20there&body=Line%0Atwo"), "an ordinary mailto still asks")
+    }
+
+    @Test fun charactersThatHideTextAreRefused() {
+        for (c in listOf("\r", "\n", "\t", "\u0000", "\u007f", "\u0085", "\u202e", "\u202d", "\u2066", "\u2069", "\u200e", "\u200f", "\u061c",
+            "\u200b", "\u200d", "\u2060", "\ufeff", "\u00ad", "\u2028", "\u2029", "\udb40\udc01", "\ud800")) {
+            for (url in listOf("x-app://do?to=me${c}&to=you", "https://example.com/${c}x", "file:///tmp/${c}a")) {
+                assertEquals(LinkPolicy.Kind.Refuse, LinkPolicy.kind(url), url.map { "%04x".format(it.code) }.joinToString())
+            }
+        }
+        // One that asks is printable ASCII (Gemini's reviews: blank fillers
+        // and wide letters push its end out of sight); letters from any
+        // language are fine percent-encoded, and in a web address.
+        for (blank in listOf("x-app://café/日本", "x-app://a\u2800b", "x-app://a\u3164b", "x-app://a b", "x-app://Ｗ")) {
+            assertEquals(LinkPolicy.Kind.Refuse, LinkPolicy.kind(blank), blank)
+        }
+        assertIs<LinkPolicy.Kind.Ask>(LinkPolicy.kind("x-app://caf%C3%A9"))
+        assertIs<LinkPolicy.Kind.Web>(LinkPolicy.kind("https://example.com/café/日本"))
     }
 
     /** The cases the desktop app, the iPhone and the website run too (shared/cases/link-policy.json). */

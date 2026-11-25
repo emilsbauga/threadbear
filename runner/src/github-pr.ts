@@ -1,6 +1,6 @@
 // A GitHub pull request read and acted on through the gh CLI, for the app's
 // PR view: a PR link clicked in a reply opens as a tab in the side pane
-// (the inlinePrs experiment; docs/protocol/panels.md, "Pull requests"). Mike asked
+// (docs/protocol/panels.md, "Pull requests"). Mike asked
 // for it on 18 Nov after trying Capy, which opens PRs beside the chat rather
 // than sending you to the browser.
 //
@@ -72,7 +72,9 @@ export function parsePrUrl(url: string): PrRef | undefined {
 }
 
 const repoArg = (r: { owner: string; repo: string }) => `${r.owner}/${r.repo}`;
-const failed = (stderr: string) => stderr.trim().split('\n').filter(Boolean).slice(-2).join(' ') || 'gh failed';
+// No gh on this Mac is a stranger's likeliest failure: say what to do about it.
+const failed = (stderr: string) =>
+  /\bENOENT\b/.test(stderr) ? 'Opening PRs here needs the gh command line tool: install it and run gh auth login.' : stderr.trim().split('\n').filter(Boolean).slice(-2).join(' ') || 'gh failed';
 // gh from the temp folder (see the top).
 const run = (gh: Gh, args: string[]) => gh(args, os.tmpdir());
 

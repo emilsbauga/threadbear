@@ -13,13 +13,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Runner, ThreadState, TurnHold } from '../runner.ts';
-import { CARRY_ON_TOKEN } from '../runner.ts';
+import { CARRY_ON_TOKEN } from './carry-on.ts';
 import type { ImageRef } from '../protocol.ts';
 import { normaliseRecord, type ThreadRecord } from '../store.ts';
 import type { RunnerPart } from './part.ts';
 import { providerName } from '../providers.ts';
 import { paths } from '../config.ts';
-import { isDirectory } from '../fsutil.ts';
+import { atomicWriteFileSync, isDirectory } from '../fsutil.ts';
 import { readTree, writeTree, type PackEntry } from '../move-pack.ts';
 import { changedFiles, cloneRepo, cloneableUrl, originUrl, packGit, repoKey, repoTop, unpackGit, withoutCredentials, type GitMeta } from '../move-git.ts';
 import { moveInfoFrom, movedSchedules, type MoveInfo, type MovePlan, type MovePreview, type MoveRow, type MovedSchedule, type ThreadMoving } from '../moves.ts';
@@ -37,7 +37,10 @@ import { writeSlot } from '../slot.ts';
 
 // What T placed for a move, so adopting after a restart and throwing it
 // away after a failure both know (<home>/moves/<moveId>/placed.json).
-type Placed = { cwd: string; worktree?: WorktreeRecord; patchFile?: string; patchName?: string; transcript: string[]; leftBehind: string[]; fromName: string; schedules?: unknown[]; gitTips?: string[] };
+// whole: placeMove got to the end, so all that's left is the claim
+// (movePlaced); expect: the preview binding of the row it placed, so a later
+// row can only resume the same move as it was checked.
+type Placed = { whole?: true; expect?: string; cwd: string; worktree?: WorktreeRecord; patchFile?: string; patchName?: string; transcript: string[]; leftBehind: string[]; fromName: string; schedules?: unknown[]; gitTips?: string[] };
 
 // A moved thread's old folder is kept this long on S, in case.
 const KEPT_MS = 7 * 24 * 60 * 60_000;
@@ -303,7 +306,9 @@ function dropMovedReplyImages(rec: Record<string, any>): boolean {
   rec.queue = rec.queue.map((q: any) => {
     if (!q || typeof q !== 'object' || q.reviewId === undefined) return q;
     const hasResponseImages = q.reviewResponse && typeof q.reviewResponse === 'object' && 'images' in q.reviewResponse;
-    if (Array.isArray(q.images) && q.images.length === 0 && !hasResponseImages) return q;
+    // A mark's cut-out (reviewCanvas) is one of the reply's pictures too.
+    const markImages = q.reviewResponse && typeof q.reviewResponse === 'object' && Array.isArray(q.reviewResponse.marks) && q.reviewResponse.marks.some((m: unknown) => Boolean(m && typeof m === 'object' && 'image' in m));
+    if (Array.isArray(q.images) && q.images.length === 0 && !hasResponseImages && !markImages) return q;
     changed = true;
     // The words say where they were (keepPictureMarkers).
     const gone = (list: unknown) => (Array.isArray(list) ? list : []).map(() => false);
@@ -311,6 +316,14 @@ function dropMovedReplyImages(rec: Record<string, any>): boolean {
     if (hasResponseImages) {
       const { images, ...rest } = q.reviewResponse;
       next.reviewResponse = typeof rest.reply === 'string' ? { ...rest, reply: keepPictureMarkers(rest.reply, gone(images)) } : rest;
+    }
+    if (markImages) {
+      const response = next.reviewResponse ?? q.reviewResponse;
+      next.reviewResponse = { ...response, marks: response.marks.map((m: unknown) => {
+        if (!m || typeof m !== 'object') return m;
+        const { image: _, ...rest } = m as Record<string, unknown>;
+        return rest;
+      }) };
     }
     return next;
   });
@@ -380,6 +393,53 @@ function capMovedMode(rec: Record<string, any>): { was?: string; changed: boolea
   return { ...(was ? { was } : {}), changed };
 }
 
+// What its queue, held reports and waits may still reach (runner/ceiling.ts)
+// is that runner's word too: at most Ask here, as its mode is, so raising
+// the thread later shows them to Mike rather than its agent. True if any
+// changed.
+export function capMovedCeilings(rec: Record<string, unknown>): boolean {
+  let changed = false;
+  const items = (k: string): Record<string, unknown>[] => (Array.isArray(rec[k]) ? (rec[k] as unknown[]) : []).filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null);
+  for (const q of items('queue')) {
+    if (q.ceiling !== 'ask') {
+      q.ceiling = 'ask';
+      changed = true;
+    }
+  }
+  // Who a held report is from is that runner's word too: a thread here it
+  // names doesn't vouch for it (mayPassOn), so it goes by Ask alone.
+  for (const h of items('heldReports')) {
+    if (h.ceiling !== 'ask' || (typeof h.from === 'string' && !h.from.startsWith('moved:'))) {
+      h.ceiling = 'ask';
+      if (typeof h.from === 'string' && !h.from.startsWith('moved:')) h.from = `moved:${h.from}`;
+      changed = true;
+    }
+  }
+  // A wait's reply is filled in here, when the thread it waits on finishes:
+  // one that came with the record is that runner's words.
+  for (const w of items('waitingOn')) {
+    if (w.by !== undefined && (w.by as { mode?: unknown } | null)?.mode !== 'ask') {
+      w.by = { mode: 'ask' };
+      changed = true;
+    }
+    if (w.done !== undefined) {
+      delete w.done;
+      changed = true;
+    }
+  }
+  // An agent's snooze in words wakes it with them later (runner/ceiling.ts).
+  const ww = rec.wakeWhen as { said?: unknown; by?: unknown } | undefined;
+  const wc = rec.wakeCeiling as { said?: unknown; ceiling?: unknown } | undefined;
+  if (ww && typeof ww === 'object' && typeof ww.said === 'string' && (wc?.said !== ww.said || wc?.ceiling !== 'ask')) {
+    rec.wakeCeiling = { said: ww.said, ceiling: 'ask' };
+    changed = true;
+  } else if (wc !== undefined && !(ww && typeof ww === 'object')) {
+    delete rec.wakeCeiling;
+    changed = true;
+  }
+  return changed;
+}
+
 const MODE_WORDS: Record<string, string> = { full: 'Full access', auto: 'Auto' };
 function cappedNote(was: string, from: string): string {
   return `It had ${MODE_WORDS[was] ?? was} on ${from}, so it asks before tools run here: give it more access again if you want.`;
@@ -398,6 +458,7 @@ function sanitizeMoved(rec: Record<string, any>, atMostAsk: boolean, from: strin
   changed = fitMovedReviews(rec, media) || changed;
   changed = dropMovedReplyImages(rec) || changed;
   if (atMostAsk) {
+    changed = capMovedCeilings(rec) || changed;
     const capped = capMovedMode(rec);
     if (capped.was && !notes.some((n) => n.includes('so it asks before tools run here'))) notes.push(cappedNote(capped.was, from));
     changed ||= capped.changed;
@@ -968,10 +1029,17 @@ export const movesPart = {
     if ('problem' in plan) throw new Error(plan.problem);
     if (!row.plan || !samePlan(plan, row.plan)) throw new Error(`Where the thread would go on ${this.moveRunnerName(row.to)} changed since the move was planned, so it stays where it is. Move it again.`);
     const stage = stageOf(this.cfg.home, row.moveId);
-    fs.rmSync(stage, { recursive: true, force: true });
+    // An earlier placing of this move that didn't finish (the runner
+    // stopped partway; one that did only asks for its claim again,
+    // movePlaced) is undone first, as far as it can be: its placed.json is
+    // the only record of its transcript and worktree, which emptying the
+    // staging folder alone left behind (Codex's review, 23 Nov 2026).
+    await this.discardMove(row);
     fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
     const placed: Placed = { cwd: plan.cwd, transcript: [], leftBehind: [...plan.leftBehind], fromName: this.moveRunnerName(row.from) };
-    const save = () => fs.writeFileSync(path.join(stage, 'placed.json'), JSON.stringify(placed));
+    // Whole or not at all: a write cut short would lose the only record of
+    // what to undo (Codex's review, 23 Nov 2026).
+    const save = () => atomicWriteFileSync(path.join(stage, 'placed.json'), JSON.stringify(placed));
     try {
       writeTree(entries, 'thread', path.join(stage, 'thread'));
       const recFile = path.join(stage, 'thread', 'thread.json');
@@ -1010,7 +1078,7 @@ export const movesPart = {
         // and previewed, never a repo around it whose patch was found by
         // looking upward (security review, 17 Nov 2026).
         if (!(await patchMakesIn(patch.folder, plan.worktree.repo))) throw new Error(`${plan.worktree.repo} on ${this.moveRunnerName(row.to)} has no worktree patch of its own, so the thread's worktree has nowhere to go.`);
-        const made = await makeWorktree({ cwd: plan.worktree.repo, threadId: row.threadId, patch });
+        const made = await makeWorktree({ cwd: plan.worktree.repo, threadId: row.threadId, patch, inUse: this.foldersInUse(row.threadId) });
         if (!made.ok) throw new Error(`Couldn't make the thread's worktree: ${made.reason}`);
         placed.worktree = { ...made.worktree, movedIn: true };
         placed.patchFile = made.patchFile;
@@ -1081,6 +1149,7 @@ export const movesPart = {
       // and on the main Mac no more than Ask (capMovedMode).
       sanitizeMoved(rec, Boolean(this.movedInAtMostAsk?.()), placed.fromName, placed.leftBehind, { threadId: row.threadId, now: path.join(stage, 'thread', 'media'), final: this.store.mediaDir(row.threadId) });
       rec.cwd = placed.cwd;
+      rec.cwdAt = this.isoNow();
       rec.accountId = account.id;
       delete rec.poolId;
       delete rec.worktreePending;
@@ -1089,10 +1158,34 @@ export const movesPart = {
       rec.pendingApprovals = [];
       writeSlot(rec, { kind: 'arrived', ...(placed.worktree ? { worktree: placed.worktree } : {}) }, Date.now());
       fs.writeFileSync(recFile, JSON.stringify(rec, null, 2));
+      placed.whole = true;
+      if (row.expect) placed.expect = row.expect;
       save();
     } catch (e) {
       await this.discardMove(row);
       throw e;
+    }
+  },
+
+  // T: whether this move's thread is placed here whole already, by this
+  // runner before it restarted, with only the claim left to ask for again
+  // (moves.ts). Placing it again would empty its staging folder, and a
+  // worktree that came with git work (which cleanUpWorktree won't remove)
+  // would then block the new one (Grok's review, 23 Nov 2026).
+  // Only for the row it was placed from: the same preview binding (which
+  // names the thread, both runners and the plan), and the staged record the
+  // same thread, so a row the backend changed since can't claim what's
+  // staged (Codex's review, 23 Nov 2026). Otherwise it's placed afresh,
+  // with every check.
+  movePlaced(this: Runner, row: MoveRow): boolean {
+    try {
+      const stage = stageOf(this.cfg.home, row.moveId);
+      const placed = JSON.parse(fs.readFileSync(path.join(stage, 'placed.json'), 'utf8')) as Placed;
+      if (placed.whole !== true || !placed.expect || placed.expect !== row.expect || this.threads.has(row.threadId)) return false;
+      const rec = JSON.parse(fs.readFileSync(path.join(stage, 'thread', 'thread.json'), 'utf8')) as { id?: unknown };
+      return rec.id === row.threadId;
+    } catch {
+      return false;
     }
   },
 

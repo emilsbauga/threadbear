@@ -45,8 +45,12 @@ tree_of() {
 # made to after 5 s. Everything is found before anything is signalled, so none
 # is handed to init and missed. A group is waited on as well as the pids, so
 # anything forked into it as it was being stopped goes with the KILL.
+# THREADBEAR_STOP_GRACE_SECS shortens the 5 s for tests, whose stand-ins ignore
+# TERM on purpose and otherwise wait it out every time; a check host's ssh
+# never passes it.
 stop() {
-  local p pids="" groups="" left n=0
+  local p pids="" groups="" left n=0 tries=25
+  case "${THREADBEAR_STOP_GRACE_SECS:-}" in [1-9] | [1-9][0-9]) tries=$((THREADBEAR_STOP_GRACE_SECS * 5)) ;; esac
   for p in "$@"; do
     [ -n "$p" ] || continue
     # A group numbered as this pid is one it made, though it may have ended
@@ -57,7 +61,7 @@ stop() {
   [ -n "$pids$groups" ] || return 0
   for p in $groups; do kill -TERM -- "$p" 2>/dev/null; done
   kill -TERM $pids 2>/dev/null
-  while [ "$n" -lt 25 ]; do
+  while [ "$n" -lt "$tries" ]; do
     left=""
     for p in $pids; do kill -0 "$p" 2>/dev/null && left+=" $p"; done
     for p in $groups; do kill -0 -- "$p" 2>/dev/null && left+=" $p"; done

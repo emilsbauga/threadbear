@@ -15,7 +15,8 @@
 #   jobAssign   put pid (a CLI just started) in a new job called name, and
 #               answer when that process started (a FILETIME)
 #   jobForget   let go of the job called name without ending it
-#   jobEnd      end every process still in the job called name
+#   jobEnd      end every process still in the job called name: 'ended',
+#               or 'missing' when no job has that name any more
 #   privateDir  make the folder at path this user's and SYSTEM's only,
 #               and answer this user's SID
 #   snapshot    for port: every established connection to it, with the
@@ -160,15 +161,19 @@ while ($true) {
         $result = if ($timed) { [string]$created } else { '0' }
       }
       'jobEnd' {
-        # Ends every process still in the CLI's job. None left: the job has
-        # gone with them, and there's nothing to do.
+        # Ends every process still in the CLI's job. One this helper didn't
+        # make and can't open by name is 'missing', not ended: a job's name
+        # goes with its last handle, and the only handles were in a helper
+        # that has since stopped (restarted, or the runner crashed), so its
+        # processes may well still be running. The runner falls back to
+        # their pids then (proc.ts endJob).
         $name = [string]$req.name
         if ($name -notmatch '^Local\\threadbear-job-[0-9a-f]{32}$') { throw "not a job name: $name" }
         $job = $jobs[$name]
         $jobs.Remove($name)
         # JOB_OBJECT_TERMINATE
         if (-not $job) { $job = $K::OpenJobObjectW(0x0008, $false, $name) }
-        if ($job -eq [IntPtr]::Zero -or -not $job) { $result = 'gone' } else {
+        if ($job -eq [IntPtr]::Zero -or -not $job) { $result = 'missing' } else {
           $ok = $K::TerminateJobObject($job, 1)
           $err = LastError
           [void]$K::CloseHandle($job)

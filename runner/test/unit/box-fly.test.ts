@@ -10,7 +10,7 @@ const { flyProvider, flyFromEnv, FLY_SUSPEND_MAX_MB } = load('boxProviders/fly')
 const { ProviderError, transient, notFound } = load('boxProviders/types');
 
 const spec = {
-  image: 'registry.fly.io/threadbear-box:1',
+  image: 'registry.fly.io/threadbear-box@sha256:1111111111111111111111111111111111111111111111111111111111111111',
   cpus: 2,
   memoryMb: 2048,
   region: 'syd',

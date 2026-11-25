@@ -118,6 +118,22 @@ impl Gate {
     pub fn release(&mut self, id: &str) {
         self.taken.remove(id);
     }
+
+    /// The panel a taken request names, or None, handing the request back,
+    /// while the thread hasn't got it: a panel button's panel can come a
+    /// summary after its request, and spent then it never showed (the
+    /// Daily brief's Go through comments, 23 Nov 2026).
+    pub fn panel_or_release(
+        &mut self,
+        request: &PanelRequest,
+        thread: &ThreadSummary,
+    ) -> Option<RequestedPanel> {
+        let found = panel(request, thread);
+        if found.is_none() {
+            self.release(&request.id);
+        }
+        found
+    }
 }
 
 #[cfg(test)]
@@ -203,5 +219,26 @@ mod tests {
             gate.take(Some(&t), true).is_some(),
             "handed back, it's taken again"
         );
+    }
+
+    #[test]
+    fn a_request_before_its_panel_waits_for_the_summary_that_brings_it() {
+        let request = json!({ "id": "r2", "panel": "youtube.youtube@d1fa0393", "title": "YouTube", "at": "2026-11-23T07:23:00Z" });
+        let early = thread(json!({ "panelRequest": request }));
+        let mut gate = Gate::default();
+        let taken = gate.take(Some(&early), true).expect("taken");
+        assert_eq!(gate.panel_or_release(&taken, &early), None);
+        let later = thread(json!({
+            "panelRequest": request,
+            "panels": [{ "id": "youtube.youtube@d1fa0393", "title": "YouTube", "from": "/yt" }],
+        }));
+        let taken = gate
+            .take(Some(&later), true)
+            .expect("handed back, so the next summary shows it");
+        assert_eq!(
+            gate.panel_or_release(&taken, &later),
+            Some(RequestedPanel::Section("youtube.youtube@d1fa0393".into()))
+        );
+        assert!(gate.take(Some(&later), true).is_none(), "shown once");
     }
 }

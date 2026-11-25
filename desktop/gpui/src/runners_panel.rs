@@ -1081,7 +1081,11 @@ impl Threadbear {
                 lines.push(format!("  and {} more", on_it.len() - SHOWN_THREADS));
             }
         }
-        json!({ "shown": self.activity_panel_showing(shell::RUNNERS, cx), "lines": lines })
+        json!({
+            "shown": self.activity_panel_showing(shell::RUNNERS, cx),
+            "docked": self.dock.read(cx).layout().contains(shell::RUNNERS),
+            "lines": lines
+        })
     }
 
     /// The Swift app's `runners` command, without its `stats` (run() asks for

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { fold, splitTurns, workedTitle, type Item, type TurnMessage } from './turns.ts';
+import { fold, gapLabel, splitTurns, workedTitle, type Item, type TurnMessage } from './turns.ts';
 
 let seq = 0;
 const at = (s: number) => new Date(Date.UTC(2026, 10, 3, 9, 0, s)).toISOString();
@@ -68,7 +68,8 @@ test("a login's note stays out of the work, between what came before it and the 
     tool('Ran git push', 70),
     said('Landed.', 90, { turn: 'bbbb2222' }),
   ];
-  const shown = (items: ReturnType<typeof fold>) => items.map((i) => (i.kind === 'message' || i.kind === 'note' ? `${i.m.role}:${i.m.text}` : i.kind));
+  // The dividers before woken turns are the shared cases' (below), not this test's.
+  const shown = (items: ReturnType<typeof fold>) => items.filter((i) => i.kind !== 'gap').map((i) => (i.kind === 'message' || i.kind === 'note' ? `${i.m.role}:${i.m.text}` : i.kind));
   // Folded exactly as the same thread without the note, plus the note.
   const without = shown(fold(rows.filter((m) => m.role !== 'note'), false));
   const withNote = shown(fold(rows, false));
@@ -103,10 +104,15 @@ test('folding follows the shared cases', () => {
     if (i.kind === 'message') return `m${i.m.seq}`;
     if (i.kind === 'note') return `note ${i.m.seq}`;
     if (i.kind === 'tools') return `tools ${i.items.map((m) => m.seq).join(' ')}`;
+    if (i.kind === 'gap') return `gap ${gapLabel(i.gap)}`;
     return `${workedTitle(i.ms)}: ${i.items.map(shown).join(', ')}`;
   };
   for (const c of cases.filter((x) => !x.differs?.web)) {
     const rows = c.input.messages.map((m) => ({ ...m, at: new Date(start + m.at * 1000).toISOString() }));
     assert.deepEqual(fold(rows, c.input.busy).map(shown), c.expect, c.name);
   }
+});
+
+test("a divider whose times won't parse says Moments later, never NaN", () => {
+  assert.equal(gapLabel({ seq: 1, from: '', to: '2026-11-23T08:00:00Z', wokeBy: [], runnerWake: 'Codex answered' }), 'Moments later · Codex answered');
 });

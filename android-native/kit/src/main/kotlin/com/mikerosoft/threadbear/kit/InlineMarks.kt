@@ -69,7 +69,7 @@ object InlineMarks {
                     Kind.STRIKE -> append(m.a, marks + Mark.STRIKE, link, inner)
                     Kind.ITALIC -> append(m.a, marks + Mark.ITALIC, link, inner)
                     // Already inside a link, or none allowed: its words, never a second link.
-                    Kind.LINK -> append(m.a, marks, link ?: Link(m.b.trim(), links++), inner)
+                    Kind.LINK -> append(m.a, marks, link ?: Link(m.b.trim(' '), links++), inner)
                     // A bare address is never parsed again: it's its own words.
                     Kind.ADDRESS -> words(m.a, marks, link ?: Link(m.a, links++))
                 }

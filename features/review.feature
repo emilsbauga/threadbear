@@ -222,6 +222,16 @@ Feature: Design reviews
     And I press "C. Account pools" in the review
     Then the stage plays the clip
 
+  # A sound is its waveform with the pane's play bar on it, paused at the
+  # start (Mike, 24 Nov: comparing music beds). The Swift window is frozen.
+  @review.media @swift-pending @windows-pending @linux-pending
+  Scenario: A sound has a play bar on the stage
+    Given the agent shows options with several shots each
+    When I open that review
+    And I press "B. One picker, shot 1" in the review
+    And I press "B. One picker, shot 3" in the review
+    Then the stage has the sound's play bar
+
   # A page shows in place, sealed with its scripts off, as the pane's local
   # pages do: the GPUI window through the web runtime, which isn't on
   # Windows and Linux yet (there it's the still, with Open the page).

@@ -1,0 +1,89 @@
+{
+  "release": "2026-11-21",
+  "highlights": [
+    {
+      "kind": "added",
+      "title": "Edited drafts show as a chip",
+      "text": "Change a draft an agent wrote and a chip over the message box says so, with how many lines changed, View and ×. Once sent, the same chip sits under your message, and Show opens the draft.",
+      "media": {
+        "type": "clip",
+        "src": "draft-chip.mp4",
+        "poster": "draft-chip.webp",
+        "width": 1084,
+        "height": 1640,
+        "alt": "An agent's Slack draft is changed, and a chip over the message box says \"Your edited Slack message · 2 lines changed\" with View and a cross. Sent with \"Post it, with my changes\", the same chip sits under the message with Show."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "One row per login in Usage",
+      "text": "The Usage panel shows each login as one short row: how long it'll last and what it's spent today. Click a row for its week chart, 5-hour window and buttons.",
+      "media": {
+        "type": "clip",
+        "src": "usage-rows.mp4",
+        "poster": "usage-rows.webp",
+        "width": 580,
+        "height": 1640,
+        "alt": "The Usage panel with a short row per login in each pool, each with a ring, its name, how long it lasts and today's tokens. Clicking the Codex login opens its week chart and shuts it again, then a Claude login opens."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "A patch asked about again says what changed",
+      "text": "When a folder's patch needs trusting again, it says which files changed, in which commits, with the lines, so you can tell a dependency bump from something you didn't expect.",
+      "media": {
+        "type": "image",
+        "src": "patch-changes.webp",
+        "width": 540,
+        "height": 500,
+        "alt": "A patch called stats marked \"Changed since you trusted it\" with a Trust button. It says package.json changed in commit 5c3fc77, Upgrade fluent-convex to 0.15, with the changed line from 0.13.0 to 0.15.0."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "Every provider's models in a mixed pool",
+      "text": "A pool with logins from several providers lists each one's models under its own heading in the model picker, so you can pick Gemini, Grok or Codex there too.",
+      "media": {
+        "type": "clip",
+        "src": "mixed-pool-picker.mp4",
+        "poster": "mixed-pool-picker.webp",
+        "width": 1084,
+        "height": 1020,
+        "alt": "The model picker on a Personal pool whose rail shows four logos. Gemini 3 Pro and Gemini 3 Flash are listed under their own heading, and picking Gemini 3 Pro puts it on the thread's chip."
+      }
+    },
+    {
+      "kind": "changed",
+      "title": "A schedule's message is a card",
+      "text": "A message from a schedule shows as a card with a clock, the schedule's name and when it runs, and its words as formatted text, code blocks included. On the iPhone too.",
+      "media": {
+        "type": "image",
+        "src": "schedule-card.webp",
+        "width": 1030,
+        "height": 560,
+        "alt": "A schedule's message as a card: a clock, \"Merged PRs into the notes · Weekdays at 9:00\", then its words with 0.4 notes in bold and a gh pr list command in a code block. The agent's reply follows."
+      }
+    }
+  ],
+  "added": [
+    "Gemini on a Google plan, through Google's own Antigravity agent, with Gemini's logo in Usage, Settings and the model picker",
+    "A thread started on another of your machines sends its replies back to the thread that started it"
+  ],
+  "changed": [
+    "Autocorrect in the message box is off unless you turn it on in its right-click menu, as most of what you type to an agent is names and commands",
+    "The Updates panel says when its build is waiting behind other work, on which Mac and for how long",
+    "Permission cards from Gemini and other ACP agents are shorter for the common cases, and show everything for the rest",
+    "Starring, waking, marking read or bringing back a thread from search on the iPhone and Android shows at once",
+    "On the website, a message that fails to send keeps what you typed"
+  ],
+  "fixed": [
+    "A thread you'd just written to no longer sometimes archives itself when its turn ends",
+    "A link in a reply opens on the first click, even when the pointer slips a little as you press",
+    "GIFs play when the window isn't in front, and in the review gallery",
+    "Schedules keep the kind of login you picked in a mixed pool",
+    "The runner restarts itself cleanly after an unexpected error, and stops if it keeps failing",
+    "A setting an older CLI refuses no longer restarts the next thread's CLI",
+    "Phone notifications refused by the push relay are tried again",
+    "A second Hibernate tap on the iPhone before the row moves is ignored"
+  ]
+}

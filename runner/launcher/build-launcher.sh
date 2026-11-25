@@ -89,9 +89,11 @@ COMMIT="$(git -C "$HERE" rev-parse HEAD 2>/dev/null || true)"
 printf '{\n  "sources": "%s",\n  "commit": "%s",\n  "builtAt": "%s"\n}\n' \
   "$(sources_hash)" "$COMMIT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STAGE_DIR/Contents/Resources/build.json"
 
+# A revoked certificate is still listed, marked CSSMERR_TP_CERT_REVOKED, and
+# codesign fails with it, so it's passed over.
 SIGN_IDENTITY="${THREADBEAR_SIGN_IDENTITY:-$({
   security find-identity -v -p codesigning 2>/dev/null \
-    | awk '/"Apple Development:/ { print $2; exit }'
+    | awk '/"Apple Development:/ && !/CSSMERR_/ { print $2; exit }'
 } || true)}"
 SIGNING_REQUIREMENTS=()
 if [ -z "$SIGN_IDENTITY" ]; then

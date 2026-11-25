@@ -145,3 +145,19 @@ test('sync:issueToken mints no browser token for a link any more, and tokens:iss
   assert.equal(s.rows('tokens')[0]!.kind, 'browser');
   assert.equal(s.rows('tokens')[0]!.name, 'web-ipad');
 });
+
+test("phone:me says where the website is, for the phone's share links", async () => {
+  const s = await setup();
+  const made = await call(s.ctx, sync.issuePairingCode, { key: OWNER, name: 'iPhone' });
+  const got = await claim(s.ctx, made.code);
+  const before = process.env.CONVEX_SITE_URL;
+  try {
+    process.env.CONVEX_SITE_URL = 'https://happy-otter-123.convex.site';
+    assert.equal((await call(s.ctx, phone.me, { token: got.token })).site, 'https://happy-otter-123.convex.site');
+    delete process.env.CONVEX_SITE_URL;
+    assert.equal('site' in (await call(s.ctx, phone.me, { token: got.token })), false);
+  } finally {
+    if (before === undefined) delete process.env.CONVEX_SITE_URL;
+    else process.env.CONVEX_SITE_URL = before;
+  }
+});

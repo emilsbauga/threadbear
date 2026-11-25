@@ -21,13 +21,16 @@
 //
 // Only the main Mac's runner (or one with no other runners) looks by itself:
 // every runner sees the same shared readings, and two runners each starting
-// a thread about the same login would be one too many.
+// a thread about the same login would be one too many. Nor does a runner
+// handing over to a new release: it can't start threads, and the new one
+// looks from then on (THREADBEAR-2H).
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
 import type { Account, Pool, UsageWindow } from './protocol.ts';
 import type { HistoryRow, Sample } from './usage-history.ts';
+import type { Runner } from './runner.ts';
 
 export const LOOKAHEAD_H = 24; // starts saying so this long before a reset
 export const LAST_CALL_H = 8; // a second nudge this close to it
@@ -37,6 +40,14 @@ export const OLD_READING_H = 6; // older than this, the thread checks it first
 export const CHECK_MS = 30 * 60_000;
 const HOUR_MS = 3_600_000;
 const WEEK_MS = 7 * 24 * HOUR_MS;
+// Providers can reconstruct the same reset from a rounded countdown: live
+// Codex readings have differed by one second. Compare dates, not rounded
+// buckets (which split a reset on the bucket boundary).
+const RESET_JITTER_MS = 60_000;
+
+function sameReset(a: string | undefined, b: string | undefined): boolean {
+  return Math.abs(Date.parse(a ?? '') - Date.parse(b ?? '')) <= RESET_JITTER_MS;
+}
 
 export type Stage = 'early' | 'last-call';
 
@@ -100,7 +111,7 @@ export function projections(account: Account, samples: SamplesFor, now: number):
     if (!p || p.hoursLeft <= 0) continue;
     if (w.kind === 'weekly_model' && main && mainP) {
       // Resets with the main week: that one says it all.
-      if (w.resetsAt === main.resetsAt) continue;
+      if (sameReset(w.resetsAt, main.resetsAt)) continue;
       if (mainP.hoursLeft >= p.hoursLeft) p.leftAtReset = Math.min(p.leftAtReset, Math.max(0, main.remainingPercent - mainP.rate * p.hoursLeft));
     }
     out.push(p);
@@ -118,6 +129,16 @@ function windowKey(accountId: string, w: UsageWindow): string {
   return `${accountId}|${w.kind === 'weekly' ? 'weekly' : `${w.kind}:${w.title}`}|${w.resetsAt}`;
 }
 
+function saidStages(accountId: string, w: UsageWindow, done: Record<string, Stage[]>): Stage[] {
+  const key = windowKey(accountId, w);
+  const prefix = key.slice(0, key.lastIndexOf('|') + 1);
+  // Read the old on-disk keys too, including multiple readings saved before
+  // this fix. Keep their stage history rather than issuing a new nudge.
+  return Object.entries(done).flatMap(([k, stages]) =>
+    k.startsWith(prefix) && sameReset(k.slice(prefix.length), w.resetsAt) ? stages : [],
+  );
+}
+
 // The windows due a thread now, and the stage each is at. `done` is each
 // window's stages already said, by windowKey.
 export function dueWindows(accounts: readonly Account[], samples: SamplesFor, done: Record<string, Stage[]>, now: number): SpareWindow[] {
@@ -127,7 +148,7 @@ export function dueWindows(accounts: readonly Account[], samples: SamplesFor, do
     for (const p of projections(a, samples, now)) {
       if (p.hoursLeft > LOOKAHEAD_H) continue;
       const stage: Stage = p.hoursLeft <= LAST_CALL_H ? 'last-call' : 'early';
-      const said = done[windowKey(a.id, p.window)] ?? [];
+      const said = saidStages(a.id, p.window, done);
       if (said.includes(stage) || (stage === 'early' && said.includes('last-call'))) continue;
       if (p.leftAtReset < (stage === 'last-call' ? MIN_LEFTOVER_LAST : MIN_LEFTOVER)) continue;
       out.push({ ...p, accountId: a.id, stage });
@@ -197,6 +218,11 @@ type State = {
   threads: Record<string, string>;
 };
 
+// Whether this runner looks by itself (SpareWeekDeps.looks).
+export function looksByItself(r: { draining: boolean; secondRunner: boolean }): boolean {
+  return !r.draining && !r.secondRunner;
+}
+
 export type SpareWeekDeps = {
   home: string;
   clock: Clock;
@@ -208,10 +234,17 @@ export type SpareWeekDeps = {
   accounts: () => Account[];
   pools: () => Pool[];
   history: (since: number) => HistoryRow[];
-  start: (r: { text: string; title: string; accountId: string; cwd?: string; why: string }) => string;
+  start: (r: { text: string; title: string; accountId: string; cwd?: string; why: string; origin?: 'runner' }) => string;
   open: (threadId: string) => boolean;
   send: (threadId: string, text: string) => void;
 };
+
+export function spareWeekBinding(runner: Pick<Runner, 'create' | 'send'>): Pick<SpareWeekDeps, 'start' | 'send'> {
+  return {
+    start: (r) => runner.create({ text: r.text, title: r.title, cwd: r.cwd, accountId: r.accountId, origin: r.origin, wakeReason: r.origin === 'runner' ? 'Its weekly allowance is about to reset' : undefined, startedBy: { kind: 'runner', label: 'Threadbear', why: r.why } }).thread.id,
+    send: (threadId, text) => void runner.send(threadId, text, [], { queue: true, origin: 'runner', wakeReason: 'Its weekly allowance resets within hours' }),
+  };
+}
 
 export class SpareWeek {
   private readonly d: SpareWeekDeps;
@@ -294,7 +327,7 @@ export class SpareWeek {
         this.d.send(open, text);
         this.d.log.info('told the spare week thread again', { accountId, threadId: open, stage });
       } else {
-        s.threads[accountId] = this.d.start({ text, title: title(account), accountId, cwd: this.cwdFor(accountId), why: "a login's week going unused" });
+        s.threads[accountId] = this.d.start({ text, title: title(account), accountId, cwd: this.cwdFor(accountId), why: "a login's week going unused", origin: 'runner' });
         this.d.log.info('started a spare week thread', { accountId, threadId: s.threads[accountId], stage });
       }
       for (const w of windows) {

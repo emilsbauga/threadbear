@@ -1,6 +1,7 @@
-// The sidebar's sections, as the Mac's (app ThreadSections) and the phone's
-// (ios InboxSections): the same rules, so all three agree on what's in the
-// inbox. Change them together. No React here, so the tests can run it bare.
+// The sidebar's sections. The runner works out what each thread waits on and
+// sends it as `waitState` (runner/src/wait-state.ts, docs/protocol/needs-you.md
+// "Wait state"); this draws it, with the same map as every app, kept to it by
+// shared/cases/wait-states.json. No React here, so the tests can run it bare.
 import { folderName } from './format.ts';
 
 export type SectionKey = 'starred' | 'backlog' | 'inbox' | 'running' | 'hibernating' | 'archived';
@@ -35,20 +36,114 @@ export type ThreadRow = {
   asks?: { ticked?: boolean }[];
   projects?: { id: string; title: string }[];
   share?: { access?: string };
+  // What it waits on, from the runner (API from 23 Nov). Absent from older
+  // runners, whose rows go through the legacy rule below.
+  waitState?: string;
 };
 
+// ------------------------------------------------------------ wait state
+
+export type WaitState = 'working' | 'job' | 'onThreads' | 'landing' | 'appRestart' | 'sending' | 'card' | 'review' | 'needsYou' | 'limit' | 'done' | 'scheduled' | 'hibernating' | 'archived';
+
+// Each state's section, as runner/src/wait-state.ts's WAIT_STATES. `sending`
+// is only an app's own guess while a message is on its way; the runner never
+// sends it.
+const WAIT_SECTION: Record<WaitState, 'inbox' | 'running' | 'hibernating' | 'archived'> = {
+  working: 'running',
+  job: 'running',
+  onThreads: 'running',
+  landing: 'running',
+  appRestart: 'running',
+  sending: 'running',
+  card: 'inbox',
+  review: 'inbox',
+  needsYou: 'inbox',
+  limit: 'inbox',
+  done: 'inbox',
+  scheduled: 'hibernating',
+  hibernating: 'hibernating',
+  archived: 'archived',
+};
+
+// The row's state, or undefined for a row from a runner that doesn't send
+// one. A value this build doesn't know is drawn as done.
+export function waitStateOf(r: ThreadRow): WaitState | undefined {
+  if (r.waitState === undefined) return undefined;
+  return r.waitState in WAIT_SECTION ? (r.waitState as WaitState) : 'done';
+}
+
+// Still at its own work (a turn, a job, waiting on other threads, to land or
+// for the app): drawn under Running, and its card doesn't say Done. False for
+// a row with no state, whose own fields say it.
+export function stillWorking(r: ThreadRow): boolean {
+  const state = waitStateOf(r);
+  return state !== undefined && WAIT_SECTION[state] === 'running';
+}
+
+// How much a state wants Mike, lowest first, as the runner's urgencyOf: 0
+// stuck on him (a card, a review), 1 asking him after a failed or stopped
+// turn, 2 asking him (read or not: Mike, 23 Nov) or out of usage, 3 done
+// after a failed or stopped turn, 4 done or not in the Inbox.
+function urgencyOfState(state: WaitState, status: string): number {
+  const broken = status === 'error' || status === 'stopped';
+  switch (state) {
+    case 'card':
+    case 'review':
+      return 0;
+    case 'needsYou':
+      return broken ? 1 : 2;
+    case 'limit':
+      return 2;
+    case 'done':
+      return broken ? 3 : 4;
+    default:
+      return 4;
+  }
+}
+
 export type ScheduleRow = { threadId?: string; nextRunAt?: string; paused?: boolean; finishedAt?: string };
+
+// ------------------------------------------------------------ legacy rule
+// Only for rows without `waitState`, from a runner before 23 Nov: the old copy
+// of the Mac's rule. Goes once every runner sends waitState.
 
 const isBusy = (r: ThreadRow) => r.status === 'running' || r.status === 'starting';
 const reviewWaiting = (r: ThreadRow) => (r.pendingReviews ?? 0) > 0 && !isBusy(r) && r.working === undefined;
 const needsAnswer = (r: ThreadRow) => !!r.pendingApproval || r.status === 'waiting';
 
 // The last turn ended asking Mike for something and he hasn't done it all.
-function waitingOnMike(r: ThreadRow): boolean {
+function legacyWaitingOnMike(r: ThreadRow): boolean {
   if (r.needs !== 'you' || isBusy(r)) return false;
   const asks = r.asks ?? [];
   return asks.length === 0 || asks.some((a) => a.ticked !== true);
 }
+
+// Legacy: how much an inbox thread wants Mike, as the Mac and phone had it
+// (shared/cases/inbox-urgency.json). Unread alone isn't wanting him: a turn
+// that said "nothing" is done (Mike, 9 Nov).
+function legacyUrgency(r: ThreadRow): number {
+  const broken = r.status === 'error' || r.status === 'stopped';
+  if (reviewWaiting(r) || needsAnswer(r)) return 0;
+  if (r.needsYou) return broken ? 1 : 2;
+  return broken ? 3 : 4;
+}
+
+// Legacy: which heading an inbox-list row goes under, or 'skip' for one
+// snoozed (the backend's Hibernating list has it).
+function legacySection(r: ThreadRow, now: number, wakes: Map<string, number>): 'inbox' | 'running' | 'scheduled' | 'skip' {
+  if (isSnoozed(r, now)) return 'skip';
+  // A question or approval goes in the inbox even while background work
+  // runs: the thread is stuck until he answers.
+  if (reviewWaiting(r) || needsAnswer(r) || legacyWaitingOnMike(r) || (r.needsYou && r.working === undefined)) return 'inbox';
+  if (isBusy(r) || r.working !== undefined) return 'running';
+  if (r.status === 'idle' && r.needs !== 'you' && !r.waitingForRoom && wakes.has(r.threadId)) return 'scheduled';
+  return 'inbox';
+}
+
+// Legacy: whether it counts in the Needs you filter, before the live check.
+const legacyCounts = (r: ThreadRow) => legacyUrgency(r) === 0 || r.needsYou || legacyWaitingOnMike(r);
+
+// ------------------------------------------------------------ headings
 
 // The sub line of a hibernating row that waits for more than a time:
 // "Until "Convex I/O" finishes · misc". Undefined otherwise.
@@ -62,20 +157,18 @@ export function isSnoozed(r: ThreadRow, now: number): boolean {
   return !!r.snoozedUntil && Date.parse(r.snoozedUntil) > now;
 }
 
-// How much an inbox thread wants Mike, lowest first: a copy of the rule the
-// Mac and phone share (app/Sources/ThreadbearCore/Threads/InboxUrgency.swift),
-// kept to it by the cases in shared/cases/inbox-urgency.json.
-// 0: stuck on his answer. 1: finished, wanting him, failed or stopped. 2:
-// finished, wanting him. 3: read but failed or stopped. 4: done. Unread alone
-// isn't wanting him: a turn that said "nothing" is done (Mike, 9 Nov).
+// How much an inbox thread wants Mike, lowest first (the Needs you order).
 export function urgency(r: ThreadRow): number {
-  const broken = r.status === 'error' || r.status === 'stopped';
-  if (reviewWaiting(r) || needsAnswer(r)) return 0;
-  if (r.needsYou) return broken ? 1 : 2;
-  return broken ? 3 : 4;
+  const state = waitStateOf(r);
+  return state ? urgencyOfState(state, r.status) : legacyUrgency(r);
 }
 
-const cardFirst = (a: ThreadRow, b: ThreadRow) => Number(needsAnswer(b)) - Number(needsAnswer(a));
+// Stuck on a card only Mike can answer: first in every order.
+const isCard = (r: ThreadRow) => {
+  const state = waitStateOf(r);
+  return state ? state === 'card' : needsAnswer(r);
+};
+const cardFirst = (a: ThreadRow, b: ThreadRow) => Number(isCard(b)) - Number(isCard(a));
 const newestFirst = (a: ThreadRow, b: ThreadRow) => b.lastActivityMs - a.lastActivityMs || a.threadId.localeCompare(b.threadId);
 
 // For each thread a schedule will message by itself, when the soonest is due.
@@ -94,7 +187,9 @@ export function wakesOf(schedules: ScheduleRow[]): Map<string, number> {
 // The inbox list split into its headings. Hibernating and Archived are
 // lists of their own from the backend, but a thread idle until a schedule
 // messages it is in the inbox list and belongs under Hibernating: `scheduled`.
-// A starred thread is in the inbox list even while hibernating (API 27).
+// A starred thread is in the inbox list even while hibernating (API 27), and
+// so is one put away waiting on its own work (onThreads, landing,
+// appRestart), which goes under Running though it has a snooze.
 export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<string, number>, order: InboxOrder) {
   const starred: T[] = [];
   const backlog: T[] = [];
@@ -102,16 +197,18 @@ export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<st
   const running: T[] = [];
   const scheduled: T[] = [];
   for (const r of rows) {
-    if (r.archivedAt) continue;
-    if (r.backlog || r.backlogged) backlog.push(r);
-    else if (r.starredAt) starred.push(r);
-    else if (isSnoozed(r, now)) continue;
-    // A question or approval goes in the inbox even while background work
-    // runs: the thread is stuck until he answers.
-    else if (reviewWaiting(r) || needsAnswer(r) || waitingOnMike(r) || (r.needsYou && r.working === undefined)) inbox.push(r);
-    else if (isBusy(r) || r.working !== undefined) running.push(r);
-    else if (r.status === 'idle' && r.needs !== 'you' && !r.waitingForRoom && wakes.has(r.threadId)) scheduled.push(r);
-    else inbox.push(r);
+    const state = waitStateOf(r);
+    if (r.archivedAt || state === 'archived') continue;
+    if (r.backlog || r.backlogged) { backlog.push(r); continue; }
+    if (r.starredAt) {
+      starred.push(r);
+      continue;
+    }
+    // A plain hibernating row is the backend's Hibernating list's to draw.
+    const section = state ? (state === 'scheduled' ? 'scheduled' : state === 'hibernating' ? 'skip' : WAIT_SECTION[state]) : legacySection(r, now, wakes);
+    if (section === 'inbox') inbox.push(r);
+    else if (section === 'running') running.push(r);
+    else if (section === 'scheduled') scheduled.push(r);
   }
   // Oldest star first, so they stay put while Mike goes back and forth.
   starred.sort((a, b) => a.starredAt!.localeCompare(b.starredAt!) || a.threadId.localeCompare(b.threadId));
@@ -178,7 +275,7 @@ export function passes(r: ThreadRow, f: Filter, now = Date.now()): boolean {
   // Mac's badge leaves those out too. Real archived threads keep a stale
   // `needs` and `unread` for good, which filled these with old work.
   const live = !r.archivedAt && !isSnoozed(r, now);
-  if (f.show === 'needsYou') return live && (urgency(r) === 0 || r.needsYou || waitingOnMike(r));
+  if (f.show === 'needsYou') return live && (waitStateOf(r) ? urgency(r) <= 2 : legacyCounts(r));
   if (f.show === 'unread') return live && r.unread;
   if (f.show === 'shared') return r.share?.access === 'link';
   return true;

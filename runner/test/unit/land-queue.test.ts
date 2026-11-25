@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { land, landLimits, landTargetFromGit, type LandTarget } from '../../src/worktrees.ts';
-import { joinQueue, leaveQueue, queueDir, readEntry, readRunning, setRunning, waiting, waitingLine, writeEntry } from '../../src/land-queue.ts';
+import { CARRY_MS, joinQueue, leaveQueue, queueDir, readEntry, readRunning, setRunning, waiting, waitingLine, writeEntry, type QueueEntry } from '../../src/land-queue.ts';
 import { PATCH, capture, commit, holdUntil, makeBranch, makeRepo, sh, startTb, until, wrapGit, write } from '../helpers/worktrees-harness.ts';
 
 // A check that writes down which of the files it saw, and holds the first
@@ -177,6 +177,39 @@ async function lockHeld(root: string, common: string) {
   };
 }
 
+// Landed with its group while it waits for the lock (another landing holds
+// it, for a check of its own): it stops waiting and says so, rather than
+// queue for the lock with nothing left to do (24 Nov: about an hour).
+test('a landing its group has landed stops waiting for the lock', async () => {
+  const { root, main } = makeRepo(PATCH(`{ check: "true" }`));
+  const [b] = branches(main, ['b']);
+  const common = path.join(main, '.git');
+  const goneMs = landLimits.goneMs;
+  landLimits.goneMs = 50;
+  const drop = await lockHeld(root, common);
+  try {
+    const cap = capture();
+    const landing = land(b, cap.opts);
+    await until(() => cap.out.some((l) => l.startsWith('Waiting for another landing')), 'b waiting');
+    const [e] = waiting(common);
+    // As the holder of a group check with b in it does once main has moved:
+    // b rebased on the holder's own commit.
+    commit(main, { 'h.txt': 'h\n' }, 'Add h');
+    sh(main, `git cherry-pick ${b.branch} >/dev/null`);
+    const tip = sh(main, 'git rev-parse HEAD');
+    writeEntry(common, { ...e, result: { landed: tip, commits: `${tip.slice(0, 9)} Add b`, together: ['thread/h0000000'] } });
+    assert.equal(await landing, 0, cap.err.join('\n'));
+    assert.equal(sh(b.path, 'git rev-parse HEAD'), tip, 'its branch moved to b as it landed');
+    assert.equal(sh(b.path, 'git rev-parse --abbrev-ref HEAD'), b.branch);
+    assert.match(cap.out.join('\n'), /Landed on main in .*, in one check with thread\/h0000000:/);
+    assert.deepEqual(waiting(common), [], 'out of the line');
+    assert.ok(!fs.existsSync(path.join(root, 'lock-drop')), 'with the lock still held by the other');
+  } finally {
+    landLimits.goneMs = goneMs;
+    await drop();
+  }
+});
+
 // Stopped before its check starts, a landing still leaves the line: it may
 // have been stopped on purpose, and nobody would hear how it went. The tb
 // that was run passes the signal on to the landing's own process, or, killed
@@ -294,6 +327,364 @@ test("a queued landing whose tb has gone is dropped from the line, not landed", 
   assert.equal(await land({ ...a, check: 'true' }, capture().opts), 0);
   assert.ok(!fs.existsSync(path.join(main, 'b.txt')));
   assert.ok(!fs.existsSync(file));
+});
+
+// A stand-in for a tb waiting in the line: its entry, and the lock on it
+// that a waiting tb holds, until gone() (its tb killed).
+async function standIn(root: string, common: string, t: LandTarget, base: string, check: string) {
+  const entry = joinQueue(common, { branch: t.branch, path: t.path, base, commit: sh(t.path, 'git rev-parse HEAD'), check, checkFrom: '' });
+  const name = t.branch.replace(/\W/g, '-');
+  const lock = path.join(queueDir(common), `${entry.id}.lock`);
+  const hold = `touch '${root}/held-${name}'; ${holdUntil(`${root}/drop-${name}`)}`;
+  const p = spawn('/bin/sh', ['-c', process.platform === 'darwin' ? `/usr/bin/lockf -k '${lock}' /bin/sh -c "${hold}"` : `flock -x '${lock}' /bin/sh -c "${hold}"`], { stdio: 'ignore' });
+  p.on('error', () => {});
+  await until(() => fs.existsSync(path.join(root, `held-${name}`)), `${t.branch} waiting`);
+  return {
+    entry,
+    gone: async () => {
+      write(root, { [`drop-${name}`]: '' });
+      if (p.exitCode === null) await new Promise((r) => p.once('close', r));
+    },
+  };
+}
+
+// Its pid, as a tb that's gone leaves it.
+function deadPid(common: string, id: string): void {
+  const e = readEntry(common, id)!;
+  fs.writeFileSync(path.join(queueDir(common), `${id}.json`), JSON.stringify({ ...e, pid: 2 ** 22 + 12345 }));
+}
+
+// A check that writes down what it saw, and holds the one with `marker` in
+// it until the test lets it go.
+const groupCheck = (root: string, marker: string): string =>
+  `ls *.txt | tr '\\n' ' ' >> '${root}/checks'; echo >> '${root}/checks'; ` +
+  `if test -f ${marker}; then touch '${root}/group-checking'; ${holdUntil(`${root}/group-release`)}; fi`;
+
+// 23 Nov: a member's tb was killed by its agent's time limit during a group
+// check, and its agent ran tb land again, which rebased the branch onto
+// main before waiting. The holder took that for the branch having moved on
+// and threw away the passing check (twice that day, for six and ten
+// landings); the killed one's entry had gone, so it wasn't in the next.
+test('a passing group check lands one whose tb went during it, even once its next tb land has rebased its branch', async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [b, c] = branches(main, ['b', 'c']);
+  const base = sh(main, 'git rev-parse main');
+  commit(main, { 'm.txt': 'm\n' }, 'Main moved');
+  const [a] = branches(main, ['a']);
+  const check = groupCheck(root, 'c.txt');
+  const sb = await standIn(root, common, b, base, check);
+  const sc = await standIn(root, common, c, base, check);
+  const ca = capture();
+  try {
+    const first = land({ ...a, check }, ca.opts);
+    try {
+      await until(() => fs.existsSync(path.join(root, 'group-checking')), 'the group check');
+      await sc.gone();
+      sh(c.path, 'git rebase -q main');
+      assert.notEqual(sh(c.path, 'git rev-parse HEAD'), sc.entry.commit, 'rebased onto the main that moved');
+    } finally {
+      write(root, { 'group-release': '' });
+    }
+    assert.equal(await first, 0, ca.err.join('\n'));
+  } finally {
+    await sb.gone();
+    await sc.gone();
+  }
+  const checks = fs.readFileSync(path.join(root, 'checks'), 'utf8').trim().split('\n');
+  assert.equal(checks.length, 1, checks.join('\n'));
+  assert.match(checks[0], /a\.txt b\.txt c\.txt/);
+  for (const n of ['a', 'b', 'c']) assert.ok(fs.existsSync(path.join(main, `${n}.txt`)), n);
+  assert.doesNotMatch(ca.out.join('\n'), /checked again without/);
+  assert.match(ca.out.join('\n'), /In the same check, and landed with it: thread\/b0000000, thread\/c0000000\./);
+  // Its next tb land, waiting meanwhile, has nothing left to land.
+  const again = capture();
+  assert.equal(await land({ ...c, check }, again.opts), 0, again.err.join('\n'));
+  assert.equal(sh(c.path, `git log --oneline main..${c.branch}`), '');
+  assert.equal(sh(main, `git log --format=%s main | grep -c '^Add c$'`), '1', 'c landed once');
+});
+
+// One rewritten without what was checked (amended, reset) asks for something
+// else now: checked again without it, and out of the line. So is one
+// amended in whitespace only (git's patch id would call that the same:
+// Codex's review), and one rebased with a commit made empty on purpose,
+// which its next tb land would land a second time.
+const rewrites: Record<string, (cwd: string, base: string, branch: string) => void> = {
+  'reset and made again differently': (cwd, base) => {
+    sh(cwd, `git reset -q --hard ${base}`);
+    commit(cwd, { 'c2.txt': 'c2\n' }, 'Add c differently');
+  },
+  'amended in whitespace only': (cwd) => {
+    write(cwd, { 'c.txt': 'c \n' });
+    sh(cwd, 'git commit -q -a --amend --no-edit');
+  },
+  // Main can't move while the holder has the lock: a commit main doesn't
+  // have is enough to rebase it onto.
+  'given one more on top of a commit made empty on purpose': (cwd) => {
+    commit(cwd, { 'more.txt': 'more\n' }, 'More');
+  },
+  'rebased with a commit made empty on purpose': (cwd, base, branch) => {
+    sh(cwd, `git checkout -q -b scratch ${base}`);
+    commit(cwd, { 'n.txt': 'n\n' }, 'Elsewhere');
+    sh(cwd, `git checkout -q ${branch} && git rebase -q scratch`);
+  },
+};
+for (const [how, rewrite] of Object.entries(rewrites)) test(`one whose tb went during a passing group check and whose branch was ${how} is checked again without, and leaves the line`, async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [a, b, c] = branches(main, ['a', 'b', 'c']);
+  if (how.includes('empty')) sh(c.path, "git commit -q --allow-empty -m 'Empty on purpose'");
+  const base = sh(main, 'git rev-parse main');
+  const check = groupCheck(root, 'c.txt');
+  const sb = await standIn(root, common, b, base, check);
+  const sc = await standIn(root, common, c, base, check);
+  const ca = capture();
+  try {
+    const first = land({ ...a, check }, ca.opts);
+    try {
+      await until(() => fs.existsSync(path.join(root, 'group-checking')), 'the group check');
+      await sc.gone();
+      rewrite(c.path, base, c.branch);
+      assert.notEqual(sh(c.path, 'git rev-parse HEAD'), sc.entry.commit);
+    } finally {
+      write(root, { 'group-release': '' });
+    }
+    assert.equal(await first, 0, ca.err.join('\n'));
+  } finally {
+    await sb.gone();
+    await sc.gone();
+  }
+  assert.match(ca.out.join('\n'), /thread\/c0000000 stopped waiting and its branch no longer has what was checked, so it's checked again without it\./);
+  assert.ok(fs.existsSync(path.join(main, 'b.txt')) && !fs.existsSync(path.join(main, 'c.txt')) && !fs.existsSync(path.join(main, 'c2.txt')));
+  assert.deepEqual(waiting(common), []);
+});
+
+// 23 Nov: a group check passed, GitHub went red meanwhile, so the holder
+// held it all back; the one whose tb had been killed during the check had
+// lost its entry with its tb, and the next holder landed the others without it.
+test("one whose tb went during a group check that passed but didn't land is carried into the next holder's check", async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [a, b, d] = branches(main, ['a', 'b', 'd']);
+  const base = sh(main, 'git rev-parse main');
+  const check = groupCheck(root, 'b.txt');
+  const hold = async (_root: string, files: string[]) =>
+    fs.existsSync(path.join(root, 'red')) && files.includes('a.txt') ? 'Held: the workflow for a.txt is red on main.' : undefined;
+  const sb = await standIn(root, common, b, base, check);
+  const ca = capture();
+  try {
+    const first = land({ ...a, check }, { ...ca.opts, hold });
+    try {
+      await until(() => fs.existsSync(path.join(root, 'group-checking')), 'the group check');
+      await sb.gone();
+      deadPid(common, sb.entry.id);
+      write(root, { red: '' });
+    } finally {
+      write(root, { 'group-release': '' });
+    }
+    assert.equal(await first, 1);
+    assert.match(ca.err.join('\n'), /Held: the workflow for a\.txt is red on main\./);
+  } finally {
+    await sb.gone();
+  }
+  assert.ok(!fs.existsSync(path.join(main, 'b.txt')));
+  assert.deepEqual(waiting(common).map((e) => e.branch), [b.branch], 'still in the line');
+  fs.rmSync(path.join(root, 'group-checking'));
+  const cd = capture();
+  assert.equal(await land({ ...d, check }, cd.opts), 0, cd.err.join('\n'));
+  assert.match(cd.out.join('\n'), /In the same check, and landed with it: thread\/b0000000\./);
+  for (const n of ['b', 'd']) assert.ok(fs.existsSync(path.join(main, `${n}.txt`)), n);
+  assert.ok(!fs.existsSync(path.join(main, 'a.txt')));
+  // Its branch is moved to what landed, as for any whose tb has gone.
+  assert.equal(sh(b.path, `git log --oneline main..${b.branch}`), '');
+  assert.deepEqual(waiting(common), [], 'nobody left in the line');
+});
+
+// A carried landing and its next tb land's, both waiting: one goes in, and
+// a commit made empty on purpose lands once (Codex's review).
+test('a carried landing and its next tb land are never stacked together', async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [a, b] = branches(main, ['a', 'b']);
+  sh(b.path, "git commit -q --allow-empty -m 'Empty on purpose'");
+  const base = sh(main, 'git rev-parse main');
+  const check = groupCheck(root, 'never-there.txt');
+  const old = joinQueue(common, { branch: b.branch, path: b.path, base, commit: sh(b.path, 'git rev-parse HEAD'), check, checkFrom: '' });
+  writeEntry(common, { ...old, inCheckAt: Date.now() });
+  deadPid(common, old.id);
+  const again = await standIn(root, common, b, base, check);
+  const ca = capture();
+  try {
+    assert.equal(await land({ ...a, check }, ca.opts), 0, ca.err.join('\n'));
+  } finally {
+    await again.gone();
+  }
+  assert.match(ca.out.join('\n'), /In the same check, and landed with it: thread\/b0000000\.$/m);
+  assert.equal(sh(main, "git log --format=%s main | grep -c '^Empty on purpose$'"), '1');
+});
+
+// A carried entry and its branch's next tb land: the new one is the
+// branch's entry from then on (Gemini's review).
+test("a branch's next tb land takes over from its carried entry", async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [b] = branches(main, ['b']);
+  const base = sh(main, 'git rev-parse main');
+  const old = joinQueue(common, { branch: b.branch, path: b.path, base, commit: sh(b.path, 'git rev-parse HEAD'), check: 'true', checkFrom: '' });
+  const at = Date.now() - 1000;
+  writeEntry(common, { ...old, inCheckAt: at });
+  deadPid(common, old.id);
+  const drop = await lockHeld(root, common);
+  const c = capture();
+  let landing: Promise<number> | undefined;
+  try {
+    landing = land({ ...b, check: 'true' }, c.opts);
+    await until(() => c.out.some((l) => l.startsWith('Waiting for another landing')), 'b waiting');
+    const now = waiting(common);
+    assert.equal(now.length, 1);
+    assert.notEqual(now[0].id, old.id);
+    // Carried in its place, so it isn't lost if this tb goes too.
+    assert.equal(now[0].inCheckAt, at);
+  } finally {
+    await drop();
+  }
+  assert.equal(await landing, 0, c.err.join('\n'));
+  assert.ok(fs.existsSync(path.join(main, 'b.txt')));
+});
+
+// Rewritten since, it asks for something no check has seen: it earns its
+// own mark (Codex's review).
+test("a branch's next tb land with something new doesn't take over its carried entry's mark", async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [b] = branches(main, ['b']);
+  const base = sh(main, 'git rev-parse main');
+  const old = joinQueue(common, { branch: b.branch, path: b.path, base, commit: sh(b.path, 'git rev-parse HEAD'), check: 'true', checkFrom: '' });
+  writeEntry(common, { ...old, inCheckAt: Date.now() });
+  deadPid(common, old.id);
+  commit(b.path, { 'more.txt': 'more\n' }, 'More');
+  const drop = await lockHeld(root, common);
+  const c = capture();
+  let landing: Promise<number> | undefined;
+  try {
+    landing = land({ ...b, check: 'true' }, c.opts);
+    await until(() => c.out.some((l) => l.startsWith('Waiting for another landing')), 'b waiting');
+    const now = waiting(common);
+    assert.equal(now.length, 1);
+    assert.notEqual(now[0].id, old.id);
+    assert.equal(now[0].inCheckAt, undefined);
+  } finally {
+    await drop();
+  }
+  assert.equal(await landing, 0, c.err.join('\n'));
+});
+
+// One in the check running now is left to that check, which may land or
+// refuse it (Gemini's review).
+test("a branch's next tb land leaves its carried entry alone while that one is in the running check", async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [b] = branches(main, ['b']);
+  const base = sh(main, 'git rev-parse main');
+  const old = joinQueue(common, { branch: b.branch, path: b.path, base, commit: sh(b.path, 'git rev-parse HEAD'), check: 'true', checkFrom: '' });
+  writeEntry(common, { ...old, inCheckAt: Date.now() });
+  deadPid(common, old.id);
+  const drop = await lockHeld(root, common);
+  setRunning(common, { startedAt: Date.now(), branches: ['thread/holder', b.branch], entries: [old.id] });
+  const c = capture();
+  let landing: Promise<number> | undefined;
+  try {
+    landing = land({ ...b, check: 'true' }, c.opts);
+    await until(() => c.out.some((l) => l.startsWith('Waiting for another landing')), 'b waiting');
+    assert.equal(waiting(common).length, 2);
+    assert.ok(readEntry(common, old.id));
+  } finally {
+    setRunning(common, undefined);
+    await drop();
+  }
+  assert.equal(await landing, 0, c.err.join('\n'));
+});
+
+// Halved to one, a carried landing has no tb to be checked by itself: it's
+// still checked with a holder (Gemini's review).
+test('a carried landing halved to one is still checked with a holder', async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [a, b] = branches(main, ['a', 'b']);
+  const base = sh(main, 'git rev-parse main');
+  const check = groupCheck(root, 'never-there.txt');
+  const old = joinQueue(common, { branch: b.branch, path: b.path, base, commit: sh(b.path, 'git rev-parse HEAD'), check, checkFrom: '' });
+  writeEntry(common, { ...old, inCheckAt: Date.now(), limit: 1, limitAt: base });
+  deadPid(common, old.id);
+  const ca = capture();
+  assert.equal(await land({ ...a, check }, ca.opts), 0, ca.err.join('\n'));
+  assert.match(ca.out.join('\n'), /In the same check, and landed with it: thread\/b0000000\./);
+});
+
+// Its tb gone just as the lock came: a landing a check of which has started
+// goes on, as it would have in someone else's group (Gemini's review).
+test('a carried landing whose tb goes just as it gets the lock still lands', async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [b] = branches(main, ['b']);
+  const drop = await lockHeld(root, common);
+  const c = capture();
+  let landing: Promise<number> | undefined;
+  try {
+    landing = land({ ...b, check: 'true' }, { ...c.opts, onLocked: () => false });
+    await until(() => c.out.some((l) => l.startsWith('Waiting for another landing')), 'b waiting');
+    const [e] = waiting(common);
+    writeEntry(common, { ...e, inCheckAt: Date.now() });
+  } finally {
+    await drop();
+  }
+  assert.equal(await landing, 0, c.err.join('\n'));
+  assert.ok(fs.existsSync(path.join(main, 'b.txt')));
+});
+
+// Stopped after the holder stacked it but before the check (the holder was
+// asking GitHub about the group): it said nothing of it landed, so it's left
+// out (Codex's and Gemini's reviews).
+test('one that leaves the line after being stacked, before the check starts, is left out of it', async () => {
+  const { root, main } = makeRepo();
+  const common = path.join(main, '.git');
+  const [a, b] = branches(main, ['a', 'b']);
+  const base = sh(main, 'git rev-parse main');
+  const check = groupCheck(root, 'never-there.txt');
+  const sb = await standIn(root, common, b, base, check);
+  // Asked about the group's files (b's among them) once it's stacked.
+  const hold = async (_cwd: string, files: string[]) => {
+    if (files.includes('b.txt')) leaveQueue(common, sb.entry.id);
+    return undefined;
+  };
+  const ca = capture();
+  try {
+    assert.equal(await land({ ...a, check }, { ...ca.opts, hold }), 0, ca.err.join('\n'));
+  } finally {
+    await sb.gone();
+  }
+  assert.match(ca.out.join('\n'), /thread\/b0000000 left the line before the check started, so the others are stacked again without it\./);
+  assert.ok(fs.existsSync(path.join(main, 'a.txt')) && !fs.existsSync(path.join(main, 'b.txt')));
+  assert.deepEqual(fs.readFileSync(path.join(root, 'checks'), 'utf8').trim().split('\n').map((l) => l.trim()), ['a.txt'], 'one check, without b');
+});
+
+test("the line keeps one whose tb has gone only once a check of it started, and not for ever", () => {
+  const { main } = makeRepo();
+  const common = path.join(main, '.git');
+  const base = sh(main, 'git rev-parse main');
+  const make = (branch: string, extra: Partial<QueueEntry>) => {
+    const e = joinQueue(common, { branch, path: main, base, commit: base });
+    fs.writeFileSync(path.join(queueDir(common), `${e.id}.json`), JSON.stringify({ ...e, pid: 2 ** 22 + 12345, ...extra }));
+    return e;
+  };
+  const now = Date.now();
+  const kept = make('thread/checked', { inCheckAt: now });
+  make('thread/never-checked', {});
+  make('thread/too-old', { inCheckAt: now - CARRY_MS - 1000 });
+  make('thread/set-aside', { inCheckAt: now, alone: { why: 'alone', at: now } });
+  make('thread/refused', { inCheckAt: now, refused: { text: 'no', at: base } });
+  assert.deepEqual(waiting(common).map((e) => e.id), [kept.id]);
+  assert.deepEqual(fs.readdirSync(queueDir(common)).filter((n) => n.endsWith('.json')), [`${kept.id}.json`]);
 });
 
 test('the waiting line says where it is in the line and roughly how long', () => {
@@ -794,7 +1185,7 @@ test("a group's check hears the hosts each landing in it asked for, the holder's
   // environment only.
   const { root, main } = makeRepo();
   const [a, b, c, d] = branches(main, ['a', 'b', 'c', 'd']);
-  const check = `${slowCheck(root)}; echo "prefer=\${THREADBEAR_CHECK_PREFER-unset} group=\${THREADBEAR_CHECK_GROUP-unset}" >> '${root}/prefers'`;
+  const check = `${slowCheck(root)}; echo "prefer=\${THREADBEAR_CHECK_PREFER-unset} group=\${THREADBEAR_CHECK_GROUP-unset} first=\${THREADBEAR_CHECK_FIRST-unset}" >> '${root}/prefers'`;
   const first = land({ ...a, check }, { ...capture().opts, checkHost: 'build-box' });
   await until(() => fs.existsSync(path.join(root, 'checking')), "a's check");
   const caps = [capture(), capture(), capture()];
@@ -814,7 +1205,8 @@ test("a group's check hears the hosts each landing in it asked for, the holder's
   // a by itself hears nothing; the group's holder (b, c or d) passes on
   // cloud, and its own, if it's b, only once.
   const lines = fs.readFileSync(path.join(root, 'prefers'), 'utf8').trim().split('\n');
-  assert.deepEqual(lines, ['prefer=unset group=unset', 'prefer=cloud group=1']);
+  // Both, as landings' checks, go ahead of other work on a check host.
+  assert.deepEqual(lines, ['prefer=unset group=unset first=1', 'prefer=cloud group=1 first=1']);
 });
 
 // 13 Nov: main was broken (a compile error only checked when its folder

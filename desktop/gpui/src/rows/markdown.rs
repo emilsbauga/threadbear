@@ -560,7 +560,10 @@ pub(crate) fn picture_file(path: &str) -> std::path::PathBuf {
 pub(crate) fn picture_source(uri: &gpui_kit::SharedUri, local: bool) -> gpui_kit::ImageSource {
     #[cfg(windows)]
     {
-        return match picture_path(uri.as_ref()).filter(|_| local) {
+        // Only a picture's name is read (is_picture_file): a key with no
+        // stamp is read again every minute while it fails (Gemini, Daybreak
+        // 170 round 11).
+        return match picture_path(uri.as_ref()).filter(|path| local && is_picture_file(path)) {
             Some(path) => file_picture(&path.to_string_lossy()),
             None => ImageSource::Resource(Resource::Path(std::sync::Arc::from(
                 std::path::Path::new(""),
@@ -578,80 +581,34 @@ pub(crate) fn picture_source(uri: &gpui_kit::SharedUri, local: bool) -> gpui_kit
     }
 }
 
-/// Windows decodes a snapshot read under the path guard. GPUI's default
+/// A picture file of this Mac's, as an `img` draws it: read under the path
+/// guard and decoded within one budget (fit_picture.rs, Daybreak 170), never
+/// by GPUI's own loader, which decodes any size whole and keeps every GIF
+/// frame. Windows decodes a snapshot read under the path guard too: GPUI's
 /// loader would open the path again later, after a link could be swapped in.
-/// Its asset cache keeps this work off the drawing thread and out of frames.
 pub(crate) fn file_picture(path: &str) -> ImageSource {
     #[cfg(windows)]
     {
-        let path = std::path::PathBuf::from(path);
-        ImageSource::Custom(std::sync::Arc::new(move |window, cx| {
-            let result = window.use_asset::<LocalPicture>(&path, cx);
-            if result.as_ref().is_some_and(|r| r.is_ok()) {
-                cx.default_global::<PictureRetries>().attempts.remove(&path);
-            }
-            if result.as_ref().is_some_and(|r| r.is_err())
-                && cx
-                    .default_global::<PictureRetries>()
-                    .pending
-                    .insert(path.clone())
-            {
-                let retries = cx.default_global::<PictureRetries>();
-                if retries.attempts.len() > 2000 {
-                    retries.attempts.clear();
-                }
-                let attempt = retries.attempts.entry(path.clone()).or_default();
-                let delay = 1u64 << (*attempt).min(6);
-                *attempt = attempt.saturating_add(1);
-                let path = path.clone();
-                cx.spawn(async move |cx| {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(delay))
-                        .await;
-                    let _ = cx.update(|cx| {
-                        cx.remove_asset::<LocalPicture>(&path);
-                        cx.default_global::<PictureRetries>().pending.remove(&path);
-                        cx.refresh_windows();
-                    });
-                })
-                .detach();
-            }
-            result
-        }))
+        // A guard walk per picture per frame would make scrolling stall, so
+        // its key is its path alone; a failed read is tried again later.
+        crate::fit_picture::file_source(std::path::PathBuf::from(path), String::new())
     }
     #[cfg(not(windows))]
     {
         let path = picture_file(path);
-        // Over the GPU's limit, gpui's own loader's picture would draw
-        // nothing: read and shrunk to fit instead (fit_picture.rs).
+        if path.as_os_str().is_empty() {
+            // Not a picture file: nothing to read, and nothing drawn.
+            return ImageSource::Resource(Resource::Path(std::sync::Arc::from(path.as_path())));
+        }
         // Keyed by its size and time too, so a picture written again at the
         // same path is read again.
-        let meta = threadbear_core::open_policy::local_metadata(&path)
+        let stamp = threadbear_core::open_policy::local_metadata(&path)
             .ok()
-            .filter(|_| !path.as_os_str().is_empty());
-        let Some(meta) = meta.filter(|meta| {
-            crate::fit_picture::file_size(&path, meta).is_some_and(crate::fit_picture::too_big)
-        }) else {
-            return path.into();
-        };
-        let key = (path, meta.len(), meta.modified().ok());
-        ImageSource::Custom(std::sync::Arc::new(move |window, cx| {
-            crate::fit_picture::use_fitted(&key, window, cx)
-        }))
+            .map(|meta| format!("{} {:?}", meta.len(), meta.modified().ok()))
+            .unwrap_or_default();
+        crate::fit_picture::file_source(path, stamp)
     }
 }
-
-#[cfg(windows)]
-struct LocalPicture;
-
-#[cfg(windows)]
-#[derive(Default)]
-struct PictureRetries {
-    pending: std::collections::HashSet<std::path::PathBuf>,
-    attempts: std::collections::HashMap<std::path::PathBuf, u32>,
-}
-#[cfg(windows)]
-impl Global for PictureRetries {}
 
 pub(crate) fn checked_picture_bytes(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
@@ -671,29 +628,6 @@ pub(crate) fn checked_picture_bytes(path: &std::path::Path) -> std::io::Result<V
         return Err(std::io::Error::other("Picture is too big"));
     }
     Ok(bytes)
-}
-
-#[cfg(windows)]
-impl Asset for LocalPicture {
-    type Source = std::path::PathBuf;
-    type Output = Result<std::sync::Arc<RenderImage>, ImageCacheError>;
-
-    fn load(
-        path: Self::Source,
-        cx: &mut App,
-    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
-        let renderer = cx.svg_renderer();
-        async move {
-            let bytes = checked_picture_bytes(&path)?;
-            let format = crate::viewer::format_of(&path.to_string_lossy(), &bytes)
-                .ok_or_else(|| std::io::Error::other("Not a picture"))?;
-            let (format, bytes) = crate::fit_picture::fit_bytes(format, bytes)
-                .ok_or_else(|| std::io::Error::other(crate::fit_picture::TOO_BIG))?;
-            Image::from_bytes(format, bytes)
-                .to_image_data(renderer)
-                .map_err(Into::into)
-        }
-    }
 }
 
 /// A reply's text in `thread`'s transcript, ready to parse: its buttons
@@ -953,6 +887,10 @@ impl ThreadPane {
             }
         };
         state.update(cx, |s, cx| s.set_text(text, cx));
+        // Its matches marked while the find bar is up (thread/find.rs).
+        if self.find.is_some() {
+            self.mark_reply(key, &state, cx);
+        }
         state
     }
 

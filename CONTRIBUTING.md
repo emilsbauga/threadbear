@@ -28,7 +28,10 @@ When you open a PR:
 - Run the checks: `./check.sh --quick`, or at least the test file for what you
   changed (`node --test test/unit/<name>.test.ts` in `runner/`). CI on a
   PR from a fork waits until I approve the run, so don't count on it
-  catching things first.
+  catching things first. Once it runs, a PR gets the runner, Convex and
+  website tests (`runner.yml`), the desktop app's build and specs
+  (`desktop.yml`) and the same ESLint check `./check.sh` runs (`lint.yml`),
+  each when it touches what that one covers.
 - Keep the docs true: [docs/guide.md](docs/guide.md) when it changes what
   someone sees or does, [docs/on-your-mac.md](docs/on-your-mac.md) when it adds
   a file, a timer, something it reads or a network call, and

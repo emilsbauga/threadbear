@@ -2,8 +2,8 @@
 // and the Edited N files card (ChangesRowCell). A diff row is one flex row per
 // line: GPUI has no tab stops, so the number, sign and text sit in columns.
 use super::metrics::*;
+use super::parts::{icon, stats_text, DIGIT_WIDTH};
 use super::row_wrap;
-use super::work::{icon, stats_text, DIGIT_WIDTH};
 use crate::style::{self, size};
 use crate::thread::ThreadPane;
 use gpui_kit::base::TestSupportExt as _;

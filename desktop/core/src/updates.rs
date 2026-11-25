@@ -51,6 +51,9 @@ pub struct RunnerUpdates {
     /// This machine can't follow GitHub's main properly. None while it's fine.
     pub follow_problem: Option<String>,
     pub web_runtime_problem: Option<String>,
+    /// Behind, but waiting on cef-rs, so nothing to do: a line in the panel
+    /// only, never the icon or its tooltip (protocol `webRuntimeNote`).
+    pub web_runtime_note: Option<String>,
     /// The other runners saying that of themselves (the main Mac's runner).
     pub behind_runners: Vec<BehindRunner>,
     /// A fork's own changes to the old Swift app not yet rebuilt in this one
@@ -266,6 +269,7 @@ impl RunnerUpdates {
             upstream: Upstream::decode(&v["upstream"]),
             follow_problem: text(v, "followProblem"),
             web_runtime_problem: text(v, "webRuntimeProblem"),
+            web_runtime_note: text(v, "webRuntimeNote"),
             behind_runners: v["behindRunners"]
                 .as_array()
                 .into_iter()
@@ -431,6 +435,8 @@ pub struct AppSide {
     pub building: bool,
     /// Main changed recently; let nearby desktop changes settle first.
     pub settling: bool,
+    /// How long that wait is (runner.json's `updateQuietMinutes`).
+    pub quiet_minutes: u32,
     pub failed: bool,
     /// The GPUI app's build found no Mac to build on, and tries again at its
     /// next look (the Swift app builds where it is, so never).
@@ -1062,6 +1068,19 @@ pub fn tooltip(app: &AppSide, runner: Option<&RunnerUpdates>) -> String {
     .to_owned()
 }
 
+/// "two quiet minutes", "a quiet minute", "15 quiet minutes".
+fn quiet_wait(minutes: u32) -> String {
+    const WORDS: [&str; 11] = [
+        "no", "a", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ];
+    match minutes {
+        0 => "main to settle".to_owned(),
+        1 => "a quiet minute".to_owned(),
+        n if n <= 10 => format!("{} quiet minutes", WORDS[n as usize]),
+        n => format!("{n} quiet minutes"),
+    }
+}
+
 pub fn app_line(a: &AppSide) -> String {
     if let Some(staged) = &a.staged {
         use crate::app_update::RestartWait;
@@ -1099,8 +1118,10 @@ pub fn app_line(a: &AppSide) -> String {
         return "The app has a new version on main, waiting for a Mac to build it on.".to_owned();
     }
     if a.settling {
-        return "The app has a new version on main, waiting for ten quiet minutes before building."
-            .to_owned();
+        return format!(
+            "The app has a new version on main, waiting for {} before building.",
+            quiet_wait(a.quiet_minutes)
+        );
     }
     if a.failed {
         return "The app's last build from main failed. The log says why.".to_owned();
@@ -1227,6 +1248,7 @@ pub fn runner_lines(u: Option<&RunnerUpdates>) -> Vec<String> {
         .collect();
     out.extend(follow_lines(u));
     out.extend(u.web_runtime_problem.clone());
+    out.extend(u.web_runtime_note.clone());
     if out.is_empty() {
         out.push("The runner is up to date.".to_owned());
     }
@@ -1399,10 +1421,22 @@ pub fn hold_thread(cli: &CliStatus) -> Option<&str> {
 }
 
 /// Who keeps it up to date, when that isn't the usual: a path set by hand is
-/// never updated.
+/// never updated, and an agent with no updater of its own (Antigravity)
+/// can't be updated from here at all.
 pub fn managed_line(cli: &CliStatus) -> Option<&'static str> {
-    (cli.managed_by == "none")
-        .then_some("Set by hand in runner.json, so Threadbear leaves it alone")
+    if cli.managed_by == "none" {
+        return Some("Set by hand in runner.json, so Threadbear leaves it alone");
+    }
+    (!has_policy(cli) && !cli.can_update_now)
+        .then_some("Has no updater, so install new versions yourself")
+}
+
+/// Whether its row offers "Updates: Automatic / Notify / Off". Only Claude
+/// and Codex: the runner keeps that setting for nothing else, so on an ACP
+/// agent the menu took a choice and changed nothing (Antigravity, 23 Nov
+/// 2026).
+pub fn has_policy(cli: &CliStatus) -> bool {
+    matches!(cli.provider.as_str(), "claude" | "codex")
 }
 
 /// The update button's title, or None when there's nothing to install.
@@ -1596,6 +1630,18 @@ mod tests {
     }
 
     #[test]
+    fn a_web_runtime_waiting_on_cef_rs_is_only_a_panel_line() {
+        let u = RunnerUpdates::decode(
+            &json!({ "state": "idle", "webRuntimeNote": "Waiting on cef-rs" }),
+        )
+        .unwrap();
+        let app = AppSide::default();
+        assert_eq!(runner_lines(Some(&u)), vec!["Waiting on cef-rs"]);
+        assert!(!shown(&app, Some(&u)));
+        assert!(!icon_tooltip(&app, Some(&u), &[]).contains("Waiting on cef-rs"));
+    }
+
+    #[test]
     fn the_clis_say_what_they_have_and_what_they_offer() {
         let clis = mock_clis();
         assert_eq!(clis.len(), 2);
@@ -1717,6 +1763,37 @@ mod tests {
         };
         assert_eq!(status_line(&checked), "OpenCode 1.19.5, up to date");
         assert_eq!(update_title(&checked), None);
+    }
+
+    #[test]
+    fn only_claude_and_codex_offer_an_update_setting() {
+        let claude = CliStatus {
+            provider: "claude".into(),
+            policy: "auto".into(),
+            ..Default::default()
+        };
+        assert!(has_policy(&claude));
+        assert_eq!(managed_line(&claude), None);
+        // OpenCode updates when asked, so its Update button is the control.
+        let opencode = CliStatus {
+            provider: "opencode".into(),
+            policy: "off".into(),
+            can_update_now: true,
+            ..Default::default()
+        };
+        assert!(!has_policy(&opencode));
+        assert_eq!(managed_line(&opencode), None);
+        // Antigravity has no updater: no menu, and a line saying why.
+        let antigravity = CliStatus {
+            provider: "antigravity".into(),
+            policy: "off".into(),
+            ..Default::default()
+        };
+        assert!(!has_policy(&antigravity));
+        assert_eq!(
+            managed_line(&antigravity),
+            Some("Has no updater, so install new versions yourself")
+        );
     }
 
     #[test]
@@ -2077,6 +2154,7 @@ mod tests {
     fn an_app_waiting_for_main_to_settle_is_pending() {
         let app = AppSide {
             settling: true,
+            quiet_minutes: 10,
             ..Default::default()
         };
         assert!(app.is_pending() && shown(&app, None) && !needs_you(&app, None));
@@ -2084,6 +2162,29 @@ mod tests {
             app_line(&app),
             "The app has a new version on main, waiting for ten quiet minutes before building."
         );
+        let two = AppSide {
+            quiet_minutes: 2,
+            ..app.clone()
+        };
+        assert_eq!(
+            app_line(&two),
+            "The app has a new version on main, waiting for two quiet minutes before building."
+        );
+        assert!(app_line(&AppSide {
+            quiet_minutes: 1,
+            ..app.clone()
+        })
+        .contains("for a quiet minute before"));
+        assert!(app_line(&AppSide {
+            quiet_minutes: 30,
+            ..app.clone()
+        })
+        .contains("for 30 quiet minutes before"));
+        assert!(app_line(&AppSide {
+            quiet_minutes: 0,
+            ..app
+        })
+        .contains("waiting for main to settle before"));
     }
 
     // Mike, 13 Nov: a countdown that starts again when he does something,

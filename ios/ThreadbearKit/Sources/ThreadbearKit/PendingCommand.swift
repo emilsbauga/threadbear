@@ -214,4 +214,6 @@ public enum CommandKey: Hashable, Sendable {
     case review(String)
     /// The message that answered a thread's card of asks or done card.
     case answer(String)
+    /// Sharing it by link: on, off or a new link.
+    case share(String)
 }

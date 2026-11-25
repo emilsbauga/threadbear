@@ -14,13 +14,21 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { atomicWriteFileSync } from './fsutil.ts';
-import { AGENT_MESSAGE_PREFIX } from './protocol.ts';
+import { AGENT_MESSAGE_PREFIX, type PermissionMode } from './protocol.ts';
+import { ceilingMode } from './runner/ceiling.ts';
 
 type Rec = {
   threadId: string;
   runnerId?: string;
   runnerName: string;
   starter: string;
+  // The most access the starter may have when a reply reaches its agent:
+  // what it had when it started the thread there (or the thread's own mode,
+  // if that was more), saved on this Mac, never read from the backend or
+  // the other runner. Raised above it since, a reply is Mike's to read
+  // instead (runner/ceiling.ts; Daybreak finding 163). A watch saved before
+  // this (22 Nov 2026) counts as the least, Ask.
+  by?: PermissionMode;
   at: number;
   // When its row was last there, and when its starter was last here, by
   // this Mac's clock.
@@ -57,7 +65,8 @@ export type FarReportsDeps = {
   runnerName: (runnerId: string) => string | undefined;
   // Whether the starter is one of this runner's threads.
   has: (starter: string) => boolean;
-  deliver: (starter: string, text: string) => void;
+  // `ceiling`: Rec.by, as a mode (runner/ceiling.ts).
+  deliver: (starter: string, text: string, ceiling: PermissionMode) => void;
   // False while sync is off, and on a draining runner, whose replacement
   // does this.
   active: () => boolean;
@@ -159,7 +168,7 @@ export class FarReports {
     }
   }
 
-  add(p: { threadId: string; runnerId?: string; runnerName: string; starter: string }): void {
+  add(p: { threadId: string; runnerId?: string; runnerName: string; starter: string; by: PermissionMode }): void {
     // A thread already watched keeps its starter: another runner naming one
     // of its threads as new again can't send its replies elsewhere.
     if (this.read().has(p.threadId)) return;
@@ -260,7 +269,7 @@ export class FarReports {
       rec.sends = (rec.sends ?? []).filter((t) => now - t < 24 * 3600_000);
       if (rec.sends.length >= MAX_PER_DAY) this.deps.log.warn('not passing on another reply from that thread today', { threadId: rec.threadId, starter: rec.starter });
       else {
-        this.deps.deliver(rec.starter, farReportText({ title: row.title ?? 'a thread', threadId: rec.threadId, runnerName: rec.runnerName, reply, again: hashes[turn] !== undefined }));
+        this.deps.deliver(rec.starter, farReportText({ title: row.title ?? 'a thread', threadId: rec.threadId, runnerName: rec.runnerName, reply, again: hashes[turn] !== undefined }), ceilingMode(rec.by));
         rec.sends.push(now);
       }
       if (turns.indexOf(turn) > turns.indexOf(rec.sentTurn ?? '')) rec.sentTurn = turn;

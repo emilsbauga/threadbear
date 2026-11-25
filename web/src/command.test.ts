@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { COMMAND_SLOW_MS, commandNote, idle, locked, step, type CommandState } from './command.ts';
+import { COMMAND_SLOW_MS, STOP_HOLD_MS, commandNote, idle, locked, step, type CommandState } from './command.ts';
 
 type P = { text: string };
 const start: CommandState<P> = idle();
@@ -189,4 +189,54 @@ test('moves match the cases the phones run too', () => {
     }
     assert.deepEqual(shared(s), c.expect, c.name);
   }
+});
+
+// Stop (bug 8, 23 Nov): the runner says done as soon as it has asked the CLI
+// to stop, and the turn runs on for up to 10 s. Settling after the usual
+// moment showed a pressable Stop again while it ran, and a second press sent
+// a second interrupt. Now done holds until the turn is over, or STOP_HOLD_MS.
+test('Stop holds after done until its turn is over, then takes clicks again', () => {
+  let s = step(sent(), { kind: 'queued', attempt: 1, id: 'c1', at: 0 });
+  s = step(s, { kind: 'report', id: 'c1', report: { state: 'done' }, at: 300 });
+  assert.equal(locked(s), true, 'done: still stopping');
+  // A second press while the turn runs on does nothing.
+  assert.equal(step(s, { kind: 'send', payload: { text: 'hi' }, at: 1500 }), s);
+  const over = step(s, { kind: 'over' });
+  assert.deepEqual(over, { kind: 'idle', attempt: 1 });
+  assert.equal(locked(over), false);
+  // As long as the iPhone holds its Stop, and longer than the usual settle.
+  assert.equal(STOP_HOLD_MS, 10_000);
+});
+
+test('the turn ending before the runner answers lets Stop go too, but a refusal stays said', () => {
+  for (const s of [sent(), step(sent(), { kind: 'queued', attempt: 1, id: 'c1', at: 0 }), step(sent(), { kind: 'tick', at: COMMAND_SLOW_MS })]) {
+    assert.deepEqual(step(s, { kind: 'over' }), { kind: 'idle', attempt: 1 }, s.kind);
+  }
+  // The send's answer coming after it's over moves nothing.
+  const gone = step(sent(), { kind: 'over' });
+  assert.equal(step(gone, { kind: 'queued', attempt: 1, id: 'c1', at: 10 }), gone);
+  const refused = step(step(sent(), { kind: 'queued', attempt: 1, id: 'c1', at: 0 }), { kind: 'report', id: 'c1', report: { state: 'failed', note: 'not running' }, at: 50 });
+  assert.equal(step(refused, { kind: 'over' }), refused);
+  assert.equal(commandNote(refused)?.text, 'Didn’t work: not running');
+  assert.equal(step(idle(), { kind: 'over' }).kind, 'idle');
+});
+
+test("the website's Stop holds for its turn: STOP_HOLD_MS and over, wired in the Dock", () => {
+  const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /useCommand\(token, \{ settleMs: STOP_HOLD_MS \}\)/);
+  assert.match(app, /if \(turnOn\) return;\s*stopOver\(\);/);
+  // A card waiting on Mike mid-turn isn't the turn's end.
+  assert.match(app, /const turnOn = busy\(t\) \|\| t\.status === 'waiting'/);
+});
+
+test("a Stop pressed before the thread's page was made again still holds, until it runs out or the turn ends", async () => {
+  const { holdStop, releaseStop, stopHeldFor } = await import('./stop-hold.ts');
+  holdStop('t1', 1000);
+  assert.equal(stopHeldFor('t1', 1000), STOP_HOLD_MS);
+  assert.equal(stopHeldFor('t1', 6000), STOP_HOLD_MS - 5000, 'opened again 5 s later: 5 s left');
+  assert.equal(stopHeldFor('t2', 6000), 0, 'another thread has none');
+  assert.equal(stopHeldFor('t1', 1000 + STOP_HOLD_MS), 0, 'run out');
+  holdStop('t1', 0);
+  releaseStop('t1');
+  assert.equal(stopHeldFor('t1', 1), 0, 'the turn ended');
 });

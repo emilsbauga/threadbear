@@ -112,6 +112,10 @@ pub struct Composer {
     pub(crate) palette_asked: Option<String>,
     /// The palette's list, kept so the arrows can scroll the pick into sight.
     pub(crate) palette_scroll: ScrollHandle,
+    /// The # thread picker's own state and its list, to scroll
+    /// (thread_palette.rs).
+    pub(crate) thread_picker: threadbear_core::thread_mentions::PickerState,
+    pub(crate) thread_scroll: ScrollHandle,
     /// The box's width at the last paint, for the palette's columns.
     pub(crate) card_width: Rc<Cell<f32>>,
     /// The chip row's right edge and the send button's, at the last paint:
@@ -258,6 +262,7 @@ impl Composer {
                 InputEvent::Change => {
                     this.backlog_changed(cx);
                     this.palette_text_changed(cx);
+                    this.thread_picker_text_changed(cx);
                     // Marks, and a correction as a word ends (composer_spelling.rs).
                     this.spelling_after_edit(window, cx);
                     // Kept across a quit (drafts.rs).
@@ -321,6 +326,8 @@ impl Composer {
             palette: PaletteState::default(),
             palette_asked: None,
             palette_scroll: ScrollHandle::new(),
+            thread_picker: Default::default(),
+            thread_scroll: ScrollHandle::new(),
             card_width: Rc::new(Cell::new(style::MAX_CONTENT_WIDTH)),
             controls_fit: Rc::new(Cell::new((0., 0.))),
             box_top: Rc::new(Cell::new(f32::MAX)),
@@ -2652,7 +2659,14 @@ impl Render for Composer {
         let draft_chips = self.render_draft_chips(cx);
         let needs_you = self.open_card(cx).is_some_and(|c| !c.is_done());
         self.palette_text_changed(cx);
+        // The slash palette, on the box's top edge, or else the # thread
+        // picker, on the text's (thread_palette.rs).
         let palette = self.render_palette(window, cx);
+        let thread_picker = if palette.is_none() {
+            self.render_thread_picker(window, cx)
+        } else {
+            None
+        };
         let width = self.card_width.clone();
         let top = self.box_top.clone();
         // The folder's actions, on shelves on the box's top edge, in from its
@@ -2682,7 +2696,16 @@ impl Render for Composer {
             .children(draft_chips)
             .when_some(strip, |s, strip| s.child(strip))
             .children(backlog_files)
-            .child(self.render_text_field(locked, cx))
+            // The # picker hangs off the text, not the box's top: with a
+            // card or chips over the text it sat a card's height away from
+            // the # it was typed at (Mike, 24 Nov).
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .child(self.render_text_field(locked, cx))
+                    .children(thread_picker),
+            )
             .child(controls);
         // The transcript's reading column: 780 wide at most, centred, with
         // the same side insets once the window is narrower.

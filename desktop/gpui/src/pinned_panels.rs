@@ -150,7 +150,7 @@ impl Threadbear {
                     "title": self.pinned_title(id),
                     "tip": self.pinned_tip(id),
                     "available": self.panel_available(id, cx),
-                    "showing": dock.controller.is_showing(id),
+                    "showing": dock.is_showing(id),
                     "rows": rows,
                 }))
             })

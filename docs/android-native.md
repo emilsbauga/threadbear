@@ -20,7 +20,7 @@ what the iPhone has.
   pair, no Kotlin daemon), on the Hetzner box or the M5. On a Mac it takes
   the SDK from ~/Library/Android/sdk and its lock through lockf, and goes
   through `scripts/one-build.sh` like any other build there. Installs and
-  screenshots go over `adb connect pixel.tail9ef766.ts.net:5555`. A box
+  screenshots go over `adb connect pixel.<tailnet>.ts.net:5555`. A box
   whose adb key the Pixel hasn't allowed keeps putting "Allow USB
   debugging?" over the app until it's disconnected (`adb disconnect`).
 
@@ -67,6 +67,7 @@ what the iPhone has.
 | NotifyMode, AppModel's runner order and offline line | `Settings.kt` | 5 |
 | AppModel's StartingThread (new threads on their way) | `Starting.kt` | 5 |
 | PendingCommand.swift, PendingCommands.swift (a command sent and waited on, and its one watcher; shared/cases/pending-commands.json) | `PendingCommand.kt`, `PendingCommands.kt` | 6 |
+| The website's ShareControl (web/src/share.tsx): the link from site and slug, what the sheet shows with a tap on its way | `Share.kt` | 7 |
 
 Dictation uses Android's own SpeechRecognizer (on-device where the phone
 has it), not Whisper; there's one recognizer, so no "Dictate with" choice.
@@ -79,7 +80,7 @@ Behind the iPhone, and written down where a test keeps it true: the backend APIs
 74 (search everywhere, the librarian's keywords), 76 (lab review), 79 (login notes)
 and 86 (design reviews), with 73 (loose ends) and 89 (answers on a message), in
 `shared/cases/wire-rows.json` (its `differs`, which `WireRowsTest.kt` skips), and
-tool output, sharing and design reviews in docs/parity.md's Android column
+tool output and design reviews in docs/parity.md's Android column
 (`runner/src/parity.ts`, which checks each against what the kit calls). Port one
 and those tests say to take its note out.
 
@@ -200,7 +201,8 @@ for them to be built from source in the recipe.
    the working line while it runs, waiting sends with Cancel, the composer
    with Send turning into Stop while a turn runs, then the cards: approval,
    question, secret, asks, done. Replies draw all of MarkdownBlocks:
-   tables, code, nested quotes, ```slack/```email/```draft boxes with Copy,
+   tables, code (coloured by its fence language with the Mac's theme colours,
+   kit CodeColours.kt: a small tokenizer, plain past 20,000 characters), nested quotes, ```slack/```email/```draft boxes with Copy,
    ```mermaid and ```html in a locked-down web view (Pele bundled in
    assets, as on the iPhone: no network, no navigation, a page's own
    scripts never run), and pictures (capped download with one deadline,
@@ -208,7 +210,11 @@ for them to be built from source in the recipe.
    Reply buttons, thread chips and links (anything but a web page asks
    first), work: links opening the turn's working, the slash palette,
    plan cards and the plan sheet, older history in chunks, and
-   swipe left for Forward / right for Back.
+   swipe left for Forward / right for Back. The menu's Share… opens a
+   sheet like the website's Share panel: Share with a link (`phone:share`,
+   backend API 8), the link with Copy and Send (Android's share sheet),
+   and New link. The link is `<site>/s/<slug>`, the site from `phone:me`'s
+   `site`, else a cloud deployment's `.convex.site` twin.
 4. New thread (the bar's pencil): text with photos and dictation, runner,
    model and effort as the iPhone offers; it closes once the backend has it,
    a Starting row stands in, and the thread opens if it starts within a minute.

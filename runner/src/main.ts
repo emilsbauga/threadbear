@@ -9,12 +9,13 @@ import './win32-hide.ts';
 import { onYearToken } from './year-token.ts';
 import { YearTokenMaker } from './year-token-maker.ts';
 import { realCopy } from './real-copy.ts';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { readShareImage } from './share-images.ts';
 import { CallerGate } from './rpc-gate.ts';
-import { threadOfSocket } from './peer.ts';
+import { MARK_NAMES, ownThreadMarks, threadOfSocket } from './peer.ts';
 import { threadKey as makeThreadKey } from './rpc-auth.ts';
 import { makePrivate } from './win-acl.ts';
 import { loadConfig, ensureHome, readToken, paths, recordListening, defaultHome, DEFAULT_CWD, RUNNER_VERSION, RunnerJsonError, peekRunnerJson, expandHome } from './config.ts';
@@ -32,7 +33,7 @@ import { SwiftChanges } from './swift-changes.ts';
 import { commitBefore, commitOnMain, RemoteUpdateFixer, reportedOnDisk, UpdateFixer, type UpdateFailure } from './fix-update.ts';
 import { followOriginOn } from './follow-origin.ts';
 import { bringInSetting, spareWeekOn } from './settings.ts';
-import { SpareWeek } from './spare-week.ts';
+import { SpareWeek, looksByItself, spareWeekBinding } from './spare-week.ts';
 import { MAIL_WATCH, MailWatch } from './mail-watch.ts';
 import { Restarter, restartMethods } from './restart.ts';
 import { AppRestarts } from './app-restarts.ts';
@@ -41,7 +42,7 @@ import { StuckJobs } from './stuck-jobs.ts';
 import { FrozenClis } from './frozen-cli.ts';
 import { KeepAwake } from './keep-awake.ts';
 import { experimentOn } from './experiments.ts';
-import { AgentArchive, ARCHIVE_EXPERIMENT } from './agent-archive.ts';
+import { AgentArchive, ARCHIVE_EXPERIMENT, ARCHIVE_MCP_NAME, archiveMcpServer, archiveMethods } from './agent-archive.ts';
 import { MemorySync } from './memory-sync.ts';
 import { Reinstaller } from './reinstall.ts';
 import { MacScreen } from './mac-screen.ts';
@@ -108,11 +109,12 @@ import { filesMethods } from './files.ts';
 import { devicesMethods } from './devices.ts';
 import { flushSentry, reportException, reportLoggedError, reportLoggedWarning, startSentry, useSentryMask } from './sentry.ts';
 import { ERROR_EXIT_CODE, ERROR_LEAVE_DEADLINE_MS, ERROR_STOP_DEADLINE_MS, decideErrorExit, errorMode, guardHolds, guardNotice, readErrorExits, takeErrorEnv, testThrow, writeErrorExits } from './error-exits.ts';
-import { ALWAYS_ASK_TOOLS, NEVER_ASK_TOOLS, RICH_BLOCKS_LINE, SERVER_NAME, buildThreadbearTools, serverInstructions, type RemoteControl } from './threadbear-mcp.ts';
+import { ALWAYS_ASK_TOOLS, NEVER_ASK_TOOLS, LIVE_PAGES_LINE, RICH_BLOCKS_LINE, SERVER_NAME, buildThreadbearTools, serverInstructions, type RemoteControl } from './threadbear-mcp.ts';
 import { CrossRunner } from './cross-runner.ts';
 import { FAILED_SHOWN_MS, MovePreviews, Moves, moveInfoFrom, previewInfo, stillRunner, type ThreadMoving } from './moves.ts';
 import type { RemoteThreads } from './thread-index.ts';
 import { FarReports, ROWS as FAR_ROWS, TICK_MS as FAR_TICK_MS, type FarRow } from './far-reports.ts';
+import { ceilingMode, higherMode, lowerMode } from './runner/ceiling.ts';
 import { EFFORT_LEVELS, ErrorCode, RpcError, isPermissionMode, type EffortLevel, type PermissionMode } from './protocol.ts';
 
 // Tells launch.mjs this runner calls its listening() hook (release.ts), so
@@ -283,6 +285,15 @@ async function main(): Promise<void> {
   removeTempFiles(cfg.home, paths.run(cfg.home), paths.threads(cfg.home));
 
   const registry = new ProcessRegistry(paths.run(cfg.home), log);
+  // The thread keys and ids this runner was started under (a dev runner's,
+  // from a thread's shell): a connection under any other thread's that isn't
+  // one of this runner's own threads is turned away (Daybreak finding 177).
+  // Read now, while its parents are still there.
+  const own = await ownThreadMarks({ log });
+  // Read: what it starts without a thread's own environment mustn't carry
+  // the starting thread's (a dev runner's tb would otherwise use that
+  // thread's key here, and be refused).
+  for (const n of MARK_NAMES) delete process.env[n];
   // Waits until the old CLIs are gone, so a resume never runs beside them.
   // A copy's run/ lists the live runner's CLIs: forgotten, never stopped.
   if (copyOfReal) registry.removeFile();
@@ -434,17 +445,29 @@ async function main(): Promise<void> {
     const s = await connectors.refresh(true);
     return s.state === 'ok' ? s.services : undefined;
   };
+  // Agent Archive's own MCP server for every thread while its experiment's
+  // on (agent-archive.ts, archiveMcpServer), read at each session's start.
+  const archiveServers = (): Record<string, { command: string; args: string[] }> => {
+    const s = experimentOn(cfg.home, ARCHIVE_EXPERIMENT) ? archiveMcpServer() : undefined;
+    return s ? { [ARCHIVE_MCP_NAME]: s } : {};
+  };
   const claude = new ClaudeAdapter({
     claudePath: cfg.claudePath,
     registry,
     log,
-    mcpServersFor: (threadId) => ({ [SERVER_NAME]: threadbearMcpServer(router(), threadId, scheduleControl(), projectControl(), appRestarts, () => cfg.bulletReplies, pocketControl, () => cfg.oneReply, () => cfg.connectorsUrl, gatewayHealth, remoteControl, () => experimentOn(cfg.home, 'loadEndTurn')) }),
+    mcpServersFor: (threadId) => ({
+      [SERVER_NAME]: threadbearMcpServer(router(), threadId, scheduleControl(), projectControl(), appRestarts, () => cfg.bulletReplies, pocketControl, () => cfg.oneReply, () => cfg.connectorsUrl, gatewayHealth, remoteControl, () => experimentOn(cfg.home, 'loadEndTurn'), () => experimentOn(cfg.home, 'reviewCanvas'), () => experimentOn(cfg.home, 'livePages')),
+      ...Object.fromEntries(Object.entries(archiveServers()).map(([name, server]) => [name, { type: 'stdio' as const, ...server }])),
+    }),
     oneReply: () => cfg.oneReply,
     alwaysAsk: ALWAYS_ASK_TOOLS,
     neverAsk: NEVER_ASK_TOOLS,
   });
   // The threadbear tools for an agent that isn't given them in-process.
-  const codexStyleTools = (threadId: string) => buildThreadbearTools(router(), threadId, Date.now, scheduleControl(), projectControl(), appRestarts, { provider: 'codex', bulletReplies: () => cfg.bulletReplies, oneReply: () => cfg.oneReply, pocket: pocketControl, gateway: () => cfg.connectorsUrl, gatewayHealth, remote: remoteControl });
+  // What Codex and ACP agents get beside the tools: the rich blocks, and
+  // live pages with that experiment on.
+  const richGuidance = () => (experimentOn(cfg.home, 'livePages') ? `${RICH_BLOCKS_LINE} ${LIVE_PAGES_LINE}` : RICH_BLOCKS_LINE);
+  const codexStyleTools = (threadId: string) => buildThreadbearTools(router(), threadId, Date.now, scheduleControl(), projectControl(), appRestarts, { provider: 'codex', bulletReplies: () => cfg.bulletReplies, oneReply: () => cfg.oneReply, pocket: pocketControl, gateway: () => cfg.connectorsUrl, gatewayHealth, remote: remoteControl, reviewCanvas: () => experimentOn(cfg.home, 'reviewCanvas') });
   // One app-server per live Codex thread, each starting what E says is
   // current, with the same threadbear tools as dynamic tools.
   const codex = new CodexAdapter({
@@ -453,8 +476,12 @@ async function main(): Promise<void> {
     registry,
     log,
     toolsFor: codexStyleTools,
+    mcpServers: archiveServers,
+    // An extra Codex login gets ~/.codex's instructions, hooks, skills and
+    // config.toml, linked, and the trust its hooks have there.
+    codexMainDir: cfg.codexMainDir,
     onNotice: (text) => runner.notice('warning', text),
-    extraGuidance: () => RICH_BLOCKS_LINE,
+    extraGuidance: () => richGuidance(),
   });
   const pi = new PiAdapter({ registry, log,
     profileFor: id => cfg.piProfiles?.find(profile => piAccountId(profile.id) === id),
@@ -471,7 +498,7 @@ async function main(): Promise<void> {
         registry,
         log,
         toolsFor: codexStyleTools,
-        extraGuidance: () => RICH_BLOCKS_LINE,
+        extraGuidance: () => richGuidance(),
         dataDir: cfg.home,
       }),
     ]),
@@ -492,6 +519,8 @@ async function main(): Promise<void> {
   // message gets (Runner.forAgent). Only phone messages read it, and they
   // only come through that mirror.
   let atMac: boolean | undefined;
+  // Set once Recipes is made, further down.
+  let recipesHabits: (() => string) | undefined;
   const instructions = new InstructionsStore({ home: cfg.home, token, publish: (n) => runner.publish(n) });
   // Not in box mode: its spawn gate (spawn-gate.ts) holds processes on the
   // main thread only, and the look runs git.
@@ -508,7 +537,9 @@ async function main(): Promise<void> {
         }
       : {}),
     threadKey: (id) => makeThreadKey(token, id),
-    standingInstructions: () => instructions.given(),
+    // His own, then the habits of the recipes that are on (recipes.ts): both
+    // are for every thread, and a change to either is news the same way.
+    standingInstructions: () => [instructions.given().trim(), recipesHabits?.() ?? ''].filter(Boolean).join('\n\n'),
     projects,
     atMac: () => atMac,
     config: cfg,
@@ -592,7 +623,12 @@ async function main(): Promise<void> {
   const kept = await peers.connectAll();
   bootStep('peers');
   elsewhere = peersElsewhere(peers);
+  // Before any queue is started: a reminder an older release queued goes by
+  // its schedule's ceiling, Ask until the Scheduler is up (runner/ceiling.ts).
+  runner.scheduleCeiling = (id) => (scheduler ? scheduler.ceilingById(id) : 'ask');
   runner.start({ skip: kept });
+  // App-restart watches with words from before ceilings: bound now.
+  appRestarts.bindOldCeilings((id) => (runner.has(id) ? runner.authoritySaved(id).mode : undefined));
   bootStep('threads');
   // Answers to ask_secret go after a day (docs/protocol/threads.md, "Secrets").
   runner.secrets.startSweeping((e) => log.warn('secret sweep failed', { error: String(e) }));
@@ -612,7 +648,15 @@ async function main(): Promise<void> {
     log,
     elsewhere: (id) => peers.owns(id) || peers.isArriving(id),
     folderElsewhere: (id) => peers.find(id)?.cwd,
-    sendElsewhere: (id, text, scheduleId, run, since, preserve) => sendScheduled(runner, peers, id, text, scheduleId, run, since, preserve),
+    sendElsewhere: (id, text, scheduleId, run, since, preserve, ceiling) => sendScheduled(runner, peers, id, text, scheduleId, run, since, preserve, ceiling),
+    // A busy one may be in a turn that started with more than its saved
+    // mode; its summary doesn't say, so count it as full (rpc-gate.ts).
+    accessElsewhere: (id) => {
+      const t = peers.find(id);
+      if (!t || t.status === 'running' || t.status === 'starting' || t.status === 'waiting') return undefined;
+      return t.permissionMode;
+    },
+    savedModeElsewhere: (id) => peers.find(id)?.permissionMode,
     dropElsewhere: (id, scheduleId) => dropScheduled(runner, peers, id, scheduleId),
     self: { id: syncRunnerId, name: cfg.sync.name ?? defaultRunnerName(), icon: runnerIcon, version: RUNNER_VERSION, release: RELEASE.release, startedAt },
     syncOn: Boolean(cfg.sync.enabled && cfg.sync.url && readSyncKey(cfg.home)),
@@ -624,6 +668,8 @@ async function main(): Promise<void> {
   if (!copyOfReal && !box) scheduler.start();
   // The done card's loose ends list the check-ins booked for a thread.
   runner.schedulesFor = (id) => scheduler.list(id);
+  // The list as it starts, so the first change to it re-sends the threads it moves.
+  runner.recheckWaitStates();
   runner.scheduleChecks = () => scheduler.localChecks();
   // Projects need the threads loaded (their counts, and the thread side of
   // membership); the librarian needs both.
@@ -877,7 +923,9 @@ async function main(): Promise<void> {
     commands: {
       ...phoneCommands(runner, peers),
       // A schedule's own runner gets its command, so the scheduler here is its.
-      schedule: ({ scheduleId, action }) => (action === 'run' ? scheduler.runNow(scheduleId) : scheduler.update({ scheduleId, paused: action === 'pause' })),
+      // Mike's, from his phone: resuming lifts a schedule's ceiling, as from the
+      // app (schedules.ts, "Ceilings").
+      schedule: ({ scheduleId, action }) => (action === 'run' ? scheduler.runNow(scheduleId, 'full') : scheduler.update({ scheduleId, paused: action === 'pause', ceiling: 'full' })),
       // The Mac's Move sheet asking, through the relay (threads.movePreview).
       moveDescribe: async (id) => {
         const info = await describeMovePreview(id);
@@ -1115,19 +1163,19 @@ async function main(): Promise<void> {
   });
   // A thread suggesting work when a login's week is about to go unused, and
   // the Usage panel's Find work for it (spare-week.ts). Only the main Mac's
-  // runner looks by itself, so two runners don't both start one.
+  // runner looks by itself, so two runners don't both start one, and not
+  // while it hands over (handOver stops it too).
   const spareWeek = new SpareWeek({
     home: cfg.home,
     clock: realClock,
     log,
     on: () => spareWeekOn(cfg.home),
-    looks: () => !sync.secondRunner(),
+    looks: () => looksByItself({ draining, secondRunner: sync.secondRunner() }),
     accounts: () => runner.safeAccounts(),
     pools: () => runner.pools(),
     history: (since) => usageHistory.rows(since),
-    start: (r) => runner.create({ text: r.text, title: r.title, cwd: r.cwd, accountId: r.accountId, startedBy: { kind: 'runner', label: 'Threadbear', why: r.why } }).thread.id,
     open: openThread,
-    send: (threadId, text) => void runner.send(threadId, text, [], { queue: true }),
+    ...spareWeekBinding(runner),
   });
   runner.spareWeek = spareWeek;
   if (!box) spareWeek.start();
@@ -1179,14 +1227,16 @@ async function main(): Promise<void> {
     folder: () => expandHome(peekRunnerJson(cfg.home).recipes?.folder || DEFAULT_RECIPES_FOLDER),
     now: () => realClock.now(),
     on: () => experimentOn(cfg.home, RECIPES_EXPERIMENT),
+    sign: (text) => crypto.createHmac('sha256', token).update(text).digest('hex'),
     publish: () => runner.publish({ method: 'recipes.updated', params: {} }),
     experimentOn: (id) => experimentOn(cfg.home, id),
     setExperiment: (id, on) => settings.update({ experiments: { [id]: on } }),
     schedules: { list: () => scheduler.list(), update: (p) => scheduler.update(p), delete: (id) => scheduler.delete(id) },
-    threads: (since) => runner.scheduledSince(since),
+    threads: (since) => runner.recipeRunsSince(since),
     start: (p) => runner.create({ text: p.text, title: p.title, cwd: p.cwd, worktree: false, startedBy: { kind: 'runner', label: 'Recipes', why: p.title } }).thread,
     log: (msg, extra) => log.warn(msg, extra),
   });
+  recipesHabits = () => recipes.habits();
   if (!box && !copyOfReal) recipes.start();
   const upstream = new Upstream({
     home: cfg.home,
@@ -1248,6 +1298,8 @@ async function main(): Promise<void> {
     if (u.followProblem) out.followProblem = u.followProblem;
     const webRuntimeProblem = webRuntimeUpdates.problem();
     if (webRuntimeProblem) out.webRuntimeProblem = webRuntimeProblem;
+    const webRuntimeNote = webRuntimeUpdates.note();
+    if (webRuntimeNote) out.webRuntimeNote = webRuntimeNote;
     const behind = sync.behindRunners();
     if (behind.length) out.behindRunners = behind;
     const up = upstream.status();
@@ -1275,7 +1327,7 @@ async function main(): Promise<void> {
     if (n.method === 'thread.updated') updates.threadChanged(n.params.thread.id);
     else if (n.method === 'thread.deleted') updates.threadChanged(n.params.threadId);
   });
-  const methods = { ...restartMethods(restarter), ...scheduleMethods(scheduler), ...projectMethods(projects), ...drainProjectMethods(projects), ...librarianMethods(librarian), ...connectorsMethods(connectors), ...recipeMethods(recipes), ...settingsMethods(settings), ...instructionsMethods(instructions), ...modelMethods(models), ...devicesMethods(sync), ...usageStatsMethods({ tally, history: usageHistory, clock: realClock }) };
+  const methods = { ...restartMethods(restarter), ...scheduleMethods(scheduler), ...projectMethods(projects), ...drainProjectMethods(projects), ...librarianMethods(librarian), ...connectorsMethods(connectors), ...recipeMethods(recipes), ...settingsMethods(settings), ...instructionsMethods(instructions), ...modelMethods(models), ...devicesMethods(sync), ...usageStatsMethods({ tally, history: usageHistory, clock: realClock }), ...archiveMethods(agentArchive) };
   // runner.status carries the CLI statuses too (protocol, "runner.status").
   const restartStatus = methods['runner.status'];
   methods['runner.status'] = (p) => {
@@ -1340,8 +1392,8 @@ async function main(): Promise<void> {
       return { ...res, ...(thread ? { thread } : {}) };
     });
   methods['swiftChanges.dismiss'] = (p) => swiftCall(() => swiftChanges.dismiss(swiftCommit(p), (p as { undo?: unknown } | undefined)?.undo === true));
-  const codexWarning = usesCli('codex') ? missingCodex(updates.codexBinary(), cfg) : undefined;
-  if (codexWarning) log.warn('codex CLI not found', { path: updates.codexBinary() });
+  const codexMissing = usesCli('codex') ? updates.missingCodexNotice() : undefined;
+  if (codexMissing) log[codexMissing.level === 'info' ? 'info' : 'warn']('codex CLI not found', { path: updates.codexBinary() });
   // Other runners' threads through the backend, for the Mac app (relay.ts).
   const relay = (relayRef = new Relay({
     source: () => sync.relaySource(),
@@ -1403,8 +1455,10 @@ async function main(): Promise<void> {
     self: () => syncRunnerId,
     runnerName: (id) => runnerNames.get(id),
     has: (id) => runner.has(id),
-    deliver: (starter, text) => {
-      runner.send(starter, text, [], { queue: true });
+    // Held to the watch's ceiling (runner/ceiling.ts): the starter raised
+    // above it since, Mike reads the reply instead.
+    deliver: (starter, text, ceiling) => {
+      runner.send(starter, text, [], { queue: true, ceiling });
     },
     // Not while sync is off, nor on a draining or stopping runner: its
     // replacement does it.
@@ -1427,6 +1481,16 @@ async function main(): Promise<void> {
       return { id: r.thread.id };
     },
     startedThere: (p) => farReports.add(p),
+    // Its replies' ceiling: what the starter has as it asks, or the mode the
+    // thread is started with if that's more (a card Mike allowed). Never
+    // anything the other runner or the backend says later.
+    // As the agent's own access is judged for what it may start (its saved
+    // mode, not the more a running turn may still have after it was lowered).
+    // Its mode as its card was shown, if less (raised while the card waited).
+    ceilingFor: (starter, mode, askerMode) => {
+      const saved = ceilingMode(runner.authoritySaved(starter).mode);
+      return higherMode(askerMode ? lowerMode(ceilingMode(askerMode), saved) : saved, isPermissionMode(mode) ? ceilingMode(mode) : 'ask');
+    },
     card: (threadId, c) => runner.requestCard(threadId, c),
     openCard: async (threadId) => {
       const src = sync.relaySource();
@@ -1496,7 +1560,7 @@ async function main(): Promise<void> {
         const packed = await runner.packForMove(id, row);
         const keep = scheduler.list(id).filter((sc) => sc.threadId === id && !sc.finishedAt);
         if (keep.some((sc) => sc.check)) packed.leftBehind.push("Its schedules' shell checks stayed behind: set them again here if they're still wanted.");
-        const carried = keep.map((sc) => ({ text: sc.text, title: sc.title, ...(sc.cron ? { cron: sc.cron } : { at: sc.at }), ...(sc.timezone ? { timezone: sc.timezone } : {}), ...(sc.paused ? { paused: true } : {}), ...(sc.createdBy ? { createdBy: sc.createdBy } : {}) }));
+        const carried = keep.map((sc) => ({ text: sc.text, title: sc.title, ...(sc.cron ? { cron: sc.cron } : { at: sc.at }), ...(sc.timezone ? { timezone: sc.timezone } : {}), ...(sc.paused ? { paused: true } : {}), ...(sc.createdBy ? { createdBy: sc.createdBy } : {}), ceiling: scheduler.ceilingById(sc.id) }));
         if (carried.length) packed.entries.push({ path: 'schedules.json', data: Buffer.from(JSON.stringify(carried)) });
         return packed;
       },
@@ -1506,11 +1570,17 @@ async function main(): Promise<void> {
       },
       plan: (row) => runner.planMove(row),
       place: (row, entries) => runner.placeMove(row, entries),
+      placed: (row) => runner.movePlaced(row),
       async adopt(row) {
         const r = await runner.adoptMoved(row);
         // When and what each sends, nothing more (moves.ts movedSchedules).
-        for (const sc of r.schedules ?? []) {
-          await scheduler.create({ ...sc, threadId: row.threadId }).catch((e) => log.warn("couldn't make a moved thread's schedule again", { threadId: row.threadId, error: String(e) }));
+        // Each held to the lower of the ceiling it had there and the
+        // thread's saved mode as it arrives (schedules.ts, "Ceilings"): the
+        // other Mac's word can only lower it, so raising the thread here
+        // later pauses them for Mike.
+        const here = ceilingMode(runner.authoritySaved(row.threadId).mode);
+        for (const { ceiling: there, ...sc } of r.schedules ?? []) {
+          await scheduler.create({ ...sc, threadId: row.threadId, ceiling: there ? lowerMode(there, here) : here }).catch((e) => log.warn("couldn't make a moved thread's schedule again", { threadId: row.threadId, error: String(e) }));
         }
       },
       discard: (row) => runner.discardMove(row),
@@ -1674,14 +1744,14 @@ async function main(): Promise<void> {
     relay,
     virtualStart: (p) => virtualRunners.start(p),
     gate: new CallerGate({ runner, remote: peers, schedules: scheduler, images: runner.importQuota }),
-    callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id) || peers.owns(id), log }),
+    callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id) || peers.owns(id), log, own, keyOf: (id) => makeThreadKey(token, id) }),
     updates: () => (draining ? undefined : runnerUpdates()),
     appHello: (build, app) => appRestarts.appHello(build, app),
     appSeen: () => appSeen.mark(),
     desktopHello: () => void swiftChanges.desktopHello().catch((e) => log.warn('swift changes: first look failed', { error: String(e) })),
     helloNotices: () => {
       // Like a missing claude: said to every client, until it's there.
-      const noCodex = usesCli('codex') ? missingCodex(updates.codexBinary(), cfg) : undefined;
+      const noCodex = usesCli('codex') ? updates.missingCodexNotice() : undefined;
       // Pushes failing (sync.ts notePushFailing) is said once as it starts;
       // an app that wasn't connected then hears it here.
       const pushFailing = sync.status().pushFailing;
@@ -1691,7 +1761,7 @@ async function main(): Promise<void> {
         ...(useWarning ? [{ level: 'warning' as const, message: useWarning }] : []),
         ...(pushFailing ? [{ level: 'warning' as const, message: pushFailingText(pushFailing) }] : []),
         ...(rolledBack ? [{ level: 'warning' as const, message: rolledBack }] : []),
-        ...(noCodex ? [{ level: 'warning' as const, message: noCodex }] : []),
+        ...(noCodex ? [noCodex] : []),
         // Stopped restarting after uncaught errors (error-exits.ts), until an hour passes without one.
         ...(guardHolds(errorExits, Date.now()) ? [{ level: 'warning' as const, message: guardNotice(errorExits) }] : []),
         ...restarter.helloNotices(),
@@ -1763,6 +1833,9 @@ async function main(): Promise<void> {
   // now: waking one starts its CLI, whose tools need what's set up above.
   runner.holdWaits = false;
   step('reconcile waits', () => runner.reconcileWaits());
+  // A wait whose latest time passed while the runner was down: its agent's
+  // turn to check was held until now too (runner/hibernation.ts, armSnoozeTimer).
+  step('late wake checks', () => runner.armSnoozeTimer());
   // Reports held for a thread whose threads finished while it was down.
   step('held reports', () => runner.settleAllHeld());
   // Reviews a runner that went away owed (runner/lab-review.ts).
@@ -1822,6 +1895,7 @@ async function main(): Promise<void> {
     usage.stop();
     spareWeek.stop();
     mailWatch.stop();
+    agentArchive.shutdown();
     recipes.stop();
     signIn.stop();
     tally.stop();
@@ -1887,6 +1961,10 @@ async function main(): Promise<void> {
       stopHousekeeping();
       stopBorrowSweep();
       scheduler.stop();
+      // The new release looks at spare weeks from here on (THREADBEAR-2H).
+      spareWeek.stop();
+      // And keeps Agent Archive's list and builds its sync (THREADBEAR-2J).
+      agentArchive.stop();
       librarian.stop();
       // stuckJobs goes on: background work can hold a thread here for hours,
       // and a wait that can never end should still be noticed. It only looks
@@ -1938,7 +2016,7 @@ async function main(): Promise<void> {
         // Its port is on disk too (drain-<pid>.json), so a thread's shell can
         // reach this one as well as the primary.
         gate: new CallerGate({ runner, schedules: scheduler, images: runner.importQuota }),
-        callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id), log }),
+        callerOf: (sock) => threadOfSocket(sock, { registry, known: (id) => runner.has(id), log, own, keyOf: (id) => makeThreadKey(token, id) }),
         methods: {
           ...scheduledSendMethods(runner),
           'drain.hello': () => {
@@ -2134,16 +2212,6 @@ async function main(): Promise<void> {
   process.on('exit', () => {
     for (const pid of registry.pids()) killGroup(pid, 'SIGKILL');
   });
-}
-
-// A warning when the Codex binary new sessions would start isn't there, or
-// undefined. Threadbear's own copy may still be on its way.
-function missingCodex(start: string, cfg: ReturnType<typeof loadConfig>): string | undefined {
-  const bin = resolveCodexBinary(start);
-  if (fs.existsSync(bin.command)) return undefined;
-  if (cfg.codexPath) return `The codex CLI isn't at ${cfg.codexPath} (codexPath in runner.json), so Codex threads can't start.`;
-  if (cfg.cliUpdates.codex !== 'off') return `The codex CLI isn't at ${start} yet, so Codex threads can't start until Threadbear has installed its own copy (Usage shows how that's going).`;
-  return `The codex CLI isn't at ${start}, so Codex threads can't start. Install @openai/codex next to the runner's Node, or set codexPath in runner.json.`;
 }
 
 main().catch(async (e) => {

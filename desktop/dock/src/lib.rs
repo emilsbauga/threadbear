@@ -9,7 +9,7 @@
 //! app says what each panel shows through [`DockContent`].
 pub mod content;
 pub mod model;
-pub mod overlay;
+mod motion;
 pub mod platform;
 pub mod theme;
 pub mod view;

@@ -260,7 +260,9 @@ workspace and built-in art inputs inside the final lock, so an unchanged
 checkout cannot reuse the other checkout's binary. The marker returns only
 after Cargo succeeds. A cleanup that cannot yet observe killed work stopping
 keeps the host locked and writes `~/.cache/threadbear-check/perf-cleanup.log`
-after 30 seconds; it does not let another measurement start over that work.
+after 30 seconds; it does not let another measurement start over work it
+knows of. Only when every process it knows of is gone and lsof alone can't
+confirm the rest does it give up, after 10 minutes, and unlock.
 
 ## Hunting bugs on purpose
 

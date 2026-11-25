@@ -16,7 +16,7 @@
     {
       "kind": "added",
       "title": "Open Anything",
-      "text": "In the new app, ⌘K (or ⌘P) opens any thread, panel, project or page by typing a bit of its name. Return opens it, ⌘Return opens it beside. An experiment: turn it on in Settings > General > Experiments.",
+      "text": "In the new app, ⌘K (or ⌘P) opens any thread, panel, project or page by typing a bit of its name. Return opens it, ⌘Return opens it beside.",
       "media": {
         "type": "clip",
         "src": "open-anything.mp4",
@@ -84,8 +84,7 @@
     {
       "text": "With the Codex models on Full access, the runner answers Codex's own questions, so a thread never stops for Allow or Deny",
       "credit": "Ian Macartney"
-    },
-    "New threads can be told which open threads may already be on the same work, and to hand it over rather than do it twice (an experiment)"
+    }
   ],
   "changed": [
     {

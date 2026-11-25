@@ -65,6 +65,7 @@ case "$prefix" in *.partial) ;; *) echo "not a .partial prefix: $prefix" >&2; ex
 native="$prefix/${NATIVE.join('/')}"
 mkdir -p "$prefix/node_modules/@openai/codex/bin" "$(dirname "$native")"
 if [ -f "${root}/fail-$v" ]; then echo "npm ERR! 404 Not Found" >&2; exit 1; fi
+if [ -f "${root}/unpublished-$v" ]; then echo "npm error code E404" >&2; echo "npm error 404 Not Found - GET https://registry.npmjs.org/@openai/codex/-/codex-$v.tgz - Not found" >&2; exit 1; fi
 printf '{"name":"@openai/codex","version":"%s"}\\n' "$v" > "$prefix/node_modules/@openai/codex/package.json"
 echo "// launcher" > "$prefix/node_modules/@openai/codex/bin/codex.js"
 cat > "$native" <<EOS
@@ -470,6 +471,25 @@ test('codex: going back holds the version left behind, so a check doesn\'t put i
   assert.deepEqual(t.npm.installs(), ['0.164.0', '0.165.0', '0.166.0', '0.165.0']);
 });
 
+test('codex: a release npm lists before its download is up waits for the next check, not a failure', async () => {
+  const t = setup();
+  t.u.update('codex', { version: '0.164.0' });
+  await t.u.settled();
+  fs.writeFileSync(path.join(t.root, 'unpublished-0.165.0'), '');
+  t.u.update('codex', { version: '0.165.0' });
+  await t.u.settled();
+  let c = of(t.u.list(), 'codex');
+  assert.equal(c.update?.state, 'unchanged');
+  assert.match(c.update?.message ?? '', /isn't ready to download yet/);
+  assert.equal(c.installedVersion, '0.164.0');
+  // Once it's up, the next try installs it.
+  fs.rmSync(path.join(t.root, 'unpublished-0.165.0'));
+  t.u.update('codex', { version: '0.165.0' });
+  await t.u.settled();
+  c = of(t.u.list(), 'codex');
+  assert.equal(c.installedVersion, '0.165.0');
+});
+
 test('codex: a failed install leaves no .partial folder and changes nothing', async () => {
   const t = setup();
   t.u.update('codex', { version: '0.164.0' });
@@ -741,4 +761,148 @@ test('a routine check keeps an ACP agent\'s version', async () => {
   await c.u.settled();
   await (c.u as unknown as { refreshInstalled(): Promise<void> }).refreshInstalled();
   assert.equal(c.u.list().find((r) => r.provider === 'opencode')!.installedVersion, '1.0.0');
+});
+
+test('codex: with no copy of its own yet, the first start installs one at once, not after the first check', async () => {
+  const t = setup();
+  t.u.start();
+  await t.u.settled();
+  assert.deepEqual(t.npm.installs(), ['0.165.0']);
+  assert.equal(t.u.codexBinary(), path.join(t.tools, 'current'));
+  // The first check a minute on finds the copy there, and installs nothing more.
+  t.clock.advance(60_000);
+  await t.u.settled();
+  t.u.stop();
+  assert.deepEqual(t.npm.installs(), ['0.165.0']);
+});
+
+test('codex: the first check landing while the first-start install still runs doesn\'t start a second one', async () => {
+  const t = setup();
+  t.u.start();
+  // The scheduled check fires before the first-start install has even looked up the latest.
+  t.clock.advance(60_000);
+  t.u.check('codex');
+  await t.u.settled();
+  t.u.stop();
+  assert.deepEqual(t.npm.installs(), ['0.165.0']);
+  assert.equal(of(t.u.list(), 'codex').update?.state, 'succeeded');
+});
+
+test('codex: no install at start with a copy already there, with updates on Notify, or with codexPath set', async () => {
+  const t = setup();
+  t.u.update('codex', { version: '0.164.0' });
+  await t.u.settled();
+  const again = t.make();
+  again.start();
+  await again.settled();
+  again.stop();
+  assert.deepEqual(t.npm.installs(), ['0.164.0'], 'the copy there stays until the first check');
+  const n = setup();
+  n.u.setPolicy('codex', 'notify');
+  n.u.start();
+  await n.u.settled();
+  n.u.stop();
+  assert.deepEqual(n.npm.installs(), []);
+  const byHand = setup({ cfg: { codexPath: '/nowhere/codex' } });
+  byHand.u.start();
+  await byHand.u.settled();
+  byHand.u.stop();
+  assert.deepEqual(byHand.npm.installs(), []);
+});
+
+test('codex: a missing CLI is only a quiet note while its own copy is on its way, and a warning once that fails (it sat in the error bar, 14 Nov)', async () => {
+  const t = setup();
+  const waiting = t.u.missingCodexNotice();
+  assert.equal(waiting?.level, 'info');
+  assert.match(waiting!.message, /installed its own copy/);
+  fs.writeFileSync(path.join(t.root, 'fail-0.165.0'), '');
+  fs.writeFileSync(path.join(t.root, 'fail-0.164.0'), '');
+  t.u.start();
+  await t.u.settled();
+  assert.equal(of(t.u.list(), 'codex').update?.state, 'failed');
+  assert.equal(t.u.missingCodexNotice()?.level, 'warning');
+  // Apps already connected hear it too, once.
+  assert.equal(t.notices.filter((m) => /codex CLI isn't at/.test(m)).length, 1);
+  t.u.check('codex');
+  await t.u.settled();
+  assert.equal(t.notices.filter((m) => /codex CLI isn't at/.test(m)).length, 1, 'not again on every retry');
+  fs.rmSync(path.join(t.root, 'fail-0.165.0'));
+  t.u.update('codex', { version: '0.165.0' });
+  await t.u.settled();
+  t.u.stop();
+  assert.equal(t.u.missingCodexNotice(), undefined, 'gone once the copy is there');
+});
+
+test('codex: a missing CLI nothing will install is a warning that says what to do', () => {
+  const byHand = setup({ cfg: { codexPath: '/nowhere/codex' } });
+  assert.deepEqual(byHand.u.missingCodexNotice(), { level: 'warning', message: "The codex CLI isn't at /nowhere/codex (codexPath in runner.json), so Codex threads can't start." });
+  const off = setup({ cfg: { cliUpdates: { claude: 'auto', codex: 'off', checkMinutes: 60, keepCodexVersions: 2 } } });
+  assert.equal(off.u.missingCodexNotice()?.level, 'warning');
+  assert.match(off.u.missingCodexNotice()!.message, /Install @openai\/codex next to the runner's Node/);
+  const envOff = setup({ env: { PATH: '/usr/bin:/bin', THREADBEAR_CLI_UPDATES: 'off' } });
+  assert.match(envOff.u.missingCodexNotice()!.message, /Install @openai\/codex next to the runner's Node/);
+  const notify = setup();
+  notify.u.setPolicy('codex', 'notify');
+  assert.equal(notify.u.missingCodexNotice()?.level, 'warning');
+  assert.match(notify.u.missingCodexNotice()!.message, /Automatic in Usage/);
+  const quiet = setup({ env: { PATH: '/usr/bin:/bin', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
+  assert.equal(quiet.u.missingCodexNotice()?.level, 'warning', 'no lookups, so no first install either');
+  assert.match(quiet.u.missingCodexNotice()!.message, /Install @openai\/codex next to the runner's Node/i);
+});
+
+test('codex: a first install whose latest is held and whose tested version failed tries the tested one again next time (Gemini\'s review)', async () => {
+  const t = setup();
+  fs.writeFileSync(path.join(t.root, 'drop-0.165.0'), '');
+  fs.writeFileSync(path.join(t.root, 'fail-0.164.0'), '');
+  t.u.start();
+  await t.u.settled();
+  assert.deepEqual(t.npm.installs(), ['0.165.0', '0.164.0']);
+  assert.equal(t.u.missingCodexNotice()?.level, 'warning');
+  assert.match(t.u.missingCodexNotice()!.message, /tries again at the next hourly check/);
+  fs.rmSync(path.join(t.root, 'fail-0.164.0'));
+  t.u.check('codex');
+  await t.u.settled();
+  t.u.stop();
+  assert.equal(t.u.codexBinary(), path.join(t.tools, 'current'));
+  assert.equal(fs.readlinkSync(path.join(t.tools, 'current')), '0.164.0');
+  // A plain Update does the same (Codex's second review).
+  const u = setup();
+  fs.writeFileSync(path.join(u.root, 'drop-0.165.0'), '');
+  fs.writeFileSync(path.join(u.root, 'fail-0.164.0'), '');
+  u.u.start();
+  await u.u.settled();
+  fs.rmSync(path.join(u.root, 'fail-0.164.0'));
+  u.u.update('codex');
+  await u.u.settled();
+  u.u.stop();
+  assert.equal(fs.readlinkSync(path.join(u.tools, 'current')), '0.164.0');
+});
+
+test('codex: Update with no copy yet and no latest known installs the tested version, rather than failing and warning (Gemini\'s review)', async () => {
+  const quiet = setup({ env: { PATH: '/usr/bin:/bin', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
+  quiet.u.update('codex');
+  await quiet.u.settled();
+  assert.equal(of(quiet.u.list(), 'codex').installedVersion, '0.164.0');
+  // Pressed while the first start's own install is still looking up the latest.
+  const t = setup();
+  t.u.start();
+  t.u.update('codex');
+  await t.u.settled();
+  t.u.stop();
+  assert.equal(of(t.u.list(), 'codex').update?.state, 'succeeded');
+  assert.deepEqual(t.notices, []);
+});
+
+test('codex: once a first install has failed, a retry under way still reads as a warning, so an app connecting then hears it (Gemini\'s review)', async () => {
+  const t = setup();
+  fs.writeFileSync(path.join(t.root, 'fail-0.165.0'), '');
+  fs.writeFileSync(path.join(t.root, 'fail-0.164.0'), '');
+  t.u.start();
+  await t.u.settled();
+  t.hooks.pending = true;
+  t.u.check('codex');
+  await t.u.settled();
+  assert.equal(of(t.u.list(), 'codex').update?.state, 'waiting');
+  assert.equal(t.u.missingCodexNotice()?.level, 'warning');
+  t.u.stop();
 });

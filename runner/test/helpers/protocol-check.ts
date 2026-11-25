@@ -2,6 +2,7 @@
 // tests and the real end-to-end suite, so both hold the runner to the same
 // contract the app is built against.
 import path from 'node:path';
+import { WAIT_STATES } from '../../src/wait-state.ts';
 
 type Obj = Record<string, any>;
 
@@ -180,10 +181,11 @@ export function checkSummary(t: Obj): string[] {
   if (t.preview.length > 140 || t.preview.includes('\n')) problems.push('preview too long or multi-line');
   if (t.keywords !== undefined && (!isStr(t.keywords) || !t.keywords || t.keywords.length > 200 || t.keywords !== t.keywords.toLowerCase() || /\s{2}|\n/.test(t.keywords))) problems.push('keywords');
   if (t.asked !== undefined && (!isStr(t.asked) || !t.asked || t.asked.length > 140 || t.asked.includes('\n'))) problems.push('asked');
-  if (t.request !== undefined && (!isStr(t.request) || !t.request || t.request.length > 200 || t.request.includes('\n'))) problems.push('request');
   if (t.title.length > 200) problems.push('title');
   for (const k of ['model', 'modelInUse', 'snoozedUntil', 'archivedAt', 'nativeSessionId']) if (t[k] !== undefined && !isStr(t[k])) problems.push(k);
+  if (t.waitState !== undefined && !(typeof t.waitState === 'string' && t.waitState in WAIT_STATES)) problems.push('waitState');
   if (t.archivedBy !== undefined && (!['mike', 'agent', 'threadbear'].includes(t.archivedBy as string) || t.archivedAt === undefined)) problems.push('archivedBy');
+  if (t.quietlyArchived !== undefined && (!isIso(t.quietlyArchived?.at) || !isStr(t.quietlyArchived?.why) || t.archivedAt === undefined || Object.keys(t.quietlyArchived).some((k) => !['at', 'why'].includes(k)))) problems.push('quietlyArchived');
   if (t.archiveVerdict !== undefined && (!['worked', 'didntWork', 'notNeeded', 'didntNeedToSee', 'gladISaw', 'notSure'].includes(t.archiveVerdict as string) || t.archivedAt === undefined)) problems.push('archiveVerdict');
   if (t.poolId !== undefined && (!isStr(t.poolId) || !t.poolId)) problems.push('poolId');
   if (t.carryOnAtReset !== undefined && t.carryOnAtReset !== false) problems.push('carryOnAtReset');
@@ -320,7 +322,7 @@ export function checkSummary(t: Obj): string[] {
   }
   const allowed = new Set([
     'id', 'title', 'cwd', 'accountId', 'provider', 'model', 'permissionMode', 'status', 'live', 'needsYou', 'createdAt', 'updatedAt',
-    'lastActivityAt', 'snoozedUntil', 'snoozedUntilRestart', 'snoozedUntilRelease', 'archivedAt', 'archivedBy', 'archiveVerdict', 'starredAt', 'preview', 'lastSeq', 'lastSeenSeq', 'nativeSessionId', 'contextTokens', 'costUsd',
+    'lastActivityAt', 'snoozedUntil', 'snoozedUntilRestart', 'snoozedUntilRelease', 'waitState', 'archivedAt', 'archivedBy', 'archiveVerdict', 'quietlyArchived', 'starredAt', 'preview', 'lastSeq', 'lastSeenSeq', 'nativeSessionId', 'contextTokens', 'costUsd',
     'poolId', 'waitingForRoom', 'carryOnAtReset', 'waitingForNetwork', 'wakeWhen', 'waitingOn', 'awaitingAppRestart',
     'effort', 'modelInUse', 'effortInUse', 'contextWindow', 'panels', 'actions', 'hooks', 'patches', 'background', 'subagents', 'projects', 'worktree',
     'needs', 'asks', 'asksSeq', 'highlightsAt', 'panelRequest', 'share', 'startedBy', 'asked', 'recap', 'request', 'keywords', 'looseEnds',

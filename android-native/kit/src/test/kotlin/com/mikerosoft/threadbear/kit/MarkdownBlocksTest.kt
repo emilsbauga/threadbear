@@ -10,7 +10,7 @@ class MarkdownBlocksTest {
     private fun parse(text: String) = MarkdownBlock.parse(text)
     private fun p(text: String) = MarkdownBlock.Paragraph(text)
     private fun li(text: String, marker: String = "•", depth: Int = 0, task: Boolean? = null) = MarkdownBlock.ListItem(text, marker, depth, task)
-    private fun code(text: String) = MarkdownBlock.Code(text)
+    private fun code(text: String, language: String? = null) = MarkdownBlock.Code(text, language)
     private fun img(alt: String, src: String) = MarkdownBlock.Image(alt, src)
     private fun draft(kind: DraftBlock.Kind, source: String) = MarkdownBlock.Draft(DraftBlock(kind, source))
     private fun rich(kind: MarkdownBlock.RichKind, source: String) = MarkdownBlock.Rich(kind, source)
@@ -44,8 +44,8 @@ class MarkdownBlocksTest {
         assertEquals(listOf(rich(MarkdownBlock.RichKind.HTML, "<b>hi</b>")), parse("~~~ HTML title=x\n<b>hi</b>\n~~~"))
         assertEquals(listOf(rich(MarkdownBlock.RichKind.MERMAID, "pie")), parse("```Mermaid\npie\n```"))
         // Anything else, or a word that only starts the same, stays code.
-        assertEquals(listOf(code("let a = 1")), parse("```swift\nlet a = 1\n```"))
-        assertEquals(listOf(code("<b>")), parse("```htmlx\n<b>\n```"))
+        assertEquals(listOf(code("let a = 1", "swift")), parse("```swift\nlet a = 1\n```"))
+        assertEquals(listOf(code("<b>", "htmlx")), parse("```htmlx\n<b>\n```"))
         assertEquals(listOf(code("mermaid")), parse("```\nmermaid\n```"))
     }
 
@@ -58,29 +58,29 @@ class MarkdownBlocksTest {
         assertEquals(listOf(draft(DraftBlock.Kind.EMAIL, "Hi,\nBye")), parse("~~~Email to=x\nHi,\nBye\n~~~"))
         assertEquals(listOf(draft(DraftBlock.Kind.DRAFT, "hi")), parse("```draft\nhi\n```"))
         // Still streaming in, empty, or only starting the same: code.
-        assertEquals(listOf(code("*Update*\n• one")), parse("```slack\n*Update*\n• one"))
-        assertEquals(listOf(code("")), parse("```slack\n\n```"))
-        assertEquals(listOf(code("hi")), parse("```slackbot\nhi\n```"))
+        assertEquals(listOf(code("*Update*\n• one", "slack")), parse("```slack\n*Update*\n• one"))
+        assertEquals(listOf(code("", "slack")), parse("```slack\n\n```"))
+        assertEquals(listOf(code("hi", "slackbot")), parse("```slackbot\nhi\n```"))
     }
 
     @Test fun aDraftNeedsItsOwnClosingFence() {
         // Only a fence on its own closes it, at any indent.
-        assertEquals(listOf(code("hello\n> ```")), parse("```slack\nhello\n> ```"))
+        assertEquals(listOf(code("hello\n> ```", "slack")), parse("```slack\nhello\n> ```"))
         assertEquals(listOf(draft(slack, "hello")), parse("```slack\nhello\n   ```"))
         assertEquals(listOf(draft(slack, "hello")), parse("```slack\nhello\n    ```"))
-        assertEquals(listOf(code("hello\n``` x")), parse("```slack\nhello\n``` x"))
+        assertEquals(listOf(code("hello\n``` x", "slack")), parse("```slack\nhello\n``` x"))
         // A fence opening on a list item's own line: the block, in the item.
         assertEquals(listOf(draft(slack, "hello")), parse("- ```slack\n  hello\n  ```"))
-        assertEquals(listOf(li("Run:"), code("tb land")), parse("- Run:\n1. ```sh\n   tb land\n   ```"))
+        assertEquals(listOf(li("Run:"), code("tb land", "sh")), parse("- Run:\n1. ```sh\n   tb land\n   ```"))
         // A different fence character, or a shorter run, doesn't close it.
-        assertEquals(listOf(code("hello\n~~~")), parse("```slack\nhello\n~~~"))
-        assertEquals(listOf(code("hello\n```")), parse("````slack\nhello\n```"))
+        assertEquals(listOf(code("hello\n~~~", "slack")), parse("```slack\nhello\n~~~"))
+        assertEquals(listOf(code("hello\n```", "slack")), parse("````slack\nhello\n```"))
         assertEquals(listOf(draft(slack, "hello")), parse("````slack\nhello\n````"))
         assertEquals(listOf(draft(slack, "hi\nthere")), parse("```slack\r\nhi\r\nthere\r\n```\r\n"))
         assertEquals(listOf(MarkdownBlock.Quote(listOf(draft(slack, "hello")))), parse("> ```slack\n> hello\n> ```"))
         // Too big to be a message: code.
         val big = "a".repeat(DraftBlock.MAX_SOURCE + 1)
-        assertEquals(listOf(code(big)), parse("```slack\n$big\n```"))
+        assertEquals(listOf(code(big, "slack")), parse("```slack\n$big\n```"))
     }
 
     // Cross-lab review, round three (6 Nov).
@@ -101,32 +101,32 @@ class MarkdownBlocksTest {
         // Round four: a reply's words after the block stay words, under a
         // nested list or after a heading that ended one.
         assertEquals(
-            listOf(li("root"), li("middle", depth = 1), li("child", depth = 2), code("let x = 1"), p("After.")),
+            listOf(li("root"), li("middle", depth = 1), li("child", depth = 2), code("let x = 1", "swift"), p("After.")),
             parse("- root\n  - middle\n    - child\n\n    ```swift\n    let x = 1\n    ```\n\nAfter."),
         )
         assertEquals(
-            listOf(li("item"), MarkdownBlock.Heading(1, "Heading"), code("let x = 1"), p("After.")),
+            listOf(li("item"), MarkdownBlock.Heading(1, "Heading"), code("let x = 1", "swift"), p("After.")),
             parse("- item\n\n# Heading\n\n  ```swift\n  let x = 1\n```\n\nAfter."),
         )
     }
 
     @Test fun aFencedItemKeepsTheListsDepths() {
-        assertEquals(listOf(code("echo hi"), li("child", depth = 1), li("sibling")), parse("- ```sh\n  echo hi\n  ```\n  - child\n- sibling"))
+        assertEquals(listOf(code("echo hi", "sh"), li("child", depth = 1), li("sibling")), parse("- ```sh\n  echo hi\n  ```\n  - child\n- sibling"))
     }
 
     @Test fun ordinaryListsAndCodeAreAsBefore() {
         assertEquals(listOf(li("one"), li("two", depth = 1), li("three")), parse("- one\n  - two\n- three"))
-        assertEquals(listOf(code("let a = 1"), p("after")), parse("```swift\nlet a = 1\n```\nafter"))
+        assertEquals(listOf(code("let a = 1", "swift"), p("after")), parse("```swift\nlet a = 1\n```\nafter"))
         assertEquals(listOf(code("```\ninner\n```")), parse("````\n```\ninner\n```\n````"))
         assertEquals(listOf(p("Use `a` and ``b``")), parse("Use `a` and ``b``"))
     }
 
     @Test fun aFenceStillStreamingInOrTooBigStaysCode() {
         // The reply so far, its fence not closed yet: drawn once it is.
-        assertEquals(listOf(code("flowchart TD\n  A -->")), parse("```mermaid\nflowchart TD\n  A -->"))
+        assertEquals(listOf(code("flowchart TD\n  A -->", "mermaid")), parse("```mermaid\nflowchart TD\n  A -->"))
         val big = "a".repeat(MarkdownBlock.MAX_RICH_SOURCE + 1)
-        assertEquals(listOf(code(big)), parse("```html\n$big\n```"))
-        assertEquals(listOf(code("")), parse("```mermaid\n\n```"))
+        assertEquals(listOf(code(big, "html")), parse("```html\n$big\n```"))
+        assertEquals(listOf(code("", "mermaid")), parse("```mermaid\n\n```"))
     }
 
     @Test fun aRichBlockInAListKeepsItsSource() {
@@ -247,11 +247,41 @@ class MarkdownBlocksTest {
             ~~~
             """.trimIndent(),
         )
-        assertEquals(listOf(li("Run it:", marker = "1."), code("tb land\n  --dry-run"), code("| not a table |\n|---|")), blocks)
+        assertEquals(listOf(li("Run it:", marker = "1."), code("tb land\n  --dry-run", "sh"), code("| not a table |\n|---|")), blocks)
     }
 
     @Test fun paragraphsJoinSoftBreaksAndKeepHardOnes() {
         assertEquals(listOf(p("one two\nthree\nfour"), p("next")), parse("one\ntwo  \nthree\\\nfour\n\nnext"))
+    }
+
+    @Test fun aCodeFenceKeepsItsLanguageAsWritten() {
+        assertEquals(listOf(code("select 1", "sql")), parse("```sql\nselect 1\n```"))
+        // Only the first word of the info string, as written.
+        assertEquals(listOf(code("let a = 1", "TS")), parse("```TS title=\"a.ts\"\nlet a = 1\n```"))
+        assertEquals(listOf(code("x", "py")), parse("~~~ py{linenos}\nx\n~~~"))
+        assertEquals(listOf(code("x", "rs")), parse("```\trs\nx\n```"))
+        // A bare fence has none.
+        assertEquals(listOf(code("x")), parse("```\nx\n```"))
+        assertEquals(listOf(code("x")), parse("```   \nx\n```"))
+    }
+
+    @Test fun codeLanguagesGetFriendlyNames() {
+        val names = mapOf(
+            "ts" to "TypeScript", "typescript" to "TypeScript", "tsx" to "TSX", "js" to "JavaScript",
+            "javascript" to "JavaScript", "jsx" to "JSX", "sql" to "SQL", "bash" to "Bash", "sh" to "Shell",
+            "shell" to "Shell", "zsh" to "Zsh", "json" to "JSON", "yaml" to "YAML", "yml" to "YAML",
+            "toml" to "TOML", "rust" to "Rust", "rs" to "Rust", "swift" to "Swift", "kotlin" to "Kotlin",
+            "kt" to "Kotlin", "python" to "Python", "py" to "Python", "go" to "Go", "html" to "HTML",
+            "css" to "CSS", "md" to "Markdown", "markdown" to "Markdown", "diff" to "Diff",
+        )
+        for ((word, name) in names) assertEquals(name, codeLanguageName(word), word)
+        // In any case; anything else is the word as written.
+        assertEquals("SQL", codeLanguageName("SQL"))
+        assertEquals("TypeScript", codeLanguageName("Ts"))
+        assertEquals("elixir", codeLanguageName("elixir"))
+        assertEquals("Dockerfile", codeLanguageName("Dockerfile"))
+        assertEquals("TypeScript", code("x", "ts").languageName)
+        assertEquals(null, code("x").languageName)
     }
 
     @Test fun anUnclosedFenceWhileStreamingIsStillCode() {

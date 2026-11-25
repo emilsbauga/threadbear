@@ -80,12 +80,16 @@ data class WorkedTurn(val items: List<ThreadItem>, val durationSeconds: Double?)
         }
 }
 
-/** The wait before a turn the agent started by itself (TurnGap.swift). */
-data class TurnGap(val seq: Int, val from: Instant, val to: Instant, val wokeBy: List<WokeTask> = emptyList()) {
+/**
+ * The wait before a turn the agent started by itself (TurnGap.swift).
+ * [runnerWake]: why the runner sent the message that started it (its
+ * `wakeReason`, backend API 98), said over what finished, as the Mac does.
+ */
+data class TurnGap(val seq: Int, val from: Instant, val to: Instant, val wokeBy: List<WokeTask> = emptyList(), val runnerWake: String? = null) {
     val label: String
         get() {
             val time = later(maxOf(0.0, (to.toEpochMilli() - from.toEpochMilli()) / 1000.0))
-            val cause = cause(wokeBy) ?: return time
+            val cause = runnerWake?.trim()?.ifEmpty { null } ?: cause(wokeBy) ?: return time
             return "$time · $cause"
         }
 
@@ -194,16 +198,23 @@ object Turns {
         val out = HashMap<Int, TurnGap>()
         var i = 1
         while (i < body.size) {
-            val starts = body[i].turn != null && body[i].turn != body[i - 1].turn && body[i].role != Role.USER
-            if (!starts) { i++; continue }
+            // A turn the agent started by itself, or the runner's own
+            // message did with its reason (API 98).
+            val newTurn = body[i].turn != null && body[i].turn != body[i - 1].turn
+            val why = runnerWake(body[i])
+            if (!newTurn || (body[i].role == Role.USER && why == null)) { i++; continue }
             var end = i + 1
             while (end < body.size && body[end].turn == body[i].turn && body[end].role != Role.USER) end++
             val woke = body.subList(i, end).firstNotNullOfOrNull { it.wokeBy } ?: emptyList()
-            out[i] = TurnGap(body[i].seq, body[i - 1].at, body[i].at, woke)
+            out[i] = TurnGap(body[i].seq, body[i - 1].at, body[i].at, woke, why)
             i = end
         }
         return out
     }
+
+    /** Why the runner sent this message of its own, when it says. */
+    internal fun runnerWake(m: PhoneMessage): String? =
+        if (m.role == Role.USER && m.origin == "runner") m.wakeReason?.trim()?.ifEmpty { null } else null
 
     internal fun dividers(body: List<PhoneMessage>, shown: Set<Int>): Map<Int, TurnGap> {
         val gaps = waits(body)
@@ -214,7 +225,7 @@ object Turns {
             val gap = gaps[k]
             if (gap != null && shownBefore) {
                 val earlier = waiting?.second
-                waiting = if (earlier != null) k to TurnGap(gap.seq, earlier.from, gap.to, earlier.wokeBy + gap.wokeBy) else k to gap
+                waiting = if (earlier != null) k to TurnGap(gap.seq, earlier.from, gap.to, earlier.wokeBy + gap.wokeBy, gap.runnerWake ?: earlier.runnerWake) else k to gap
             }
             if (k !in shown || body[k].role == Role.USER) continue
             waiting?.let { out[it.first] = it.second }

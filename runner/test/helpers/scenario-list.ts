@@ -189,6 +189,20 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: 'a thread the quiet inbox archived, brought back with Should have shown me',
+    // The notes saying it was archived and brought back are the Mac's own,
+    // like every archive note: only a login's notes go to the mirror
+    // (sync.ts toMessageDoc), so the phone, the website and another Mac
+    // show the reply alone (parity run, 23 Nov 2026).
+    shows: ['Renamed the setting.'],
+    play: (p) => {
+      p.say('Renamed the setting.');
+      p.endTurn({ needs: 'nothing' });
+      p.quietlyArchived('A receipt for what was asked.');
+      p.shouldHaveShown();
+    },
+  },
+  {
     name: 'a reply with no card',
     shows: ['Just an answer.'],
     play: (p) => {

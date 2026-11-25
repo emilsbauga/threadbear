@@ -289,7 +289,7 @@ ignore fields they don't know.
 
 ## Pull requests
 
-With the `inlinePrs` experiment, a github.com PR link clicked in a reply or
+A github.com PR link clicked in a reply or
 in Highlights opens as a tab in the side pane rather than the browser. The
 runner reads it with the gh CLI (`runner/src/github-pr.ts`), signed in as
 whoever `gh auth` is on this Mac: `github.pr` runs `gh pr view`, `gh pr

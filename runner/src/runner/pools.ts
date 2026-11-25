@@ -7,12 +7,13 @@ import type { RunnerPart } from './part.ts';
 import type { Account, Pool, Provider } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
 import { cutOut } from '../store.ts';
-import { resetTime } from '../usage.ts';
+import { accountRoom, resetTime } from '../usage.ts';
 import { DEFAULT_POOL_FOLDERS, peekRunnerJson, readRunnerJson, writeRunnerJson } from '../config.ts';
 import { UNKNOWN_WAIT_MS, WAIT_SLACK_MS, backAt, blockedUntil, limitWhy, loginOk, nextLogin, pickInPool, poolAccounts, poolForFolder, poolProviders, readPools, roomWait, validatePools } from '../pools.ts';
 import { historyItems, selectHistory } from '../handoff-history.ts';
 import type { ThreadState } from '../runner.ts';
-import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_SIGNED_OUT, isClaudeModel, modelRow, modelTitle } from '../runner.ts';
+import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_SIGNED_OUT } from './carry-on.ts';
+import { isClaudeModel, modelRow, modelTitle } from './models.ts';
 import { providerName } from '../providers.ts';
 
 export const poolsPart = {
@@ -176,6 +177,15 @@ export const poolsPart = {
   onUsageLimit(this: Runner, st: ThreadState, turnId: string): void {
     const { rec } = st;
     // So turning carrying on back on later knows this turn stopped at a limit.
+    // The login the turn ran on. If Mike moved the thread off it mid-turn,
+    // that login is the one that's out, and the thread stays where he put
+    // it, not stopped at a limit there.
+    const ranOn = st.rt.sessionAccountId ?? rec.accountId;
+    if (ranOn !== rec.accountId) {
+      const old = this.usableAccounts().find((a) => a.id === ranOn);
+      if (old) this.markRanDry(old);
+      return;
+    }
     rec.limitHitTurn = turnId;
     this.markDirty(st);
     const pool = this.poolById(rec.poolId);
@@ -235,7 +245,19 @@ export const poolsPart = {
   markRanDry(this: Runner, account: Account): void {
     const now = this.clock.now();
     const until = blockedUntil(account, now);
+    // Still dry from an earlier turn: its block (which this turn's reading
+    // may show as the account's own) isn't a new reading of its room.
+    const stillDry = (this.ranDry.get(account.id) ?? 0) > now && this.dryRoom.has(account.id);
     this.ranDry.set(account.id, until);
+    this.readBack.delete(account.id);
+    // The room it read as when it ran dry, so only a reading with more than
+    // that counts as back (recordReading): a provider can refuse (a 402)
+    // while its own reading still shows room, and reading the same room
+    // again shouldn't send the thread back to be refused every 10 minutes.
+    // With no reading yet, the one its CLI takes after the turn sets it
+    // (Runner.onOutput, limits); none at all, and only the block's own end
+    // lets it back.
+    if (!stillDry) this.dryRoom.set(account.id, account.usage?.blocked ? 0 : (accountRoom(account) ?? Infinity));
     if (account.usage?.blocked) return;
     try {
       this.usage?.record(account.id, { windows: [], blocked: true, blockedUntil: until });
@@ -425,6 +447,21 @@ export const poolsPart = {
     return next.accountId !== w.accountId || now < Date.parse(w.until) - WAIT_SLACK_MS ? next.accountId : undefined;
   },
 
+  // A pool thread waiting for room on the login it ran dry on, which
+  // limit-recheck.ts has since read back with room (readBack: a top-up, or
+  // a reset used outside Threadbear): it carries on there, before the reset
+  // its wait named. earlyLogin never offers that login, as a turn's reading
+  // from another of its sessions can say it has room when it hasn't.
+  ownLoginBack(this: Runner, st: ThreadState): boolean {
+    const { rec, rt } = st;
+    const w = rec.waitingForRoom;
+    if (!w || rt.deleted || rt.turn || rec.queue.length || this.bucket(rec) !== 'inbox' || rec.carryOnAtReset === false) return false;
+    const pool = this.poolById(rec.poolId);
+    if (!pool?.accountIds.includes(rec.accountId) || !this.readBack.has(rec.accountId)) return false;
+    const current = this.usableAccounts().find((a) => a.id === rec.accountId);
+    return !!current && loginOk(current);
+  },
+
   // One timer for every thread waiting for room, at the earliest `until`
   // (looked at again at least hourly, like snoozes). Also run when the
   // logins, their usage or the pools change, and when a thread comes over
@@ -446,6 +483,7 @@ export const poolsPart = {
         else {
           const early = this.earlyLogin(st);
           if (early) this.endWait(st, early);
+          else if (this.ownLoginBack(st)) this.endWait(st);
         }
       }
       let next = Infinity;

@@ -182,6 +182,8 @@ sealed interface CommandKey {
     data class Unarchive(val threadId: String) : CommandKey
     data class Stop(val threadId: String) : CommandKey
     data class Press(val threadId: String, val buttonId: String) : CommandKey
+    /** Sharing by link: on, off or a new link (its value is a ShareAsk's). */
+    data class Share(val threadId: String) : CommandKey
     /** An approval, question or secret card, by its approval id. */
     data class Card(val approvalId: String) : CommandKey
 }

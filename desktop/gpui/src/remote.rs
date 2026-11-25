@@ -294,6 +294,9 @@ impl Threadbear {
             listed.insert(summary.id.clone());
             let waiting = self.remote.made.remove(&summary.id);
             let mut summary = summary;
+            // The table has no share: a link made here stays (keep_local_marks).
+            let old = self.threads.get(&summary.id).cloned();
+            threadbear_core::inbox::keep_local_marks(&mut summary, old.as_deref());
             self.starting_moves.dress(&mut summary, crate::now_ms());
             // A box's thread waiting on a cloud token needs Mike (sidebar.rs dress_box).
             if let Some(b) = self.remote.box_of(summary.runner_id.as_deref()) {

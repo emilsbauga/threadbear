@@ -327,7 +327,11 @@ impl Threadbear {
                 lines.push(format!("  {message}"));
             }
         }
-        json!({ "shown": self.activity_panel_showing(shell::CONNECTORS, cx), "lines": lines })
+        json!({
+            "shown": self.activity_panel_showing(shell::CONNECTORS, cx),
+            "docked": self.dock.read(cx).layout().contains(shell::CONNECTORS),
+            "lines": lines
+        })
     }
 }
 

@@ -25,6 +25,7 @@ import { ErrorCode, RpcError } from './protocol.ts';
 import type { PermissionMode, PersistedEvent, ThreadSummary } from './protocol.ts';
 import type { Notification, Runner } from './runner.ts';
 import { DRAIN_MAX_OLD_MS } from './runner.ts';
+import { CEILING_REFUSED, ceilingMode } from './runner/ceiling.ts';
 import type { UsageReading } from './usage.ts';
 import type { AgentApprovalRequest, ProjectControl, RemoteControl, ScheduleControl, ThreadControl } from './threadbear-mcp.ts';
 import type { RemoteThreads } from './thread-index.ts';
@@ -139,11 +140,14 @@ export function isMoved(e: unknown): boolean {
 
 // Only installed on the draining server. Older releases refuse this method,
 // so the primary keeps their run due rather than steering into a busy turn.
-export function scheduledSendMethods(runner: Pick<Runner, 'sendScheduled' | 'findScheduledSend' | 'dropScheduled' | 'has' | 'mustGet' | 'unqueue' | 'draining' | 'clock'>) {
+export function scheduledSendMethods(runner: Pick<Runner, 'sendScheduled' | 'findScheduledSend' | 'dropScheduled' | 'has' | 'mustGet' | 'unqueue' | 'draining' | 'clock' | 'underCeiling'>) {
   const deliver = (p: Record<string, unknown>) => {
     if (typeof p.threadId !== 'string' || typeof p.text !== 'string' || typeof p.scheduleId !== 'string') throw new RpcError(ErrorCode.badParams, 'threadId, text and scheduleId must be strings');
     if (p.run !== undefined && (typeof p.run !== 'string' || !p.run || p.run.length > 200)) throw new RpcError(ErrorCode.badParams, 'run must be a nonempty string of at most 200 characters');
     if (p.preserve !== undefined && typeof p.preserve !== 'boolean') throw new RpcError(ErrorCode.badParams, 'preserve must be a boolean');
+    // The schedule's ceiling (schedules.ts, "Ceilings"), checked again here
+    // as the message is handed over. One that isn't a mode counts as Ask.
+    const ceiling = p.ceiling === undefined ? undefined : ceilingMode(p.ceiling);
     if (!runner.has(p.threadId)) throw new RpcError(ErrorCode.moved, 'That thread has moved to the new runner.');
     if (p.since !== undefined && (typeof p.since !== 'number' || !Number.isFinite(p.since) || p.since < 0)) throw new RpcError(ErrorCode.badParams, 'since must be a finite nonnegative time');
     const since = p.since as number | undefined;
@@ -157,7 +161,10 @@ export function scheduledSendMethods(runner: Pick<Runner, 'sendScheduled' | 'fin
     // Recurring check-ins must eventually leave a quiet spell for the
     // old runner to hand over, even if its background shell never ends.
     if (runner.draining && runner.clock.now() - runner.draining.since >= DRAIN_MAX_OLD_MS) throw new RpcError(ErrorCode.busy, 'That old runner is waiting to hand this thread over; try again in a moment.');
-    const sent = runner.sendScheduled(p.threadId, p.text, p.scheduleId, run, since, p.preserve as boolean | undefined);
+    // Raised above it here: not sent, and said so, so the primary records the
+    // run as not sent rather than sent.
+    if (!runner.underCeiling(runner.mustGet(p.threadId), ceiling)) throw new RpcError(ErrorCode.notAllowed, `${CEILING_REFUSED} Resume it from the app if it's still wanted.`);
+    const sent = runner.sendScheduled(p.threadId, p.text, p.scheduleId, run, since, p.preserve as boolean | undefined, ceiling);
     if (runner.unqueue(p.threadId, sent.turnId)) throw new RpcError(ErrorCode.busy, 'That scheduled turn could not start yet; try again in a moment.');
     return sent;
   };
@@ -176,15 +183,15 @@ export function scheduledSendMethods(runner: Pick<Runner, 'sendScheduled' | 'fin
   };
 }
 
-export async function sendScheduled(runner: Pick<Runner, 'sendScheduled' | 'has'>, peers: Pick<Peers, 'call'>, threadId: string, text: string, scheduleId: string, run?: string, since?: number, preserve?: boolean): Promise<{ turnId: string }> {
+export async function sendScheduled(runner: Pick<Runner, 'sendScheduled' | 'has'>, peers: Pick<Peers, 'call'>, threadId: string, text: string, scheduleId: string, run?: string, since?: number, preserve?: boolean, ceiling?: PermissionMode): Promise<{ turnId: string }> {
   try {
-    return await peers.call(threadId, run ? 'drain.sendScheduledOnce' : 'drain.sendScheduled', { threadId, text, scheduleId, ...(run ? { run, since } : {}), ...(preserve !== undefined ? { preserve } : {}) }) as { turnId: string };
+    return await peers.call(threadId, run ? 'drain.sendScheduledOnce' : 'drain.sendScheduled', { threadId, text, scheduleId, ...(run ? { run, since } : {}), ...(preserve !== undefined ? { preserve } : {}), ...(ceiling !== undefined ? { ceiling } : {}) }) as { turnId: string };
   } catch (e) {
     // The handedOver notification precedes this refusal. The primary now
     // owns it; deliver locally instead of losing this tick to the race.
     if (isMoved(e)) {
       if (!runner.has(threadId)) throw new RpcError(ErrorCode.busy, 'That thread is still moving to this runner; try again in a moment.');
-      return runner.sendScheduled(threadId, text, scheduleId, run, since, preserve);
+      return runner.sendScheduled(threadId, text, scheduleId, run, since, preserve, ceiling);
     }
     // An unkeyed fallback cannot recognize a delivery after a lost reply.
     // Keep this one-time handover wait instead of restoring that duplicate.
@@ -812,6 +819,18 @@ export class ThreadRouter implements ThreadControl {
     return this.runner.openSubagentCards(threadId);
   }
 
+  ownWorkRunning(threadId: string): boolean {
+    return this.runner.ownWorkRunning(threadId);
+  }
+
+  shellJobs(threadId: string): string[] {
+    return this.runner.shellJobs(threadId);
+  }
+
+  heldAsks(threadId: string): string[] {
+    return this.runner.heldAsks(threadId);
+  }
+
   // Always this runner's, for the session it runs itself, as above.
   reviewOwes(threadId: string): ReturnType<Runner['reviewOwes']> {
     return this.runner.reviewOwes(threadId);
@@ -859,7 +878,7 @@ export class ThreadRouter implements ThreadControl {
 
   async send(threadId: string, text: string, images: Parameters<Runner['send']>[2] = [], opts: Parameters<Runner['send']>[3] = {}): Promise<{ turnId: string }> {
     const e = this.away(threadId);
-    return e ? e.call('threads.send', { threadId, text, images, ...(opts.answers ? { answers: opts.answers } : {}) }) : this.runner.send(threadId, text, images, opts);
+    return e ? e.call('threads.send', { threadId, text, images, ...(opts.answers ? { answers: opts.answers } : {}), ...(opts.ceiling ? { ceiling: opts.ceiling } : {}) }) : this.runner.send(threadId, text, images, opts);
   }
 
   async createReview(threadId: string, input: Parameters<Runner['createReview']>[1]): Promise<ReturnType<Runner['createReview']>> {

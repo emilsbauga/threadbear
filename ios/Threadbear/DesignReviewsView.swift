@@ -110,7 +110,7 @@ struct DesignReviewsView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if shot.kind != "image" {
-                        Text("\(shot.kind == "video" ? "Video" : "Page") still preview. Open the original on the Mac.")
+                        Text(shot.kind == "audio" ? "The sound's waveform. Play it on the Mac." : "\(shot.kind == "video" ? "Video" : "Page") still preview. Open the original on the Mac.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

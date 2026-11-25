@@ -5,6 +5,27 @@ run or a screenshot from the running app. A slice with no runtime check doesn't
 count. (Ghostex's port log is where this shape comes from; its slices 214 to 268
 built parsers and gates with no launch of the app, which is the trap.)
 
+### 2026-11-24 Decisions on the Projects page taken out (`projects.decisions`, `projects.tabs`)
+
+- Mike decided to take the projectDecisions experiment out rather than make
+  it standard. Gone from the GPUI app: the Decisions tab and its cards
+  (`project_decisions.rs`), the page's two tabs, Go's Show Previous Tab and
+  Show Next Tab (`previousTab`, `nextTab`), the sidebar's folded project rows
+  and their open rows setting (`projectsList.openRows`), the decision counts
+  on cards, headings and parts, and the `decision`, `projectTab` and
+  `projectRow` commands with `projectDecisions` and `project.tab` in the dump.
+  A project's page and the sidebar are as they were with the experiment off.
+- A shortcuts.json that still names `previousTab` or `nextTab` reads as
+  before: an unknown command is kept in the file and does nothing here.
+- The Swift app's code is left alone, as it's frozen. It learns the
+  experiment from `hello`'s `experiments`, and with the runner no longer
+  listing it, it stays off there too.
+- Files: `desktop/core/src/{projects,shortcuts,keyboard,swift_import}.rs`,
+  `desktop/gpui/src/{project_page,projects,projects_list,projects_page,shell,app,automation,settings,composer_card}.rs`,
+  `features/projects.feature` (only the parts scenarios are left), the mock
+  runner's `TB_MOCK_DECISIONS`, `runner/src/experiments/projectDecisions.md`.
+- Verification: `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test -p threadbear-core` pass on Tinker Desk; `features/verify-pairing.mjs` and the runner's experiment tests pass.
+
 ### 2026-11-20 Another lab's review folds like the line of work (`card.review`, GPUI-only)
 
 - Mike, 20 Nov: a review panel's eight answered findings ran a screen tall

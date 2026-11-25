@@ -134,7 +134,14 @@ the relay's `/clear` (20 Nov 2026). The relay sends Apple a background
 push (`apns-push-type: background`, priority 5) of `{ aps: {
 "content-available": 1 }, clear: threadId }`, or Firebase a data-only
 `{ clear: threadId }` at normal priority. The app takes down that thread's
-notifications. It's checked, rate limited and counted like a send. Apps
+notifications. It's checked, rate limited and counted like a send,
+including giving back its bad-token charge unless the token was to blame
+(Daybreak, 22 Nov: before that, 20 clears that went through stopped every
+push for the rest of the hour). A clear goes only for an alert a phone
+really got, and at most once for it (one held while Mike's at the Mac
+counts once it goes out), and a phone a clear finds gone is dropped, as
+after a send, so a runner flipping a thread back and forth can't use the
+allowance up with silent clears. Apps
 from before it ignore it, as there's no alert and no `threadId`, and a
 relay from before it answers 404, which the backend takes as "can't clear"
 and stops there. iOS may hold background pushes back, so the iPhone app

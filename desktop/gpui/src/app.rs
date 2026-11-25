@@ -60,6 +60,9 @@ pub struct Threadbear {
     /// What every box has, kept across a quit (drafts.rs).
     pub(crate) drafts: crate::drafts::Drafts,
     pub(crate) sidebar: crate::sidebar::SidebarState,
+    /// Agent Archive in the sidebar's search, and a session open in the
+    /// thread's place (archive_search.rs).
+    pub(crate) archive: crate::archive_search::ArchiveSearch,
 
     // The window shell (shell.rs, rails.rs, header.rs).
     /// Holds the keyboard when nothing in the window has it (no thread open,
@@ -76,6 +79,8 @@ pub struct Threadbear {
     pub(crate) frame_rate: Option<Entity<crate::frame_stats::FrameRate>>,
     /// The pane sections Hide Panels closed, for Show Panels (`hiddenPanes`).
     pub(crate) hidden_panes: Vec<String>,
+    /// The activity bar's panels Hide Sidebar Panels closed, for bringing back.
+    pub(crate) hidden_sidebar_panels: Vec<String>,
     pub(crate) mode: SidebarMode,
     /// When the activity bar last switched the sidebar's view, for the new
     /// one to settle in (shell.rs `render_threads_panel`).
@@ -167,7 +172,9 @@ pub struct Threadbear {
     /// "Moving to …" is put back on every summary that comes in meanwhile
     /// (threadbear_core::starting_moves).
     pub(crate) starting_moves: threadbear_core::starting_moves::StartingMoves,
-    pub(crate) continuing_refusal: Option<String>,
+    /// Threads whose Continue with Codex Sol is on its way: each its own,
+    /// as a box in a panel of its own shows the offer too.
+    pub(crate) continuing_refusal: HashSet<String>,
     /// The runner's website, from `runner.status` (`websiteURL`).
     pub(crate) website_url: Option<String>,
     pub(crate) schedules_supported: bool,
@@ -187,6 +194,8 @@ pub struct Threadbear {
     pub(crate) librarian: crate::librarian::LibrarianState,
     /// The Recipes view (recipes.rs), with the `recipes` experiment on.
     pub(crate) recipes: crate::recipes::RecipesState,
+    /// The Canvas page (thread_canvas.rs).
+    pub(crate) thread_canvas: crate::thread_canvas::CanvasPage,
     /// What the Librarian page's picture says when it's poked.
     pub(crate) librarian_pokes: crate::home_page::Pokes,
     /// The Usage panel's numbers and the honey pot (usage.rs).
@@ -255,8 +264,6 @@ pub struct Threadbear {
     /// The projects themselves, the page that's open and the views' own
     /// state (projects.rs).
     pub(crate) projects: crate::projects::ProjectsState,
-    /// The Feed's cards, folds and replies (inbox_feed.rs).
-    pub(crate) inbox_feed: crate::inbox_feed::FeedState,
 
     /// The new-thread page's box and what it's set to (new_thread.rs).
     pub(crate) new_thread: crate::new_thread::NewThreadState,
@@ -381,11 +388,7 @@ impl Threadbear {
                 let app = watched.upgrade()?;
                 let app = app.read(cx);
                 (app.projects.open.is_none()
-                    && app
-                        .dock
-                        .read(cx)
-                        .controller
-                        .is_showing(crate::agent_browser::BROWSER))
+                    && app.dock.read(cx).is_showing(crate::agent_browser::BROWSER))
                 .then(|| app.pane_thread().map(|t| t.id))?
             })
         });
@@ -412,6 +415,10 @@ impl Threadbear {
                 cx.notify();
             }
         });
+        // The archive's asked once typing pauses (archive_search.rs): on any
+        // change to the box, as one set from code (Clear, a script) sends no
+        // Change event, only a redraw.
+        let archive_watch = cx.observe(&search, |this, _, cx| this.archive_search_changed(cx));
         #[cfg(feature = "automation")]
         crate::automation::serve(cx.entity().downgrade(), window.window_handle(), cx);
         crate::notify::install(cx.entity().downgrade(), window.window_handle(), cx);
@@ -506,8 +513,6 @@ impl Threadbear {
             this.menus_stale = true;
             this.inbox_count_cache.set(None);
             this.projects.pane_cache.take();
-            // A project's page opened anew works out the tab it opens on.
-            this.note_project_visit();
         });
         // Tabs opened beside the main panel for what it showed go when it
         // moves on (thread_panels.rs, `mainContextChanged`).
@@ -524,7 +529,6 @@ impl Threadbear {
             settings.saved.usage_chart_range.as_deref(),
             settings.saved.usage_show_model_weeks,
         );
-        let settings_open_rows = settings.saved.projects_open_rows.clone();
         let folded: HashSet<&'static str> = match &settings.saved.collapsed_sections {
             // The section keys are the Swift enum's raw values.
             Some(saved) => [
@@ -554,6 +558,7 @@ impl Threadbear {
             pane_events: None,
             kept: Default::default(),
             search,
+            archive: Default::default(),
             folded,
             composers: HashMap::new(),
             drafts: crate::drafts::Drafts::load(
@@ -571,6 +576,7 @@ impl Threadbear {
             #[cfg(feature = "frame-stats")]
             frame_rate: None,
             hidden_panes: Vec::new(),
+            hidden_sidebar_panels: Vec::new(),
             mode: SidebarMode::Inbox,
             view_switched: None,
             history: NavigationHistory::default(),
@@ -616,16 +622,16 @@ impl Threadbear {
             share_busy: false,
             chip_busy: Default::default(),
             starting_moves: Default::default(),
-            continuing_refusal: None,
+            continuing_refusal: HashSet::new(),
             website_url: None,
             schedules_supported: false,
             scheduled,
             schedule_editor: None,
             shows_home: false,
-            inbox_feed: Default::default(),
             restoring_place: false,
             librarian: crate::librarian::LibrarianState::new(),
             recipes: crate::recipes::RecipesState::new(),
+            thread_canvas: Default::default(),
             librarian_pokes: crate::home_page::Pokes::new(crate::home_page::Art::Librarian),
             usage,
             runner_settings: None,
@@ -652,7 +658,7 @@ impl Threadbear {
             upstream_on: false,
             projects_supported: false,
             all_projects: Vec::new(),
-            projects: crate::projects::ProjectsState::new(settings_open_rows.as_deref()),
+            projects: crate::projects::ProjectsState::default(),
             new_thread: crate::new_thread::NewThreadState::new(),
             remote: Default::default(),
             runners_panel: Default::default(),
@@ -677,6 +683,7 @@ impl Threadbear {
             _subs: vec![
                 appearance,
                 searching,
+                archive_watch,
                 frame,
                 menus,
                 looking,
@@ -913,9 +920,10 @@ impl Threadbear {
             self.tell_panel_shown(&request, &thread);
             return;
         }
-        // One the thread hasn't got is left for the runner to clear with
-        // Mike's next message.
-        let Some(panel) = requests::panel(&request, &thread) else {
+        // One the thread hasn't got yet is handed back, to show once a
+        // summary brings it. Never coming, the runner clears it with Mike's
+        // next message.
+        let Some(panel) = self.panel_gate.panel_or_release(&request, &thread) else {
             return;
         };
         if request.reload == Some(true) {
@@ -1017,6 +1025,7 @@ impl Threadbear {
                         .flatten()
                         .filter_map(|e| e.as_str().map(str::to_owned))
                         .collect();
+                    self.archive_hello();
                     crate::live_pages::set_on(
                         self.remote
                             .experiments
@@ -1089,6 +1098,9 @@ impl Threadbear {
                             });
                         if let Some(old) = self.threads.get(&t.id) {
                             t.runner_id = old.runner_id.clone();
+                            // And another runner's share, which a relayed
+                            // summary can leave out.
+                            threadbear_core::inbox::keep_local_marks(&mut t, Some(old));
                         }
                         // An older runner's relay leaves another runner's
                         // mode out, which the composer would read as Full
@@ -1402,6 +1414,8 @@ impl Threadbear {
                         }
                         let before = (*this.threads).clone();
                         let cleanup = list.apply(&mut *this.threads);
+                        // The Canvas page reads the board only from a whole list.
+                        this.thread_canvas.listed = true;
                         // A move just picked stays shown over the new list.
                         let now = crate::now_ms();
                         for id in this.starting_moves.threads() {
@@ -1681,8 +1695,14 @@ impl Threadbear {
         } else {
             self.opening.take()
         };
+        // A thread opened from anywhere but the Canvas page takes the page down.
+        if !self.thread_canvas.opening {
+            self.hide_thread_canvas();
+        }
         // A thread (its own row, say) in place of one of its sub-agents.
         self.close_subagent(cx);
+        // A thread in place of an archived session (archive_search.rs).
+        self.archive.open = None;
         // A thread open in a panel of its own is shown there.
         if moved.is_none() && self.open_in_its_panel(&id, cx) {
             return;
@@ -1691,7 +1711,6 @@ impl Threadbear {
             // Open already, behind a page (a schedule's target was clicked,
             // or a project's page): the page goes.
             if self.shows_home || self.projects.open.is_some() {
-                self.leave_feed_for_thread();
                 self.shows_home = false;
                 self.projects.open = None;
                 self.note_navigation();
@@ -1727,7 +1746,6 @@ impl Threadbear {
         let client = self.client.clone();
         let composer = self.composer_for(&id, window, cx);
         self.selected = Some(id);
-        self.leave_feed_for_thread();
         self.shows_home = false;
         self.projects.open = None;
         let pane = match (moved, kept) {
@@ -1822,6 +1840,16 @@ impl Threadbear {
             .or_else(|| self.kept.get(id, cx))
     }
 
+    /// Stores a thread summary a call's reply carried (a share's, a project
+    /// change's, a new thread's), keeping what only this app knows about
+    /// the row it replaces: which runner it's on, and another runner's
+    /// share (`keep_local_marks`). Every reply's summary goes in this way.
+    pub(crate) fn store_reply_summary(&mut self, mut t: ThreadSummary) {
+        let old = self.threads.get(&t.id).cloned();
+        threadbear_core::inbox::keep_local_marks(&mut t, old.as_deref());
+        self.threads.insert(t.id.clone(), Arc::new(t));
+    }
+
     /// A thread's message box, kept while others are open so what's typed
     /// stays with it, and made (with its words from before a quit) the first
     /// time it's wanted.
@@ -1908,7 +1936,6 @@ impl Threadbear {
         self.close_subagent(cx);
         self.leave_pane(cx);
         self.selected = None;
-        self.leave_feed_for_thread();
         self.shows_home = false;
         self.projects.open = None;
         self.note_navigation();
@@ -1924,71 +1951,22 @@ impl Threadbear {
         }
     }
 
-    /// `threads.update` for the open thread, with the summary changed here
-    /// first: anything clicked shows at once, and the runner's answer (or its
-    /// thread.updated) puts it right.
-    pub(crate) fn update_open(
-        &mut self,
-        change: impl FnOnce(&mut ThreadSummary),
-        params: Value,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let Some(id) = self.selected.clone() else {
-            return Err("no thread open".into());
-        };
-        let before = self.threads.get(&id).cloned();
-        if let Some(t) = self.threads.get_mut(&id).map(std::sync::Arc::make_mut) {
-            change(t);
-        }
-        let guess = self.threads.get(&id).cloned();
-        // A folder, login or pool change isn't guessed, so its chip spins.
-        let busy = if params.get("cwd").is_some() {
-            Some(format!("movingFolder/{id}"))
-        } else if params.get("accountId").is_some() || params.get("poolId").is_some() {
-            Some(format!("moving/{id}"))
-        } else {
-            None
-        };
-        if let Some(key) = &busy {
-            self.chip_busy.insert(key.clone());
-        }
-        let mut params = params;
-        params["threadId"] = json!(id);
-        let client = self.client.clone();
-        let remote = before.as_ref().is_some_and(|t| t.runner_id.is_some());
-        let going = crate::call_for_thread(client, remote, "threads.update", params);
-        cx.spawn(async move |this, cx| {
-            let res = going.await;
-            this.update(cx, |this, cx| {
-                if let Some(key) = &busy {
-                    this.chip_busy.remove(key);
-                }
-                if let Err(e) = res {
-                    this.show_error(e.message, cx);
-                    threadbear_core::inbox::roll_back(&mut *this.threads, before, guess.as_deref());
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-        cx.notify();
-        Ok(())
-    }
-
     #[cfg(feature = "automation")]
     pub(crate) fn snooze_open(
         &mut self,
         seconds: i64,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let id = self.selected.clone().ok_or("no thread open")?;
         let until = iso_time(now_ms() + seconds * 1000);
         let local = until.clone();
-        self.update_open(
+        self.update_thread(
+            &id,
             move |t| t.snoozed_until = Some(local),
             json!({ "snoozedUntil": until }),
             cx,
-        )
+        );
+        Ok(())
     }
 
     pub(crate) fn stop_open(&mut self, cx: &mut Context<Self>) {
@@ -1997,9 +1975,27 @@ impl Threadbear {
         }
     }
 
+    /// A script's command's box: with `thread` (its id, or its start), that
+    /// thread's own (in a panel of its own, say); otherwise the main panel's.
     #[cfg(feature = "automation")]
+    pub(crate) fn composer_for_command(
+        &self,
+        cmd: &Value,
+        cx: &App,
+    ) -> Result<Entity<Composer>, String> {
+        let Some(start) = cmd["thread"].as_str() else {
+            return self.composer(cx).ok_or_else(|| "no thread open".into());
+        };
+        let id = self.thread_id_from(start)?;
+        self.composers
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| format!("{id} has no message box yet"))
+    }
+
+    /// The open thread's message box, or the new-thread page's: ⇧⌘A's, and
+    /// the test driver's.
     pub(crate) fn composer(&self, cx: &App) -> Option<Entity<Composer>> {
-        // The open thread's box, or the new-thread page's.
         self.pane
             .as_ref()
             .map(|p| p.read(cx).composer.clone())
@@ -2082,6 +2078,9 @@ impl Threadbear {
         if self.recipes_on() {
             sidebar["recipes"] = self.recipes_dump();
         }
+        if self.archive_on() {
+            sidebar["archive"] = self.archive_search_dump(cx);
+        }
         let mut dump = json!({
             "connection": connection,
             "selection": self.selection_dump(),
@@ -2099,7 +2098,6 @@ impl Threadbear {
             "homePage": match self.home_page() {
                 Some(SidebarMode::Scheduled) => self.scheduled_home_dump(),
                 Some(SidebarMode::Projects) => json!({ "title": "Projects" }),
-                Some(SidebarMode::Feed) => self.feed_dump(),
                 Some(_) => self.librarian_home_dump(),
                 None => Value::Null,
             },
@@ -2113,7 +2111,6 @@ impl Threadbear {
             // cards while it's showing (projects.rs, projects_page.rs).
             "project": self.project_page_dump(),
             "projectCards": self.project_cards_dump(),
-            "projectDecisions": self.project_decisions_dump(),
             "banner": self.banner_dump(),
             "limit": self.limit_dump(cx),
             "error": self.error_message.clone(),
@@ -2146,6 +2143,9 @@ impl Threadbear {
             "actions": self.side.read(cx).thread(cx).map(|t| crate::patches::actions_dump(self.side.read(cx), &t)).unwrap_or_else(|| json!([])),
             "terminal": crate::terminal::dump(self, cx),
         });
+        // An archived session in the thread's place (archive_search.rs),
+        // outside the macro, which is at its recursion limit.
+        dump["archivePage"] = self.archive_page_dump(cx);
         // Any other note the window shows outside the banner and the error
         // bar: the sidebar's, when the list couldn't be read. Never the
         // connection's (Mike, 12 Nov: the raw error mid-restart).
@@ -2158,6 +2158,10 @@ impl Threadbear {
         dump["tokenCard"] = self.token_card_dump();
         // Panels pinned to their threads (pinned_panels.rs).
         dump["pinnedPanels"] = self.pinned_panels_dump(cx);
+        // The # thread picker over the box, while it's open (thread_palette.rs).
+        dump["threadPicker"] = self
+            .composer(cx)
+            .map_or(Value::Null, |c| c.read(cx).thread_picker_dump(cx));
         // The tour or a page's intro on show, and Finish setting up (tour.rs, setup_panel.rs).
         dump["tour"] = self.tour_dump(cx);
         dump["setup"] = self.setup_dump(cx);
@@ -2223,6 +2227,7 @@ impl Threadbear {
             .is_some_and(|(_, _, moving)| moving)
             || self.flight.in_flight()
             || crate::open_motion::moving()
+            || self.thread_canvas.in_motion()
     }
 
     /// The composer's part of the dump (AppDump.composer).
@@ -2265,11 +2270,17 @@ impl Threadbear {
                     .open_thread()
                     .and_then(|t| self.refusal_target(t, cx))
                     .is_some();
-            out["offerAbove"] = json!(refused.then_some(if self.continuing_refusal.is_some() {
-                "Continuing…"
-            } else {
-                "Continue with Codex Sol"
-            }));
+            out["offerAbove"] = json!(refused.then_some(
+                if self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|id| self.continuing_refusal.contains(id))
+                {
+                    "Continuing…"
+                } else {
+                    "Continue with Codex Sol"
+                }
+            ));
             // Whether the chips and the send button fit inside the box.
             let (row, send) = composer.controls_fit.get();
             out["chipsFit"] = json!(send <= row + 0.5);

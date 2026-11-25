@@ -10,7 +10,8 @@ import type { PersistedEvent, ThreadSummary } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
 import type { ThreadRecord } from '../store.ts';
 import type { Drain, ThreadState } from '../runner.ts';
-import { DRAIN_AGENT_MS, DRAIN_BACKGROUND_MS, DRAIN_CHECK_MS, DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS, newRuntime } from '../runner.ts';
+import { DRAIN_AGENT_MS, DRAIN_BACKGROUND_MS, DRAIN_CHECK_MS, DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS } from './timings.ts';
+import { newRuntime } from './runtime.ts';
 import { runningSession } from '../cli-session.ts';
 
 // Runner.openCards: events read from a log at once, kept small as each
@@ -64,9 +65,12 @@ export const handoversPart = {
     // New threads start on the new runner, so a CLI started ahead of one here
     // would never be used.
     this.dropSpare('handing over');
-    // Accounts are the primary's to watch now.
+    // Accounts are the primary's to watch now, their limits too: a recheck
+    // here would start a CLI beside the primary's, and its reading would
+    // reach the primary's store past the primary's own ranDry rules.
     this.rescanTimer?.cancel();
     this.accountsTimer?.cancel();
+    this.stopLimitRecheck();
     await Promise.all([...this.threads.values()].filter((st) => !d.keep.has(st.rec.id)).map((st) => this.letGo(st)));
     this.log.info('let go of the idle threads', { keeps: [...d.keep] });
     this.checkHandovers();
@@ -262,7 +266,6 @@ export const handoversPart = {
     // recovery, not the handover (Runner.recoveryFailed).
     try {
       if (rec.asked === undefined && !rec.archivedAt) this.backfillAsked(rec);
-      if (rec.request === undefined && !rec.archivedAt) this.backfillRequest(rec);
       this.recoverReviews(st);
       // Handed over before its worktree cleanup finished (letGo's limit).
       void this.settleLostCleanups([st], false);

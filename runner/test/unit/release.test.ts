@@ -4,8 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpDir } from '../helpers/fakes.ts';
-import { markGood, readState, runnerVersion, statePath, takeRollbackNotice, type RunnerState } from '../../src/release.ts';
-import { restartPath } from '../../src/restart.ts';
+import { markGood, pointCurrentAt, readState, releaseHome, runnerVersion, staleRelease, statePath, takeRollbackNotice, type RunnerState } from '../../src/release.ts';
+import { restartPath, threadBinDir } from '../../src/restart.ts';
+import { execFileSync } from 'node:child_process';
+import { NO_LINKS_ON_WINDOWS } from '../helpers/platform.ts';
 import { RunnerClient } from '../../src/client.ts';
 import { nullLogger } from '../../src/log.ts';
 import { PATIENCE_MS, patiently } from '../helpers/patience.ts';
@@ -366,4 +368,78 @@ test('onSupervisorGone fires when the IPC channel closes', async () => {
   c.proc.disconnect();
   assert.equal(await c.exited, 0, c.out());
   assert.equal(c.out().trim(), 'gone');
+});
+
+// A data dir with releases whose bin/tb prints its release's id, like the
+// LaunchAgent's (<home>/runner/releases/<id>/ with release.json).
+function releasesHome(ids: string[]): { home: string; root: (id: string) => string } {
+  const home = tmpDir();
+  const root = (id: string) => path.join(home, 'runner', 'releases', id);
+  for (const id of ids) {
+    fs.mkdirSync(path.join(root(id), 'src'), { recursive: true });
+    fs.mkdirSync(path.join(root(id), 'bin'));
+    fs.writeFileSync(path.join(root(id), 'src', 'main.ts'), '');
+    fs.writeFileSync(path.join(root(id), 'release.json'), JSON.stringify({ id, commit: 'abc', dirty: false, builtAt: '', node: 'v24' }));
+    fs.writeFileSync(path.join(root(id), 'bin', 'tb'), `#!/bin/sh\necho ${id}\n`, { mode: 0o755 });
+  }
+  return { home, root };
+}
+
+test("a thread's PATH follows the current release, so a CLI that outlives a runner update runs the new tb", NO_LINKS_ON_WINDOWS, () => {
+  const { home, root } = releasesHome(['r1', 'r2', 'r3']);
+  pointCurrentAt(home, 'r1');
+  // The r1 runner starts a thread: its PATH names current/bin, not r1's own.
+  const first = threadBinDir(path.join(root('r1'), 'bin'));
+  assert.equal(first, path.join(home, 'runner', 'current', 'bin'));
+  assert.equal(releaseHome(root('r1')), home);
+  const env = { PATH: [first, '/usr/bin', '/bin'].join(path.delimiter) };
+  const tb = () => execFileSync('sh', ['-c', 'tb'], { env, encoding: 'utf8' }).trim();
+  assert.equal(tb(), 'r1');
+  // Two deploys later, with the CLI's PATH as it started (24 Nov: a day-old
+  // thread's tb land still had a hold main had taken out), and r1 pruned.
+  pointCurrentAt(home, 'r2');
+  pointCurrentAt(home, 'r3');
+  fs.rmSync(root('r1'), { recursive: true });
+  assert.equal(tb(), 'r3');
+  // A rollback moves the link back the same way (launch.mjs, pointCurrent).
+  pointCurrentAt(home, 'r2');
+  assert.equal(tb(), 'r2');
+});
+
+test("a checkout's runner, Windows, and a release with no current link keep the runner's own bin/", () => {
+  const { home, root } = releasesHome(['r1']);
+  const own = path.join(root('r1'), 'bin');
+  // No current link yet.
+  assert.equal(threadBinDir(own), own);
+  if (process.platform !== 'win32') pointCurrentAt(home, 'r1');
+  // Windows has a text file for current, which can't go on a PATH.
+  assert.equal(threadBinDir(own, 'win32'), own);
+  // A checkout (a dev runner): no release.json, not under releases/.
+  const checkout = path.join(tmpDir(), 'runner');
+  fs.mkdirSync(path.join(checkout, 'bin'), { recursive: true });
+  assert.equal(threadBinDir(path.join(checkout, 'bin')), path.join(checkout, 'bin'));
+  assert.equal(releaseHome(checkout), undefined);
+  // This test's own runner code is a checkout's too.
+  assert.equal(threadBinDir(), path.join(RUNNER_DIR, 'bin'));
+});
+
+test('tb knows when it is not the release current names', NO_LINKS_ON_WINDOWS, () => {
+  const { home, root } = releasesHome(['r1', 'r2']);
+  pointCurrentAt(home, 'r1');
+  assert.equal(staleRelease(root('r1')), undefined);
+  pointCurrentAt(home, 'r2');
+  assert.deepEqual(staleRelease(root('r1')), { mine: 'r1', current: 'r2', tb: path.join(home, 'runner', 'current', 'bin', 'tb') });
+  assert.equal(staleRelease(root('r2')), undefined);
+  // A link to a release that isn't there says nothing.
+  fs.rmSync(root('r2'), { recursive: true });
+  assert.equal(staleRelease(root('r1')), undefined);
+  // Nor does a checkout's tb.
+  assert.equal(staleRelease(RUNNER_DIR), undefined);
+});
+
+test("on Windows tb names the current release's tb.cmd", () => {
+  const { home, root } = releasesHome(['r1', 'r2']);
+  fs.mkdirSync(path.join(home, 'runner'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'runner', 'current'), 'r2\n');
+  assert.deepEqual(staleRelease(root('r1'), 'win32'), { mine: 'r1', current: 'r2', tb: path.join(root('r2'), 'bin', 'tb.cmd') });
 });

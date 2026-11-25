@@ -271,6 +271,12 @@ pub(crate) unsafe fn platform_input_from_native(
                     native_event.scrollingDeltaY() as f32,
                 );
 
+                // A trackpad's or Magic Mouse's scroll always has a phase
+                // or a momentum phase; a wheel's has neither, even one that
+                // reports pixels.
+                let wheel = native_event.phase() == NSEventPhase::None
+                    && native_event.momentumPhase() == NSEventPhase::None;
+
                 let delta = if native_event.hasPreciseScrollingDeltas() {
                     ScrollDelta::Pixels(raw_data.map(px))
                 } else {
@@ -285,7 +291,11 @@ pub(crate) unsafe fn platform_input_from_native(
                     delta,
                     touch_phase: phase,
                     modifiers: read_modifiers(native_event),
-                    source: ScrollSource::Pointer,
+                    source: if wheel {
+                        ScrollSource::Wheel
+                    } else {
+                        ScrollSource::Pointer
+                    },
                 })
             }),
             NSEventType::LeftMouseDragged

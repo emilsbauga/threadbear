@@ -4,8 +4,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { expandHome } from './config.ts';
-import { readImageInfo, readVideoInfo } from './media.ts';
-import type { DesignReview, ImageRef, ReviewDraft } from './protocol.ts';
+import { readAudioInfo, readImageInfo, readVideoInfo } from './media.ts';
+import type { AgentMark, DesignReview, ImageRef, MarkBox, ReviewDraft, ReviewUserMark } from './protocol.ts';
 import { ErrorCode, RpcError } from './protocol.ts';
 
 // An option's pictures: `path` and then `shots`, or `shots` alone. One option
@@ -14,18 +14,22 @@ import { ErrorCode, RpcError } from './protocol.ts';
 // kind is worked out here from the file: a picture, a video (MP4 or
 // QuickTime) or an HTML page. The window plays a video and shows a page in
 // place of a still, as agents had to hand Mike stills of clips that only
-// made sense moving (6 Nov 2026).
-export type ReviewShotKind = 'image' | 'video' | 'page';
-export type ReviewShotInput = { path: string; title?: string; kind?: ReviewShotKind };
-export type ReviewInput = { title: string; note?: string; recommended?: string; options: { id: string; title: string; path?: string; shots?: ReviewShotInput[]; url?: string; note?: string; reference?: boolean }[] };
+// made sense moving (6 Nov 2026). A sound (MP3, M4A, AAC, WAV) plays too, as
+// Mike wanted to compare music beds (24 Nov 2026).
+export type ReviewShotKind = 'image' | 'video' | 'audio' | 'page';
+// marks: the agent's marks on the picture (the reviewCanvas experiment); an
+// option's own belong to its path shot.
+export type ReviewShotInput = { path: string; title?: string; kind?: ReviewShotKind; marks?: AgentMark[] };
+export type ReviewInput = { title: string; note?: string; recommended?: string; options: { id: string; title: string; path?: string; shots?: ReviewShotInput[]; url?: string; note?: string; reference?: boolean; marks?: AgentMark[] }[] };
 // What createReview copies: every source file, first shot first.
 export type ReviewOptionSource = { id: string; title: string; note?: string; reference?: boolean; url?: string; shots: ReviewShotInput[] };
 export const maxReviewShots = 8;
 export const maxReviewImages = 40;
 const maxImageBytes = 25 * 1024 * 1024;
 const maxVideoBytes = 200 * 1024 * 1024;
+const maxAudioBytes = 100 * 1024 * 1024;
 const maxPageBytes = 5 * 1024 * 1024;
-// All of a review's videos and pages together, as each is copied in.
+// All of a review's videos, sounds and pages together, as each is copied in.
 export const maxReviewMediaBytes = 500 * 1024 * 1024;
 
 function bad(message: string): never {
@@ -57,15 +61,76 @@ function shotFile(raw: unknown, cwd: string): { path: string; kind: ReviewShotKi
     const info = readImageInfo(file);
     if (info?.width && info.height) return { path: file, kind: 'image', size };
   }
+  // Before videos: an M4A is an MP4 with no picture.
+  if (readAudioInfo(file)) {
+    if (size > maxAudioBytes) bad(`A sound must be at most 100 MB: ${file}`);
+    return { path: file, kind: 'audio', size };
+  }
   if (readVideoInfo(file)) {
     if (size > maxVideoBytes) bad(`A video must be at most 200 MB: ${file}`);
     return { path: file, kind: 'video', size };
   }
   if (size > maxImageBytes) bad(`An image must be at most 25 MB: ${file}`);
-  return bad(`Not a picture (PNG, JPEG, GIF, WebP), video (MP4, MOV) or HTML page: ${file}`);
+  return bad(`Not a picture (PNG, JPEG, GIF, WebP), video (MP4, MOV), sound (MP3, M4A, AAC, WAV) or HTML page: ${file}`);
 }
 
-export function reviewInput(raw: unknown, cwd: string): { title: string; note?: string; recommended?: string; options: ReviewOptionSource[] } {
+// Marks on the pictures (docs/protocol/events.md, "Marks: the canvas"):
+// Mike, 22 Nov 2026, asked for the agent's "little helpful arrows pointing
+// out things visually" on the review's pictures, and tools to circle,
+// highlight or pin a part himself, each a chip in his reply.
+export const maxShotMarks = 6;
+export const maxReviewMarks = 30;
+export const maxMarkNote = 80;
+export const maxDraftMarks = 20;
+export const maxMarkPoints = 400;
+const MARK_KINDS: readonly string[] = ['circle', 'underline', 'highlight', 'arrow'];
+const MARK_INKS: readonly string[] = ['yellow', 'green', 'rose'];
+const USER_MARK_KINDS: readonly string[] = ['circle', 'highlight', 'pin'];
+
+function markBox(v: unknown, at: string): MarkBox {
+  if (!Array.isArray(v) || v.length !== 4 || v.some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1) || v[0] > v[2] || v[1] > v[3]) {
+    bad(`${at}: box must be [x0, y0, x1, y1], fractions of the picture from 0 to 1 from its top left, with x0 <= x1 and y0 <= y1.`);
+  }
+  return [v[0], v[1], v[2], v[3]];
+}
+
+// The agent's marks on one picture, `where` naming it ("A, picture 2").
+function agentMarks(raw: unknown, where: string): AgentMark[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return bad(`marks on ${where} must be a list.`);
+  if (raw.length > maxShotMarks) bad(`${where} has ${raw.length} marks; at most ${maxShotMarks} a picture.`);
+  return raw.map((m, k) => {
+    const at = `marks[${k}] on ${where}`;
+    if (!m || typeof m !== 'object' || Array.isArray(m)) bad(`${at} must be an object with a kind and a box.`);
+    const r = m as Record<string, unknown>;
+    if (typeof r.kind !== 'string' || !MARK_KINDS.includes(r.kind)) bad(`${at}: kind must be circle, underline, highlight or arrow.`);
+    const box = markBox(r.box, at);
+    const note = text(r.note, `${at}: note`, maxMarkNote);
+    if (r.ink !== undefined && (typeof r.ink !== 'string' || !MARK_INKS.includes(r.ink))) bad(`${at}: ink must be yellow, green or rose.`);
+    return { kind: r.kind as AgentMark['kind'], box, ...(note ? { note } : {}), ...(r.ink !== undefined ? { ink: r.ink as AgentMark['ink'] } : {}) };
+  });
+}
+
+// A moved or recovered shot's marks, cut to what show_options takes rather
+// than refused: the ones that pass, notes cut to their length.
+function fitAgentMarks(raw: unknown): AgentMark[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AgentMark[] = [];
+  for (const m of raw) {
+    if (out.length >= maxShotMarks) break;
+    const r = m && typeof m === 'object' && !Array.isArray(m) && typeof (m as AgentMark).note === 'string' ? { ...m, note: cutText((m as AgentMark).note!, maxMarkNote) } : m;
+    try {
+      out.push(...agentMarks([r], 'a picture'));
+    } catch {
+      // Left out.
+    }
+  }
+  return out;
+}
+
+// reviewCanvas: the reviewCanvas experiment is on, so marks are kept;
+// without it they're dropped unread.
+export function reviewInput(raw: unknown, cwd: string, opts: { marks?: boolean } = {}): { title: string; note?: string; recommended?: string; options: ReviewOptionSource[] } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return bad('A review needs a title and options.');
   const p = raw as Record<string, unknown>;
   const title = text(p.title, 'title', 200, true)!;
@@ -74,6 +139,7 @@ export function reviewInput(raw: unknown, cwd: string): { title: string; note?: 
   const ids = new Set<string>();
   let images = 0;
   let mediaBytes = 0;
+  let marks = 0;
   const options = p.options.map((raw, i) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return bad(`options[${i}] must be an object.`);
     const o = raw as Record<string, unknown>;
@@ -87,24 +153,28 @@ export function reviewInput(raw: unknown, cwd: string): { title: string; note?: 
     if (url && !/^https?:\/\/\S+$/i.test(url)) bad(`url must be an http or https address: ${url}`);
     if (o.shots !== undefined && !Array.isArray(o.shots)) bad(`shots on ${id} must be a list.`);
     const shots: ReviewShotInput[] = [];
-    const add = (raw: unknown, title?: string) => {
+    const add = (raw: unknown, title: string | undefined, rawMarks: unknown) => {
       const file = shotFile(raw, cwd);
       if (file.kind !== 'image') mediaBytes += file.size;
-      shots.push({ path: file.path, kind: file.kind, ...(title ? { title } : {}) });
+      const own = opts.marks ? agentMarks(rawMarks, `${id}, picture ${shots.length + 1}`) : [];
+      marks += own.length;
+      shots.push({ path: file.path, kind: file.kind, ...(title ? { title } : {}), ...(own.length ? { marks: own } : {}) });
     };
-    if (o.path !== undefined) add(o.path);
+    if (opts.marks && (Array.isArray(o.marks) ? o.marks.length > 0 : o.marks !== undefined) && o.path === undefined) bad(`marks on ${id} belong to its path picture, and it has none: put them on its shots.`);
+    if (o.path !== undefined) add(o.path, undefined, o.marks);
     for (const [j, s] of ((o.shots as unknown[] | undefined) ?? []).entries()) {
       if (!s || typeof s !== 'object' || Array.isArray(s)) bad(`shots[${j}] on ${id} must be an object with a path.`);
       const shot = s as Record<string, unknown>;
-      add(shot.path, text(shot.title, 'shot title', 200));
+      add(shot.path, text(shot.title, 'shot title', 200), shot.marks);
     }
-    if (!shots.length) bad(`Option ${id} needs an image, video or page: a path or shots.`);
+    if (!shots.length) bad(`Option ${id} needs an image, video, sound or page: a path or shots.`);
     if (shots.length > maxReviewShots) bad(`Option ${id} has ${shots.length} images; at most ${maxReviewShots}.`);
     images += shots.length;
     return { id, title, shots, ...(note ? { note } : {}), ...(o.reference === true ? { reference: true } : {}), ...(url ? { url } : {}) };
   });
   if (images > maxReviewImages) bad(`A review can have at most ${maxReviewImages} images in all; this has ${images}.`);
-  if (mediaBytes > maxReviewMediaBytes) bad(`A review's videos and pages can be at most 500 MB in all; these are ${Math.ceil(mediaBytes / 1024 / 1024)} MB.`);
+  if (marks > maxReviewMarks) bad(`A review can have at most ${maxReviewMarks} marks in all; this has ${marks}. Mark only what needs pointing out.`);
+  if (mediaBytes > maxReviewMediaBytes) bad(`A review's videos, sounds and pages can be at most 500 MB in all; these are ${Math.ceil(mediaBytes / 1024 / 1024)} MB.`);
   // The agent's own pick, which the window marks with a star and "Recommended" as an asks card
   // does (Mike, 7 Nov: agents wrote "I'd pick C" in the middle of the note,
   // where it was hard to find).
@@ -180,6 +250,7 @@ function movedRef(ref: unknown, reviewId: string, media: MovedMedia, still: bool
   // A page's copy may have a charset tag more than show_options took (withCharset).
   if (page) info = size <= maxPageBytes + 1024 ? { mediaType: 'text/html' } : null;
   else if (still) info = /\.(png|jpe?g|gif|webp)$/i.test(file.now) && size <= maxImageBytes ? readImageInfo(file.now) : null;
+  else if (/\.(mp3|m4a|aac|wav)$/i.test(file.now)) info = size <= maxAudioBytes ? readAudioInfo(file.now) : null;
   else info = /\.(mp4|m4v|mov)$/i.test(file.now) && size <= maxVideoBytes ? readVideoInfo(file.now) : null;
   if (!info) return undefined;
   const { width: _w, height: _h, ...rest } = ref as ImageRef;
@@ -239,6 +310,7 @@ export function fitReview(raw: unknown, media: MovedMedia, recovering = false): 
   set(r, 'note', 4000);
   set(r, 'recommended', 200);
   if (typeof r.note === 'string' && !recovering) r.note = webLinksOnly(r.note);
+  let agentMarkCount = 0;
   r.options = r.options.slice(0, 12).flatMap((raw: unknown) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
     const o = { ...(raw as Record<string, any>) };
@@ -261,6 +333,12 @@ export function fitReview(raw: unknown, media: MovedMedia, recovering = false): 
           const m = movedRef(shot.media, reviewId, media, false);
           if (m) shot.media = m;
           else delete shot.media;
+        }
+        if (shot.marks !== undefined) {
+          const marks = fitAgentMarks(shot.marks).slice(0, Math.max(0, maxReviewMarks - agentMarkCount));
+          agentMarkCount += marks.length;
+          if (marks.length) shot.marks = marks;
+          else delete shot.marks;
         }
         return [shot];
       });
@@ -290,6 +368,17 @@ export function fitReview(raw: unknown, media: MovedMedia, recovering = false): 
     if (!recovering) {
       if (Array.isArray(draft.images) && typeof draft.reply === 'string') draft.reply = keepPictureMarkers(draft.reply, draft.images.map(() => false));
       delete draft.images;
+    }
+    // Mike's marks, the ones that still fit the options that came; a moved
+    // one's cut-out goes as the reply's pictures do.
+    if (draft.marks !== undefined) {
+      const marks = fitUserMarks(r as DesignReview, draft.marks).map(m => {
+        if (recovering || !m.image) return m;
+        const { image: _, ...rest } = m;
+        return rest;
+      });
+      if (marks.length) draft.marks = marks;
+      else delete draft.marks;
     }
     if (draft.notes && typeof draft.notes === 'object' && !Array.isArray(draft.notes)) {
       const notes: Record<string, string> = Object.create(null);
@@ -342,7 +431,8 @@ export function reviewDraft(review: DesignReview, raw: unknown, answer = false):
   }
   const reply = text(d.reply, 'reply', 8000);
   const images = replyImages(d.images);
-  if (answer && !picks.length && !none && !reply && !images.length && !Object.keys(notes).length) bad('Pick an option or write a reply.');
+  const marks = userMarks(review, d.marks);
+  if (answer && !picks.length && !none && !reply && !images.length && !marks.length && !Object.keys(notes).length) bad('Pick an option or write a reply.');
   return {
     // pickedIds only for more than one, so a single pick saves as it always did.
     ...(picks.length ? { pickedId: picks[0] } : {}),
@@ -351,7 +441,69 @@ export function reviewDraft(review: DesignReview, raw: unknown, answer = false):
     ...(reply ? { reply } : {}),
     ...(images.length ? { images } : {}),
     ...(none ? { none: true as const } : {}),
+    ...(marks.length ? { marks } : {}),
   };
+}
+
+// An option's pictures as the window numbers them: its shots, or its one image.
+function shotsOf(option: DesignReview['options'][number]): { title?: string }[] {
+  return option.shots?.length ? option.shots : [{}];
+}
+
+// Mike's marks as sent, in number order: their shape, and that each is on a
+// picture an option he can pick has. Where a cut-out may come from, and
+// copying it in, is the runner's, as for reply pictures (runner/reviews.ts).
+function userMarks(review: DesignReview, raw: unknown): ReviewUserMark[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return bad('marks must be a list.');
+  if (raw.length > maxDraftMarks) bad(`A reply can have at most ${maxDraftMarks} marks; this has ${raw.length}.`);
+  const numbers = new Set<number>();
+  const marks = raw.map((m, k): ReviewUserMark => {
+    const at = `marks[${k}]`;
+    if (!m || typeof m !== 'object' || Array.isArray(m)) bad(`${at} must be an object with n, kind, optionId, shot and box.`);
+    const r = m as Record<string, unknown>;
+    const n = r.n as number;
+    if (!Number.isSafeInteger(n) || n < 1) bad(`${at}: n must be a whole number from 1.`);
+    if (numbers.has(n)) bad(`Two marks are numbered ${n}.`);
+    numbers.add(n);
+    if (typeof r.kind !== 'string' || !USER_MARK_KINDS.includes(r.kind)) bad(`${at}: kind must be circle, highlight or pin.`);
+    if (typeof r.optionId !== 'string') bad(`${at}: optionId must be an option ID.`);
+    const option = review.options.find(o => o.id === r.optionId);
+    if (!option) bad(`${at}: unknown option: ${r.optionId as string}`);
+    if (option.reference) bad(`${at}: ${option.id} is a reference option, which can't be marked.`);
+    const count = shotsOf(option).length;
+    const shot = r.shot as number;
+    if (!Number.isSafeInteger(shot) || shot < 0 || shot >= count) bad(`${at}: ${option.id} has no picture ${typeof shot === 'number' ? shot + 1 : String(shot)}; shot is 0-based, below ${count}.`);
+    const box = markBox(r.box, at);
+    // A stroke can run past the picture's edge: its points are kept on it.
+    let points: [number, number][] | undefined;
+    if (r.path !== undefined) {
+      if (!Array.isArray(r.path) || r.path.length > maxMarkPoints || r.path.some(p => !Array.isArray(p) || p.length !== 2 || p.some(v => typeof v !== 'number' || !Number.isFinite(v)))) {
+        bad(`${at}: path must be a list of at most ${maxMarkPoints} [x, y] points.`);
+      }
+      points = (r.path as [number, number][]).map(([x, y]) => [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))]);
+    }
+    const image = r.image === undefined ? undefined : imageShape(r.image, `${at}: image`);
+    return { n, kind: r.kind as ReviewUserMark['kind'], optionId: option.id, shot, box, ...(points ? { path: points } : {}), ...(image ? { image } : {}) };
+  });
+  return marks.sort((a, b) => a.n - b.n);
+}
+
+// A stored draft's marks cut to the ones userMarks takes, for a moved or
+// recovered review: the rest are left out rather than the draft.
+function fitUserMarks(review: DesignReview, raw: unknown): ReviewUserMark[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ReviewUserMark[] = [];
+  for (const m of raw) {
+    if (out.length >= maxDraftMarks) break;
+    try {
+      const [mark] = userMarks(review, [m]);
+      if (!out.some(o => o.n === mark.n)) out.push(mark);
+    } catch {
+      // Left out.
+    }
+  }
+  return out.sort((a, b) => a.n - b.n);
 }
 
 // The reply's pictures as sent: their shape only. Where they may come from,
@@ -361,11 +513,13 @@ function replyImages(raw: unknown): ImageRef[] {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) return bad('images must be a list of pictures.');
   if (raw.length > maxReplyImages) bad(`A reply can have at most ${maxReplyImages} pictures; this has ${raw.length}.`);
-  return raw.map((img, i) => {
-    if (!img || typeof img !== 'object' || Array.isArray(img) || typeof (img as ImageRef).path !== 'string' || !(img as ImageRef).path) bad(`images[${i}] must be a picture with a path.`);
-    const { path: file, mediaType, width, height } = img as ImageRef;
-    return { path: file, mediaType: typeof mediaType === 'string' ? mediaType : 'application/octet-stream', ...(typeof width === 'number' ? { width } : {}), ...(typeof height === 'number' ? { height } : {}) };
-  });
+  return raw.map((img, i) => imageShape(img, `images[${i}]`));
+}
+
+function imageShape(img: unknown, name: string): ImageRef {
+  if (!img || typeof img !== 'object' || Array.isArray(img) || typeof (img as ImageRef).path !== 'string' || !(img as ImageRef).path) bad(`${name} must be a picture with a path.`);
+  const { path: file, mediaType, width, height } = img as ImageRef;
+  return { path: file, mediaType: typeof mediaType === 'string' ? mediaType : 'application/octet-stream', ...(typeof width === 'number' ? { width } : {}), ...(typeof height === 'number' ? { height } : {}) };
 }
 
 // Words whose pictures were cut to those `keep` marks: each [Picture N]
@@ -388,6 +542,8 @@ export function sameDraft(a: ReviewDraft | undefined, b: ReviewDraft): boolean {
   if (!a || a.pickedId !== b.pickedId || (a.pickedIds ?? []).join('\n') !== (b.pickedIds ?? []).join('\n')) return false;
   if ((a.reply ?? '') !== (b.reply ?? '') || !!a.none !== !!b.none) return false;
   if ((a.images ?? []).map(i => i.path).join('\n') !== (b.images ?? []).map(i => i.path).join('\n')) return false;
+  const marks = (d: ReviewDraft) => JSON.stringify((d.marks ?? []).map(m => [m.n, m.kind, m.optionId, m.shot, m.box, m.path ?? [], m.image?.path ?? '']));
+  if (marks(a) !== marks(b)) return false;
   const ids = Object.keys(a.notes);
   return ids.length === Object.keys(b.notes).length && ids.every(id => a.notes[id] === b.notes[id]);
 }
@@ -410,8 +566,29 @@ export function reviewReply(review: DesignReview, draft: ReviewDraft): string {
   if (picks.length) lines.push(`Picked ${picks.join(' + ')}. ${picks.map(id => review.options.find(o => o.id === id)!.title).join(' + ')}.`);
   if (draft.none) lines.push('Picked none of them.');
   if (draft.reply) lines.push(draft.reply);
+  if (draft.marks?.length) lines.push(draft.marks.map(m => markLine(review, m)).join('\n'));
   for (const o of review.options) if (Object.hasOwn(draft.notes, o.id) && draft.notes[o.id]) lines.push(`Notes on ${o.id} (${o.title}): ${draft.notes[o.id]}`);
   const passed = picks.length ? review.options.filter(o => !o.reference && !picks.includes(o.id)) : [];
   if (passed.length) lines.push(`Passed over: ${passed.map(o => `${o.id}. ${o.title}`).join('; ')}. ${PASSED_OVER_TAIL}`);
   return lines.join('\n\n');
+}
+
+// One of Mike's marks for the agent, after his reply: `[Mark 1] circle on A.
+// <title>, picture 2 (<shot title>), across 36-50% and down 83-92% of it.`
+// A pin's box is one spot: "across 40% and down 83%".
+export function markLine(review: DesignReview, m: ReviewUserMark): string {
+  const option = review.options.find(o => o.id === m.optionId);
+  const shot = option ? shotsOf(option)[m.shot] : undefined;
+  const span = (a: number, b: number) => {
+    const [x, y] = [Math.round(a * 100), Math.round(b * 100)];
+    return x === y ? `${x}%` : `${x}-${y}%`;
+  };
+  const on = option ? `${option.id}. ${option.title}` : m.optionId;
+  return `[Mark ${m.n}] ${m.kind} on ${on}, picture ${m.shot + 1}${shot?.title ? ` (${shot.title})` : ''}, across ${span(m.box[0], m.box[2])} and down ${span(m.box[1], m.box[3])} of it.`;
+}
+
+// The answer's pictures for the agent: the reply's, then each mark's cut-out
+// in mark order.
+export function reviewImages(draft: ReviewDraft): ImageRef[] {
+  return [...(draft.images ?? []), ...(draft.marks ?? []).flatMap(m => (m.image ? [m.image] : []))];
 }

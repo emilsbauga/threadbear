@@ -2,7 +2,8 @@
 // (core's app_update.rs has the rules). Twenty seconds after launch, every
 // five minutes, and within seconds of main moving, it reads main's tree of
 // desktop/ in the checkout it was built from, and when that differs from what's
-// running it waits for ten quiet minutes before building the latest main into
+// running it waits for main to be quiet (runner.json's updateQuietMinutes, two
+// by default) before building the latest main into
 // ~/Applications/.Threadbear GPUI.app.next
 // (desktop/scripts/stage-update.sh, from the bundle). The Rust release build
 // takes every core for minutes, so the script builds on a Mac among
@@ -62,6 +63,8 @@ pub(crate) struct AppUpdater {
     pub(crate) failed: Option<String>,
     quiet_main: rules::BuildDebounce,
     settling: bool,
+    /// runner.json's updateQuietMinutes, read at each look.
+    quiet_minutes: u32,
     /// The last build found no Mac to build on; the next look tries again.
     pub(crate) waiting_for_host: bool,
     /// Where the build is on its host (stage-update.sh's phase file), read
@@ -127,14 +130,18 @@ fn staged_build() -> Option<BuildInfo> {
     BuildInfo::read(&next_dir())
 }
 
+fn runner_json() -> PathBuf {
+    threadbear_client::config::RunnerConfig::from_env()
+        .home
+        .join("runner.json")
+}
+
 /// A staged bundle goes in only if it was built here or on a host in
 /// runner.json's updateBuildHosts now: never one a check host built, or one
 /// staged before bundles said where they were built (Daybreak 108).
 /// False when one that isn't trusted is still there: nothing goes in then.
 fn drop_untrusted_staged() -> bool {
-    let runner_json = threadbear_client::config::RunnerConfig::from_env()
-        .home
-        .join("runner.json");
+    let runner_json = runner_json();
     match rules::drop_untrusted_staged(&next_dir(), &runner_json) {
         Ok(None) => true,
         Ok(Some(why)) => {
@@ -718,7 +725,12 @@ impl Threadbear {
                 .await;
             this.update(cx, |t, cx| {
                 let Some(tree) = tree else { return };
-                let ready = t.updater.quiet_main.ready(&tree, std::time::Instant::now());
+                t.updater.quiet_minutes = rules::quiet_minutes(&runner_json());
+                let quiet = std::time::Duration::from_secs(u64::from(t.updater.quiet_minutes) * 60);
+                let ready = t
+                    .updater
+                    .quiet_main
+                    .ready(&tree, std::time::Instant::now(), quiet);
                 // followMain can have changed while git was being read.
                 if t.runner_settings
                     .as_ref()
@@ -751,6 +763,17 @@ impl Threadbear {
                         } else {
                             t.updater.settling = true;
                             t.updater.waiting_for_host = false;
+                            // Look again the moment the wait is up.
+                            if let Some(left) =
+                                t.updater.quiet_main.left(std::time::Instant::now(), quiet)
+                            {
+                                t.updater.soon = Some(cx.spawn(async move |this, cx| {
+                                    cx.background_executor()
+                                        .timer(left + Duration::from_secs(1))
+                                        .await;
+                                    this.update(cx, |t, cx| t.check_for_update(cx)).ok();
+                                }));
+                            }
                         }
                     }
                 }
@@ -774,10 +797,15 @@ impl Threadbear {
             return;
         }
         let Some(script) = script() else { return };
+        let priority = rules::job_priority(
+            &runner_json(),
+            std::env::var("THREADBEAR_JOB_PRIORITY").ok().as_deref(),
+        );
         let (program, arguments) = rules::build_command(
             &script.to_string_lossy(),
             &checkout,
             &next_dir().to_string_lossy(),
+            priority,
         );
         let log = open_log();
         let (out, err) = match log
@@ -1315,6 +1343,7 @@ impl Threadbear {
                     .as_ref()
                     .and_then(|s| s["followMain"].as_bool())
                     != Some(false),
+            quiet_minutes: u.quiet_minutes,
             failed: u.failed.is_some() && u.staged.is_none(),
             waiting: u.waiting_for_host && u.staged.is_none() && u.building.is_none(),
             // Only the installed app's reasons: every other launch is meant
@@ -1361,6 +1390,7 @@ impl Threadbear {
             _ => None,
         };
         u.settling = state == "settling";
+        u.quiet_minutes = rules::DEFAULT_QUIET_MINUTES;
         u.failed = (state == "failed").then(|| "def5678".to_owned());
         u.waiting_for_host = state == "waiting";
         u.no_builder = state == "no-builder";

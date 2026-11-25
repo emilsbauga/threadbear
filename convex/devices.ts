@@ -220,6 +220,30 @@ export const holdPush = internalMutation({
   },
 });
 
+// push:notify delivered an alert for the thread to at least one phone: one
+// clear may take it down (sync:upsertThreads wantsClear, Daybreak 169). If
+// the thread stopped needing Mike while it was on its way, that clear goes
+// now, as no later flip would send it.
+export const alerted = internalMutation({
+  args: { threadId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { threadId }) => {
+    const t = await ctx.db
+      .query('threads')
+      .withIndex('by_threadId', (q) => q.eq('threadId', threadId))
+      .unique();
+    if (!t) return null;
+    if (t.needsYou) await ctx.db.patch(t._id, { alertedAt: Date.now() });
+    else {
+      // This clear takes down every alert out for it, so none is left for a
+      // later flip to clear again (Gemini's review).
+      if (t.alertedAt !== undefined) await ctx.db.patch(t._id, { alertedAt: undefined });
+      await ctx.scheduler.runAfter(0, internal.push.clear, { threadId });
+    }
+    return null;
+  },
+});
+
 // Apple said the token is gone (the app was removed, or it's stale).
 export const drop = internalMutation({
   args: { apnsToken: v.string() },

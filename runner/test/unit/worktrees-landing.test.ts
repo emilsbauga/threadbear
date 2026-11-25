@@ -264,6 +264,26 @@ test("land never rebases a branch with a merge on it (Mike's release), so his co
   assert.ok(fs.existsSync(path.join(main, 'other.txt')) && fs.existsSync(path.join(main, 'more.txt')));
 });
 
+test('land: a commit that changes no file lands without running the check', async () => {
+  // Ville's fork, 21 Nov: an empty commit (a trailer only) waited for a full
+  // check that couldn't find anything.
+  const { main } = makeRepo();
+  const t = makeBranch(main);
+  sh(t.path, 'git commit -q --allow-empty -m "Ports: nothing changes"');
+  const c = capture();
+  assert.equal(await land({ ...t, check: 'echo ran > ../check-ran; exit 1' }, c.opts), 0, c.err.join('\n'));
+  assert.equal(c.out[0], 'No file changes from main, so it lands without the check.');
+  assert.equal(c.out[1], `Landed on main in ${main}:`);
+  assert.ok(!fs.existsSync(path.join(t.path, '..', 'check-ran')), 'the check never ran');
+  assert.equal(sh(main, 'git log -1 --format=%s main'), 'Ports: nothing changes');
+
+  // A commit that changes something still runs it.
+  commit(t.path, { 'runner/b.ts': '2\n' }, 'Add b');
+  const again = capture();
+  assert.equal(await land({ ...t, check: 'exit 3' }, again.opts), 1);
+  assert.match(again.err.join('\n'), /The check failed \(exit 3\)/);
+});
+
 test('land: a failing check stops it with the last lines of output, and main stays put', async () => {
   const { main } = makeRepo();
   const t = makeBranch(main);
@@ -336,7 +356,10 @@ test('tb land outside a thread goes by git: the thread/ branch, main\'s checkout
   assert.equal(elsewhere.out, `${main} is on main, not a thread/ branch. tb land runs in a thread's own worktree.\n`);
   const wrongFlag = await runTb(['land', '--json'], t.path, env);
   assert.equal(wrongFlag.code, 2);
-  assert.match(wrongFlag.out, /tb land doesn't take --json\. It takes --dry-run, --despite-red, --allow-format\./);
+  assert.match(wrongFlag.out, /tb land doesn't take --json\. It takes --dry-run, --allow-format, --full\./);
+  // Taken, though it does nothing since red stopped holding landings (24 Nov).
+  const despite = await runTb(['land', '--dry-run', '--despite-red'], t.path, env);
+  assert.equal(despite.code, 0, despite.out);
 });
 
 test('borrow-worktree.sh hands out a thread/ branch tb land takes, and --give-back deletes it and makes a spare', async () => {
@@ -603,4 +626,22 @@ test('tb land inside a thread asks the runner where its worktree is, wherever it
   } finally {
     await server.close();
   }
+});
+
+// tb land --full: the whole check, with none of check.sh's pass records read.
+test('tb land --full asks the check for a fresh run, and a plain one never does', async () => {
+  const { root, main } = makeRepo();
+  const t = makeBranch(main, 'f0000000');
+  commit(t.path, { 'f.txt': 'f\n' }, 'Add f');
+  const check = `echo "fresh=\${THREADBEAR_CHECK_FRESH:-}" >> '${root}/checks'`;
+  const before = process.env.THREADBEAR_CHECK_FRESH;
+  process.env.THREADBEAR_CHECK_FRESH = '1'; // left over from whatever started this tb
+  try {
+    assert.equal(await land({ ...t, check }, { ...capture().opts, dryRun: true }), 0);
+    assert.equal(await land({ ...t, check }, { ...capture().opts, full: true }), 0);
+  } finally {
+    if (before === undefined) delete process.env.THREADBEAR_CHECK_FRESH;
+    else process.env.THREADBEAR_CHECK_FRESH = before;
+  }
+  assert.deepEqual(fs.readFileSync(path.join(root, 'checks'), 'utf8').trim().split('\n'), ['fresh=', 'fresh=1']);
 });

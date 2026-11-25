@@ -85,10 +85,6 @@
       "text": "Thread panels have a close button at the end of their title bar",
       "credit": "Wayne Sutton"
     },
-    "Get emails to threads: an email can wake a thread, start one or wait in a pile for one (an experiment)",
-    "Start a thread on a cloud box of its own, picked in Runs on, with a cloud token for its login made from the Mac (an experiment)",
-    "A page an agent shows in its reply runs in a card, on the Mac and the iPhone, and Full size opens it in the side pane (an experiment)",
-    "A new thread's agent starts while you're still writing its first message, so the first reply comes sooner (an experiment)",
     "An Android build for F-Droid, with its own notifications that don't need Google"
   ],
   "changed": [
@@ -96,7 +92,7 @@
     "A long Claude thread woken after an hour or more compacts first, so the turn costs less, with a quiet line saying so",
     "A Codex update held back now starts a thread that works out why, and the Updates panel links to it",
     "Opening a kind of file Threadbear doesn't know asks \"Open in Tandem?\" (or whichever app), and Always remembers that app for that kind",
-    "Pull request tabs open sooner: they're read while you rest on the link, a copy from before shows at once, and grey shapes fill in while they load (an experiment)",
+    "Pull request tabs open sooner: they're read while you rest on the link, a copy from before shows at once, and grey shapes fill in while they load",
     {
       "text": "A project update waiting for your OK names the project",
       "credit": "Ian Macartney"

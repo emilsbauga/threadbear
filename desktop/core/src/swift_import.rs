@@ -157,11 +157,7 @@ pub fn settings(
             .filter(|z| *z != 100.)
             .map(|z| json!(z as i64)),
     );
-    for key in [
-        "collapsedSections",
-        "collapsedScheduleSections",
-        "projectsList.openRows",
-    ] {
+    for key in ["collapsedSections", "collapsedScheduleSections"] {
         put(key, get(key).and_then(Plist::as_strings).map(Value::from));
     }
     for key in [
@@ -318,10 +314,9 @@ const NOTE_ORDER: [&str; 12] = [
 pub fn setting_name(key: &str) -> &'static str {
     match key {
         "textZoomPercent" => "zoom",
-        "collapsedSections"
-        | "collapsedScheduleSections"
-        | "projectsList.openRows"
-        | "collapsedHighlights" => "folded sections",
+        "collapsedSections" | "collapsedScheduleSections" | "collapsedHighlights" => {
+            "folded sections"
+        }
         "inboxOrder" => "Inbox order",
         "appearance" => "appearance",
         "dockLayout" => "panel layout",

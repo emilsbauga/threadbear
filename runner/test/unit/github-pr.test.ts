@@ -199,3 +199,8 @@ test('prStates asks once per repo and keeps the answer a while', async () => {
   await prStates(urls.slice(0, 2), gh, 1000);
   assert.equal(calls.length, 2, 'cached');
 });
+
+test('without gh installed, a read says to install it rather than spawn ENOENT', async () => {
+  const gh = fakeGh([], { 'pr view': { ok: false, stdout: '', stderr: 'spawn gh ENOENT' } });
+  await assert.rejects(fetchPr({ owner: 'acme', repo: 'app', number: 72 }, gh), /needs the gh command line tool/);
+});

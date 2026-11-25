@@ -189,6 +189,17 @@ class PhoneBackend(private val transport: ConvexTransport, private val token: St
     suspend fun update(threadId: String, change: ThreadChange): String =
         command("phone:update", args("threadId" to JsonPrimitive(threadId), "change" to change.json))
 
+    /**
+     * Shares the thread by link, stops sharing it, or gives it a new link
+     * (backend API 8), as the website's Share button. `newLink` goes only
+     * when asked for.
+     */
+    suspend fun share(threadId: String, ask: ShareAsk): String {
+        val a = mutableListOf<Pair<String, JsonElement>>("threadId" to JsonPrimitive(threadId), "access" to JsonPrimitive(ask.access))
+        if (ask is ShareAsk.NewLink) a += "newLink" to JsonPrimitive(true)
+        return command("phone:share", args(*a.toTypedArray()))
+    }
+
     suspend fun create(text: String, runnerId: String? = null, cwd: String? = null): String {
         val a = mutableListOf<Pair<String, JsonElement>>("text" to JsonPrimitive(text))
         runnerId?.let { a += "runnerId" to JsonPrimitive(it) }

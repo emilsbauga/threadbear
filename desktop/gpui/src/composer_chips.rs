@@ -72,7 +72,7 @@ impl ChipData {
 }
 
 impl Composer {
-    /// The chips for the box's thread: `app.threads` (with `update_open`'s
+    /// The chips for the box's thread: `app.threads` (with `update_thread`'s
     /// guess) first, as it's what a click just changed, then the pane's copy.
     /// For the new-thread page's box, what the draft is set to.
     pub(crate) fn chip_data(&self, cx: &App) -> ChipData {
@@ -141,22 +141,21 @@ impl Composer {
         )
     }
 
-    /// `threads.update` for this box's thread, shown at once (`update_open`);
-    /// on the new-thread page's box, the draft's settings instead.
+    /// `threads.update` for this box's thread, shown at once (`update_thread_from_box`);
+    /// on the new-thread page's box, the draft's settings instead. The box's
+    /// own thread, never the main panel's: in a thread's own panel they
+    /// differ (23 Nov review).
     fn change_thread(
         &self,
         change: impl FnOnce(&mut ThreadSummary),
         params: serde_json::Value,
         cx: &mut App,
     ) {
-        let is_new = self.thread_id.is_none();
+        let thread = self.thread_id.clone();
         if let Some(app) = self.app.upgrade() {
-            app.update(cx, |app, cx| {
-                if is_new {
-                    app.change_new_draft(&params, cx);
-                } else {
-                    let _ = app.update_open(change, params, cx);
-                }
+            app.update(cx, |app, cx| match thread {
+                Some(id) => app.update_thread_from_box(&id, change, params, cx),
+                None => app.change_new_draft(&params, cx),
             });
         }
     }
@@ -387,8 +386,9 @@ impl Composer {
         out
     }
 
-    /// Picks files for "+" > Attach images or Markdown… (ComposerView.chooseImages).
-    fn attach_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Picks files for "+" > Attach images or Markdown… (ComposerView.chooseImages),
+    /// and for ⇧⌘A.
+    pub(crate) fn attach_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = crate::composer_media::choose_images(window, cx);
         cx.spawn_in(window, async move |this, cx| match paths.await {
             Ok(Some(paths)) => {

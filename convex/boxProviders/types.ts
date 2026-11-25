@@ -63,6 +63,13 @@ export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 // A provider's API said no. `status` 0: it couldn't be reached. Never
 // carries the API token: only the method, the path and the start of the body.
+// An image named by its manifest digest (`<registry>/<name>@sha256:<64 hex>`),
+// so the bytes a box boots can't change under the name: a tag (`:latest`,
+// `:<commit>`) is a mapping anyone who can push to the registry can move
+// (Daybreak 171, 23 Nov 2026). The only form a box is made from.
+export const PINNED_IMAGE = /^[a-z0-9.-]+(?::[0-9]{1,5})?\/[a-z0-9._/-]{1,200}@sha256:[0-9a-f]{64}$/;
+export const isPinnedImage = (image: string): boolean => PINNED_IMAGE.test(image);
+
 export class ProviderError extends Error {
   status: number;
   body: string;

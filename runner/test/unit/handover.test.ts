@@ -559,17 +559,6 @@ test('a handed-over thread from before `asked` learns it from its log', () => {
   assert.equal(b.runner.adopt(t.id)?.asked, 'busy one');
 });
 
-test('a handed-over thread from before `request` learns it from the start of its log', () => {
-  const h = makeHarness();
-  const t = create(h, 'busy one').thread;
-  h.runner.flush();
-  const rec = JSON.parse(fs.readFileSync(threadFile(h, t.id), 'utf8'));
-  delete rec.request;
-  fs.writeFileSync(threadFile(h, t.id), JSON.stringify(rec));
-  const b = primary(h, [t.id]);
-  assert.equal(b.runner.adopt(t.id)?.request, 'busy one');
-});
-
 test('Peers: the bearer header goes only to a draining runner whose own drain file says it predates the challenge', async () => {
   // docs/protocol/connection.md, "Before the challenge": the first handover onto a
   // release with the challenge is from one without it, which can't answer

@@ -3,7 +3,7 @@
 # what failed and the end of the log for each step that failed, and a
 # nonzero exit if any did.
 #
-#   ./check.sh [--quick | --runner | --app] [--all] [--e2e] [--shots DIR] [--local]
+#   ./check.sh [--quick | --runner | --app] [--all] [--fresh] [--e2e] [--shots DIR] [--local]
 #
 # With a check host set (THREADBEAR_CHECK_HOST, or "checkHost" in the
 # runner's runner.json, an ssh host such as "tinker-desk"; or "checkHosts",
@@ -19,7 +19,7 @@
 #                 desktop app's Rust tests and build (desktop/), and the
 #                 Swift Mac app's swift build and swift test, and BearDock's
 #                 tests, when they changed (below)
-#   --quick       runner typecheck and unit tests (about a minute), plus
+#   --quick       runner typecheck and unit tests, plus
 #                 the Swift Mac app's release build when it changed,
 #                 the desktop app's core and client tests when
 #                 desktop/ changed, the public site's build (site/)
@@ -34,7 +34,25 @@
 #                 check host can take it
 #   --app         the Swift app's swift build and swift test only, changed
 #                 or not
-#   --all         don't skip the Swift app, dock and deploy tests (below)
+#   --all         don't skip the Swift app, dock and deploy tests (below),
+#                 nor anything that passed before (next)
+#   --fresh       don't skip anything that passed before, and nothing more
+#   --no-records  neither read nor write pass records
+#
+# A step, or one of the runner's unit test files, that passed in the last
+# week with exactly the same inputs is skipped, and its ok line says when it
+# passed (scripts/check-cache.mjs). The inputs are what the files it reads
+# hold, so a pass counts in every worktree, after a rebase and after a
+# release comes in; Node, the step's tool (cargo, swift, npm), the lockfiles
+# and this file are in them too. A failed run records the test files that
+# passed, so the next runs just what failed and what changed. The records
+# are this machine's own: ~/Library/Caches/Threadbear/check-passes on a Mac,
+# ~/.cache/threadbear/check-passes elsewhere, ~/.cache/threadbear-check/passes
+# on a check host (THREADBEAR_CHECK_PASSES names another folder, or "off";
+# runner.json's "checkPasses": false turns them off). None are read on
+# GitHub or with --all, nor with --fresh (tb land --full,
+# THREADBEAR_CHECK_FRESH=1), which runs every step it otherwise would and
+# still records what passes.
 #
 # When up to 8 of the runner's unit test files fail, those run again on
 # their own, one at a time, and a pass then counts: the step's line lists
@@ -79,6 +97,11 @@
 #                 again. tb land uses it to find which landing of a group
 #                 broke the group's check (THREADBEAR_CHECK_ONLY is the same
 #                 thing, for a check command it can't add options to).
+#   --part linux|mac  just the steps a Linux host can run (LINUX_STEPS in
+#                 scripts/check-remote.sh), or just the rest, which need a
+#                 Mac. check-remote.sh splits a landing's check this way
+#                 across a Linux and a Mac check host, run at the same time;
+#                 the steps of the other part print nothing.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -90,10 +113,13 @@ QUICK=0
 RUNNER_ONLY=0
 APP_ONLY=0
 ALL=0
+FRESH=0
+NO_RECORDS=0
 E2E=0
 SHOTS=""
 LOCAL=0
 ONLY=""
+PART=""
 # tb land runs whatever command the repo's patch names as its check, so it
 # asks for --only through the environment; from here on it's the option, which
 # is what reaches a check host.
@@ -108,6 +134,11 @@ if [ "${THREADBEAR_CHECK_ALL:-}" = 1 ]; then
   set -- "$@" --all
 fi
 unset THREADBEAR_CHECK_ALL
+# And --fresh: tb land --full, the whole check again with no pass records.
+if [ "${THREADBEAR_CHECK_FRESH:-}" = 1 ]; then
+  set -- "$@" --fresh
+fi
+unset THREADBEAR_CHECK_FRESH
 ARGS=("$@")
 
 while [ $# -gt 0 ]; do
@@ -116,6 +147,8 @@ while [ $# -gt 0 ]; do
     --runner) QUICK=1; RUNNER_ONLY=1 ;;
     --app) APP_ONLY=1 ;;
     --all) ALL=1 ;;
+    --fresh) FRESH=1 ;;
+    --no-records) NO_RECORDS=1 ;;
     --e2e) E2E=1 ;;
     --local) LOCAL=1 ;;
     --shots)
@@ -125,6 +158,9 @@ while [ $# -gt 0 ]; do
     --only)
       [ $# -ge 2 ] && [ -n "$2" ] || { echo "--only needs the steps to run" >&2; exit 2; }
       ONLY="$2"
+      shift ;;
+    --part)
+      case "${2:-}" in linux|mac) PART="$2" ;; *) echo "--part takes linux or mac" >&2; exit 2 ;; esac
       shift ;;
     -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -151,6 +187,23 @@ plain() {
   local LC_ALL=C
   [[ "$1" =~ $2 ]]
 }
+# --part: which steps a Linux host runs is check-remote.sh's list, which
+# also decides which host a run can go to, so the two can't differ. A step
+# the list doesn't name is a Mac's, so a new one runs on a Mac until it's
+# added there.
+LINUX_STEPS=""
+if [ -n "$PART" ]; then
+  LINUX_STEPS="$(sed -n "s/^LINUX_STEPS='\(.*\)'\$/\1/p" "$ROOT/scripts/check-remote.sh" 2>/dev/null | head -1)"
+  [ -n "$LINUX_STEPS" ] || { echo "--part needs LINUX_STEPS from scripts/check-remote.sh, and it isn't there." >&2; exit 2; }
+fi
+# in_part <step>: whether the step is this run's to run or skip (always,
+# without --part). The steps that install packages are in both: they only
+# run when the packages are missing, and either part may need them.
+in_part() {
+  [ -n "$PART" ] || return 0
+  [ "${1% packages}" = "$1" ] || return 0
+  if plain "$1" "$LINUX_STEPS"; then [ "$PART" = linux ]; else [ "$PART" = mac ]; fi
+}
 # Step names and test file paths only: it's passed to a check host's shell
 # and its file names to node.
 ONLY_CHARS='^[A-Za-z0-9 ._/=;()-]*$'
@@ -162,6 +215,14 @@ fi
 # The check host: THREADBEAR_CHECK_HOST (set and empty means none), or
 # runner.json's checkHost. Read before the THREADBEAR_* names go below.
 RUNNER_JSON="${THREADBEAR_HOME:-$HOME/Library/Application Support/Threadbear}/runner.json"
+# Pass records turned off here (THREADBEAR_CHECK_PASSES=off, runner.json's
+# "checkPasses": false) are off on a check host too, which reads neither:
+# --no-records goes with the run (Gemini's review, 22 Nov 2026).
+if [ "$NO_RECORDS" = 0 ] && { [ "${THREADBEAR_CHECK_PASSES:-}" = off ] || { [ -x "$NODE" ] && [ -f "$RUNNER_JSON" ] && [ "$("$NODE" -e '
+    try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).checkPasses === false) } catch {}' "$RUNNER_JSON")" = true ]; }; }; then
+  NO_RECORDS=1
+  ARGS+=(--no-records)
+fi
 if [ "$LOCAL" = 0 ] && [ "$E2E" = 0 ]; then
   configured_hosts() {
     [ -x "$NODE" ] && [ -f "$RUNNER_JSON" ] && "$NODE" -e '
@@ -235,13 +296,17 @@ fi
 export PATH="$(dirname "$NODE"):$PATH"
 export THREADBEAR_NODE="$NODE"
 FALLBACK="${THREADBEAR_CHECK_FALLBACK:-}"
+# For the pass records (below), before these go: the data dir a run was
+# given, and the records folder it names, which no test may inherit.
+HOME_GIVEN="${THREADBEAR_HOME:-}"
+PASSES_GIVEN="${THREADBEAR_CHECK_PASSES:-}"
 # Inside a Threadbear thread these name the live runner and the thread.
 # Every test makes its own temp data dir; none may find the real one.
 # THREADBEAR_CHECK_BUSY_EXIT is only for sending this run to a host: the
 # check-remote tests run under it would otherwise exit with it (Codex, 9 Nov).
 unset THREADBEAR_HOME THREADBEAR_DATA_DIR THREADBEAR_PORT THREADBEAR_URL THREADBEAR_LOG \
   THREADBEAR_THREAD_ID THREADBEAR_THREAD_KEY THREADBEAR_RUNNER_VERSION THREADBEAR_RUNNER_HOME THREADBEAR_CHECK_BUSY_EXIT THREADBEAR_CHECK_FALLBACK \
-  THREADBEAR_CHECK_PREFER THREADBEAR_CHECK_GROUP THREADBEAR_CHECK_ONLY THREADBEAR_CHECK_HOST_ONLY
+  THREADBEAR_CHECK_PREFER THREADBEAR_CHECK_GROUP THREADBEAR_CHECK_ONLY THREADBEAR_CHECK_HOST_ONLY THREADBEAR_CHECK_PASSES
 # And their old names, which the runner and tb would otherwise take for these.
 for v in $(compgen -e | grep '^THREADBARE_' || true); do unset "$v"; done
 # The jobs the tests' runners start get no lower than the check itself
@@ -316,6 +381,7 @@ swift_needed() {
 IOS_NEEDS="^ios/|^shared/cases/$(links_out ios '.')"
 
 skip() {
+  in_part "$1" || return 0
   printf 'skip  %-20s (%s; --all runs it)\n' "$1" "$2"
 }
 
@@ -328,6 +394,7 @@ if [ -z "$XCODE_DIR" ]; then XCODE_DIR="$(xcode-select -p 2>/dev/null || true)";
 NO_XCODE=""
 if [ -z "$XCODE_DIR" ] || [ "${XCODE_DIR%/CommandLineTools}" != "$XCODE_DIR" ]; then NO_XCODE=1; fi
 swift_test_step() {
+  in_part "$1" || return 0
   if [ -n "$NO_XCODE" ]; then
     printf 'skip  %-20s (needs Xcode; only the Command Line Tools are here)\n' "$1"
   else
@@ -338,6 +405,71 @@ swift_test_step() {
 TMP_ROOT="${TMPDIR:-/tmp}"
 LOGS="$(mktemp -d "${TMP_ROOT%/}/threadbear-check.XXXXXX")"
 FAILED=""
+
+# Pass records (scripts/check-cache.mjs; the comment at the top). Only for a
+# real check's runs: a test's run of this script has a THREADBEAR_HOME or a
+# HOME of its own (clean-env.ts) and names its own folder if it wants one,
+# and a GitHub run must have run everything it says passed.
+PASSES=""
+PASSES_READ=1
+[ "$ALL" = 0 ] || PASSES_READ=0
+[ "$FRESH" = 0 ] || PASSES_READ=0
+if [ -n "${GITHUB_ACTIONS:-}" ] || [ "$PASSES_GIVEN" = off ] || [ ! -f "$ROOT/scripts/check-cache.mjs" ]; then
+  :
+elif [ -n "$PASSES_GIVEN" ]; then
+  PASSES="$PASSES_GIVEN"
+elif [ -z "$HOME_GIVEN" ] || [ "$HOME_GIVEN" = "$HOME/Library/Application Support/Threadbear" ]; then
+  # (A thread's tb land has THREADBEAR_HOME set to the real one.)
+  if [ "$(uname -s)" = Darwin ]; then
+    PASSES="$HOME/Library/Caches/Threadbear/check-passes"
+  else
+    PASSES="${XDG_CACHE_HOME:-$HOME/.cache}/threadbear/check-passes"
+  fi
+fi
+[ "$NO_RECORDS" = 0 ] || PASSES=""
+if [ -n "$PASSES" ]; then
+  # What every file of this checkout holds, once: each key is made from it.
+  if mkdir -p "$PASSES/steps" "$PASSES/tests" && "$NODE" "$ROOT/scripts/check-cache.mjs" tree "$ROOT" "$LOGS/tree" 2>/dev/null; then
+    # When and on which branch, for the line a skip prints. A check host's
+    # copy is always on main, so there it's when alone.
+    PASSES_BY="$(date '+%d %b %H:%M')"
+    if [ -z "${THREADBEAR_CHECK_CHANGED_FILE:-}" ]; then
+      PASSES_BY="$PASSES_BY on $(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "a copy")"
+    fi
+    # Past a week a record no longer counts (check-cache.mjs, RECORD_DAYS).
+    find "$PASSES/steps" "$PASSES/tests" -type f -mtime +7 -delete 2>/dev/null
+  else
+    PASSES=""
+  fi
+fi
+# step_key <name> <command...>: the step's key, or nothing (never skipped).
+# STEP_TREE names another tree to make it from (still_same).
+step_key() {
+  [ -n "$PASSES" ] || return 0
+  "$NODE" "$ROOT/scripts/check-cache.mjs" step "${STEP_TREE:-$LOGS/tree}" "$ROOT" "$@" 2>/dev/null
+}
+# now_tree: what the checkout holds now, in $LOGS/tree.now. A pass is only
+# recorded under the key it ran with when the files are still what that key
+# was made from: a test or step that rewrote one of its inputs
+# (UPDATE_CONTEXT_BUDGET=1) passed on the new files, not the old (Codex's
+# review, 22 Nov 2026).
+now_tree() {
+  "$NODE" "$ROOT/scripts/check-cache.mjs" tree "$ROOT" "$LOGS/tree.now" 2>/dev/null
+}
+# passed_before <name> <key>: says so and succeeds when the key passed in
+# the last week.
+passed_before() {
+  local rec="$PASSES/steps/$2"
+  [ -n "$2" ] && [ "$PASSES_READ" = 1 ] && [ -f "$rec" ] && [ -n "$(find "$rec" -mtime -7 2>/dev/null)" ] || return 1
+  # ok, not skip: it passed, and the runner's updater counts a landing's
+  # passing steps (update.ts, passedLandCheck).
+  printf 'ok    %-20s %4ss  (skipped: passed with the same inputs %s)\n' "$1" 0 "$(head -n 1 "$rec")"
+}
+# record_pass steps|tests <key>
+record_pass() {
+  [ -n "$PASSES" ] && [ -n "$2" ] || return 0
+  printf '%s\n' "$PASSES_BY" >"$PASSES/$1/$2.$$" && mv "$PASSES/$1/$2.$$" "$PASSES/$1/$2"
+}
 
 # only_entry <step>: --only's entry for it ("name" or "name=files"), failing
 # when --only was given and doesn't name it. (Loops, not a case: step names
@@ -368,6 +500,8 @@ ran_asked() {
 # asked for need them.
 left_out() {
   [ "${1% packages}" = "$1" ] || return 1
+  # The other part's step: its own run says how it went.
+  in_part "$1" || return 0
   only_entry "$1" >/dev/null && return 1
   printf 'skip  %-20s (--only left it out)\n' "$1"
 }
@@ -378,10 +512,16 @@ step() {
   if left_out "$name"; then return; fi
   ran_asked "$name"
   shift 2
+  local key
+  key="$(step_key "$name" "$@")"
+  if passed_before "$name" "$key"; then return; fi
   local log="$LOGS/$(printf '%s' "$name" | tr -c 'a-zA-Z0-9' '-').log"
   local start=$SECONDS
   if (cd "$dir" && "$@") >"$log" 2>&1; then
     printf 'ok    %-20s %4ss\n' "$name" "$((SECONDS - start))"
+    if [ -n "$key" ] && now_tree && [ "$(STEP_TREE="$LOGS/tree.now" step_key "$name" "$@")" = "$key" ]; then
+      record_pass steps "$key"
+    fi
   else
     printf 'FAIL  %-20s %4ss  %s\n' "$name" "$((SECONDS - start))" "$log"
     FAILED="$FAILED$name|$log
@@ -410,6 +550,32 @@ LIMITED=("$NODE" "$ROOT/scripts/limit-step.mjs"
 # test that fails on its own as well still fails the step.
 RERUN_MAX_FILES=8
 UNIT_FAILED_FILES=""
+# On GitHub the job's log is all there is to watch, and with the tests'
+# output in a file this step printed nothing until it ended: the Mac jobs
+# were stopped at their 30 minutes 18 runs in a row (22 to 23 Nov 2026)
+# and no log said which file they were on. So there the process that runs
+# the files says each minute which are still going, and the slowest at the
+# end (test/helpers/progress-reporter.mjs), on its stderr, which unit_tests
+# sends to this script's output rather than to the log (the test files' own
+# stderr is piped to that process, so it still goes to the log). Only where
+# the reporter is: a test's stand-in checkout has none, and a reporter node
+# can't load fails the run.
+UNIT_PROGRESS=()
+if [ -n "${GITHUB_ACTIONS:-}" ] && [ -f "$ROOT/runner/test/helpers/progress-reporter.mjs" ]; then
+  UNIT_PROGRESS=(--test-reporter=./test/helpers/progress-reporter.mjs --test-reporter-destination=stderr)
+fi
+# unit_tests <log> <command...>: runs it in runner/ with its output in <log>,
+# and its stderr too unless that's the progress above (through fd 3).
+unit_tests() {
+  local out="$1" code
+  shift
+  : >"$out"
+  if [ "${#UNIT_PROGRESS[@]}" -gt 0 ]; then exec 3>&1; else exec 3>>"$out"; fi
+  (cd "$ROOT/runner" && "$@") >>"$out" 2>&3 3>&-
+  code=$?
+  exec 3>&-
+  return "$code"
+}
 runner_unit_tests() {
   local name="runner unit tests" dir="$ROOT/runner"
   local log="$LOGS/runner-unit-tests.log" list="$LOGS/runner-unit-tests.failed"
@@ -437,13 +603,68 @@ runner_unit_tests() {
       return
     fi
   fi
-  local run=(node --import=./test/helpers/clean-env.ts --test --test-timeout=300000 --test-force-exit --test-reporter=spec)
-  if (cd "$dir" && "${run[@]}" --test-reporter-destination=stdout \
+  # Test files that passed before with what they read now (their imports
+  # and the files they and the scripts they run name, scripts/check-cache.mjs)
+  # are left out, and the ones that run are recorded as they pass.
+  local keys="$LOGS/runner-unit-tests.keys" passed="$LOGS/runner-unit-tests.passed" note="" record=()
+  if [ -n "$PASSES" ]; then
+    local listed=() ran=() verdict key skipped=0
+    if [ "${targets[0]}" = "test/unit/**/*.test.ts" ]; then
+      while IFS= read -r f; do listed+=("$f"); done < <(cd "$dir" && find test/unit -name '*.test.ts' -type f | LC_ALL=C sort)
+    else
+      listed=("${targets[@]}")
+    fi
+    # One line for each file, or none of it counts (and everything runs).
+    if (cd "$dir" && "$NODE" "$ROOT/scripts/check-cache.mjs" tests "$LOGS/tree" "$ROOT" "$PASSES" "${listed[@]}") >"$keys.all" 2>/dev/null \
+      && [ "$(grep -c . "$keys.all")" = "${#listed[@]}" ]; then
+      : >"$keys"
+      while IFS=' ' read -r verdict f key _; do
+        if [ "$verdict" = skip ] && [ "$PASSES_READ" = 1 ]; then
+          skipped=$((skipped + 1))
+        else
+          ran+=("$f")
+          printf '%s %s\n' "$f" "$key" >>"$keys"
+        fi
+      done <"$keys.all"
+      if [ "${#ran[@]}" = 0 ]; then
+        printf 'ok    %-20s %4ss  (skipped: all %s test files passed with what they read now; --fresh runs them)\n' "$name" "$((SECONDS - start))" "$skipped"
+        return
+      fi
+      targets=("${ran[@]}")
+      record=(--test-reporter=./test/helpers/passed-files-reporter.mjs --test-reporter-destination="$passed")
+      if [ "$skipped" -gt 0 ]; then
+        note="  (skipped $skipped test files that passed with what they read now)"
+        # Which ran, when that's few enough to read.
+        [ "${#ran[@]}" -gt 20 ] || note="$note
+        ran: ${ran[*]}"
+      fi
+    else
+      rm -f "$keys"
+    fi
+  fi
+  # As node --test runs them, through test/helpers/run-test-files.mjs, which
+  # starts the longest first by the times it keeps beside the pass records:
+  # node starts them in order of name, and the run waited on long files late
+  # in the alphabet (24 Nov 2026). package.json's test script is the same
+  # (update.test.ts holds them together). A test's stand-in checkout without
+  # it runs node --test, as before.
+  local run=(node ./test/helpers/run-test-files.mjs --import=./test/helpers/clean-env.ts --test-timeout=300000 --test-force-exit --test-reporter=spec)
+  local times=()
+  if [ ! -f "$dir/test/helpers/run-test-files.mjs" ]; then
+    run=(node --import=./test/helpers/clean-env.ts --test --test-timeout=300000 --test-force-exit --test-reporter=spec)
+  elif [ -n "$PASSES" ]; then
+    times=(--times="$PASSES/test-times")
+  fi
+  if unit_tests "$log" "${run[@]}" --test-reporter-destination=stdout \
       --test-reporter=./test/helpers/failed-files-reporter.mjs --test-reporter-destination="$list" \
-      "${targets[@]}") >"$log" 2>&1; then
-    printf 'ok    %-20s %4ss\n' "$name" "$((SECONDS - start))"
+      ${record[@]+"${record[@]}"} ${UNIT_PROGRESS[@]+"${UNIT_PROGRESS[@]}"} ${times[@]+"${times[@]}"} "${targets[@]}"; then
+    printf 'ok    %-20s %4ss%s\n' "$name" "$((SECONDS - start))" "$note"
+    record_test_passes "$passed"
     return
   fi
+  # Each file that passed counts, though the step failed: the next check
+  # runs just the ones that failed (and whatever changed since).
+  record_test_passes "$passed"
   local files=()
   [ -f "$list" ] && while IFS= read -r f; do [ -n "$f" ] && files+=("$f"); done <"$list"
   # For the --only line a failed run ends with: the files, when they're few
@@ -462,8 +683,14 @@ runner_unit_tests() {
   fi
   if [ "${#files[@]}" -ge 1 ] && [ "${#files[@]}" -le "$RERUN_MAX_FILES" ]; then
     local relog="$LOGS/runner-unit-tests-again.log"
-    if (cd "$dir" && "${run[@]}" --test-concurrency=1 "${files[@]}") >"$relog" 2>&1; then
+    # (With the pass reporter too: the files that passed on their own, no
+    # test of theirs skipped, are the ones recorded. Codex's review.)
+    local again=()
+    [ "${#record[@]}" = 0 ] || again=(--test-reporter=./test/helpers/passed-files-reporter.mjs --test-reporter-destination="$passed.again")
+    if unit_tests "$relog" "${run[@]}" --test-reporter-destination=stdout --test-concurrency=1 \
+        ${again[@]+"${again[@]}"} ${UNIT_PROGRESS[@]+"${UNIT_PROGRESS[@]}"} "${files[@]}"; then
       printf 'ok    %-20s %4ss  (passed on a second run of the files that failed:)\n' "$name" "$((SECONDS - start))"
+      record_test_passes "$passed.again"
       # The tests that failed the first time: the spec reporter's ✖ lines,
       # once each (its summary at the end repeats them).
       sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$log" | grep -E '^[[:space:]]*✖ ' | grep -v '✖ failing tests:' | sed -E 's/^[[:space:]]*/        /' | sort -u | head -n 12
@@ -488,6 +715,8 @@ if [ "$RUNNER_ONLY" = 1 ]; then
   :
 elif [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" != arm64 ]; then
   printf 'skip  %-20s (%s)\n' "iphone kit tests" "Convex's Swift library is Apple silicon only"
+elif ! in_part "iphone kit tests"; then
+  :
 elif needed "$IOS_NEEDS"; then
   # The kit measures per-update latency. Run its cases one at a time so
   # unrelated tests do not consume that measurement's CPU and actor time.
@@ -495,6 +724,24 @@ elif needed "$IOS_NEEDS"; then
 else
   skip "iphone kit tests" "nothing in ios/ changed"
 fi
+# record_test_passes <file>: records the test files it lists (whole paths, as
+# the reporters write them) as passed, with the keys worked out above.
+# Each only when its key made from the files as they are now is the same
+# (now_tree, above).
+record_test_passes() {
+  local keys="$LOGS/runner-unit-tests.keys" dir="$ROOT/runner" f rel real key files=()
+  [ -n "$PASSES" ] && [ -s "$1" ] && [ -f "$keys" ] || return 0
+  real="$(cd "$dir" && pwd -P)"
+  while IFS= read -r f; do
+    rel="${f#"$dir"/}"
+    files+=("${rel#"$real"/}")
+  done <"$1"
+  now_tree && (cd "$dir" && "$NODE" "$ROOT/scripts/check-cache.mjs" tests "$LOGS/tree.now" "$ROOT" "$LOGS/no-records" "${files[@]}") >"$keys.now" 2>/dev/null || return 0
+  for rel in "${files[@]}"; do
+    key="$(awk -v f="$rel" '$1 == f { print $2; exit }' "$keys")"
+    [ -n "$key" ] && [ "$(awk -v f="$rel" '$2 == f { print $3; exit }' "$keys.now")" = "$key" ] && record_pass tests "$key"
+  done
+}
 
 if [ "$APP_ONLY" = 0 ]; then
   if [ ! -d "$ROOT/runner/node_modules" ]; then
@@ -521,6 +768,7 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
   # Old problems fixed by hand don't fail it (--pass-on-unpruned-suppressions):
   # `npx eslint . --prune-suppressions` tidies the file whenever.
   # grep to /dev/null, not -q (see swift_needed).
+  lint_before="$FAILED"
   if [ "$ALL" = 1 ] || [ -z "$CHANGED" ] \
     || printf '%s\n' "$CHANGED" | grep -E '^(eslint\.config\.mjs|eslint-suppressions\.json|package(-lock)?\.json)$' >/dev/null; then
     # Node's own heap limit (about 2 GB) is under what the whole lint takes,
@@ -536,6 +784,12 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
     else
       skip "lint" "no code changed"
     fi
+  fi
+  # One problem over a file's count in eslint-suppressions.json brings back
+  # every old one of that rule in the file, so a single new `any` read as
+  # dozens (Ville, 22 Nov). The log says so.
+  if [ "$FAILED" != "$lint_before" ] && [ -f "$LOGS/lint.log" ]; then
+    printf '\nA file over its count in eslint-suppressions.json shows every old problem of that rule in it, not just the new one.\nFix the one this change added (git diff shows which); the rest were there before. Never hand-edit the file: npx eslint <file> --suppress-rule <rule> records one that must stay.\n' >>"$LOGS/lint.log"
   fi
   # The public site (site/) makes its docs pages from docs/guide.md (and the
   # experiments list from docs/experiments.md), and its build refuses some
@@ -616,6 +870,12 @@ cargo_step() {
   # mustn't write down these files as what the shared target was built from.
   if left_out "$name"; then return; fi
   shift
+  # A pass with these inputs: nothing to build, and so nothing to write
+  # down as what the shared target was built from.
+  if [ -n "${CARGO:-}" ] && passed_before "$name" "$(step_key "$name" "${LIMITED[@]}" "$CARGO" "$@")"; then
+    ran_asked "$name"
+    return
+  fi
   if [ -z "$CARGO" ]; then
     if [ -n "${THREADBEAR_CHECK_CHANGED_FILE:-}" ]; then
       # On a check host a skip would let a desktop change land unchecked.
@@ -646,13 +906,38 @@ cargo_step() {
   step "$name" "$ROOT/desktop" "${LIMITED[@]}" "$CARGO" "$@"
   [ -z "$record" ] || [ "$FAILED" != "$before" ] || mv "$sums" "$record"
 }
+# The cargo for desktop/: the first on the PATH, unless it says it's another
+# version than rust-toolchain.toml pins and rustup's is here. Homebrew's
+# cargo ignores the pin, and its newer clippy failed code nobody had changed
+# (Ville, 22 Nov). Only a cargo that names another version is passed over,
+# so a stand-in that names none (the tests' fakes) is still used.
+pick_cargo() {
+  local c v pin r=""
+  c="$(command -v cargo || true)"
+  [ -n "$c" ] || [ ! -x "$HOME/.cargo/bin/cargo" ] || c="$HOME/.cargo/bin/cargo"
+  [ -n "$c" ] || return 0
+  pin="$(sed -n 's/^channel *= *"\([0-9][0-9.]*\)".*/\1/p' "$ROOT/rust-toolchain.toml" 2>/dev/null)"
+  v="$(cd "$ROOT/desktop" 2>/dev/null && "$c" --version 2>/dev/null | sed -n 's/^cargo \([0-9][0-9.]*\).*/\1/p')"
+  if [ -n "$pin" ] && [ -n "$v" ] && [ "$v" != "$pin" ]; then
+    if [ -x "$HOME/.cargo/bin/rustup" ] && [ -x "$HOME/.cargo/bin/cargo" ]; then
+      r="$HOME/.cargo/bin/cargo"
+    else
+      r="$(command -v rustup || true)"
+      # Homebrew's rustup links into bin/ and keeps its cargo beside the real one.
+      [ -z "$r" ] || r="$(realpath "$r" 2>/dev/null || echo "$r")"
+      if [ -n "$r" ] && [ -x "${r%/*}/cargo" ]; then r="${r%/*}/cargo"; else r=""; fi
+    fi
+    if [ -n "$r" ]; then echo "$r"; return; fi
+    printf 'note  %s is cargo %s, not the %s rust-toolchain.toml pins, and there is no rustup: rustup.rs installs it\n' "$c" "$v" "$pin" >&2
+  fi
+  echo "$c"
+}
 # desktop/'s Rust as cargo fmt writes it (desktop/rustfmt.toml, with the
 # rustfmt of rust-toolchain.toml), --quick included: no build, a few seconds,
 # so it runs wherever this does, this Mac included. The log ends with the fix.
-if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
+if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ] && in_part "desktop format"; then
   if needed '^desktop/|^rust-toolchain\.toml$'; then
-    FMT_CARGO="$(command -v cargo || true)"
-    [ -n "$FMT_CARGO" ] || [ ! -x "$HOME/.cargo/bin/cargo" ] || FMT_CARGO="$HOME/.cargo/bin/cargo"
+    FMT_CARGO="$(pick_cargo)"
     if [ -n "$FMT_CARGO" ]; then
       step "desktop format" "$ROOT/desktop" bash -c '"$1" fmt --all -- --check && exit 0
         printf "\ndesktop/ is not formatted as cargo fmt writes it (the diff is above).\nFix: cd desktop && cargo fmt --all, then commit what it changed.\n"
@@ -673,6 +958,10 @@ fi
 if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
   if ! needed "$DESKTOP_NEEDS"; then
     skip "desktop core tests" "nothing desktop/ reads changed"
+  elif ! in_part "desktop core tests" && { [ "$PART" != mac ] || [ "$QUICK" = 0 ] || [ "$(uname -s)" != Darwin ] || [ "$FALLBACK" = 1 ] || [ "$E2E" = 1 ]; }; then
+    # The other part's: nothing here builds Rust (but the Mac part's macOS
+    # check of the app, below, on a check host).
+    :
   elif [ "$FALLBACK" = 1 ] || { [ "$E2E" = 1 ] && [ "$LOCAL" = 0 ]; }; then
     # This is the Mac someone's working on (no check host could take the run,
     # or --e2e, which runs here for the claude login), and Rust builds stay
@@ -691,8 +980,24 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
       printf 'skip  %-20s (%s)\n' "desktop core tests" "$why"
     fi
   else
-    CARGO="$(command -v cargo || true)"
-    [ -n "$CARGO" ] || [ ! -x "$HOME/.cargo/bin/cargo" ] || CARGO="$HOME/.cargo/bin/cargo"
+    CARGO="$(pick_cargo)"
+    # On a Mac with no check host (anyone else's copy), each worktree built
+    # desktop/ from cold in a target of its own: minutes a check and gigabytes
+    # a worktree (Ville, 21 Nov). So these go through the shared targets a
+    # check host's builds use (desktop/scripts/shared-cargo/cargo says how and
+    # why it copies first): one warm target in ~/.cache/threadbear-check, the
+    # checks taking turns. Not on a check host, whose runs set their own.
+    if [ -n "$CARGO" ] && [ -z "${THREADBEAR_CHECK_CHANGED_FILE:-}" ] && [ -z "${THREADBEAR_SHARED_CARGO_BASE:-}" ] \
+      && [ -x "$ROOT/desktop/scripts/shared-cargo/cargo" ]; then
+      export THREADBEAR_SHARED_CARGO_BASE="${XDG_CACHE_HOME:-$HOME/.cache}/threadbear-check/local-builds"
+      export THREADBEAR_SHARED_CARGO_SRC="$ROOT" THREADBEAR_SHARED_CARGO_KEY="${ROOT##*/}"
+      # The wrapper runs this one, not whichever cargo the PATH finds first.
+      export THREADBEAR_SHARED_CARGO_REAL="$CARGO"
+      # After the pinned node, not before it: cargo's folder can hold
+      # another node (Homebrew's, the system's).
+      export PATH="$PATH:${CARGO%/*}"
+      CARGO="$ROOT/desktop/scripts/shared-cargo/cargo"
+    fi
     # The client's tests start the mock runner, which needs its packages.
     if [ -n "$CARGO" ] && [ ! -d "$ROOT/mock-runner/node_modules" ]; then
       step "mock runner packages" "$ROOT/mock-runner" npm ci --no-audit --no-fund
@@ -725,6 +1030,24 @@ if [ "$APP_ONLY" = 0 ] && [ "$RUNNER_ONLY" = 0 ]; then
       # here rather than in self-update. Two forks' updates were stuck on
       # just that (emilsbauga's and TeeLusk's, 14 to 16 Nov).
       cargo_step "desktop app check (as installed)" check --locked -p threadbear-gpui --features frame-stats
+      # Those two run on the Linux host when a landing's check is split
+      # (--part, scripts/check-remote.sh), which builds none of the app's
+      # macOS code: its #[cfg(target_os = "macos")] Rust and the Objective-C
+      # and Swift shims desktop/gpui/build.rs compiles. So the Mac half
+      # checks both of those on macOS too (Codex's reviews), off the Linux
+      # half's critical path: the Mac half is short. Without --part, a run
+      # on a Mac has them in the two above already; --only naming them runs
+      # them, as tb land does to find who broke one.
+      if [ "$(uname -s)" = Darwin ]; then
+        for name in "desktop macos check" "desktop macos check as installed"; do
+          [ "$PART" = mac ] || { [ -n "$ONLY" ] && only_entry "$name" >/dev/null; } || continue
+          if [ "$name" = "desktop macos check" ]; then
+            cargo_step "$name" check --locked -p threadbear-gpui --features automation --all-targets
+          else
+            cargo_step "$name" check --locked -p threadbear-gpui --features frame-stats
+          fi
+        done
+      fi
     fi
     [ "$QUICK" = 1 ] || cargo_step "desktop build" check --locked --workspace --all-targets
   fi

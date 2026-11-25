@@ -20,6 +20,9 @@ export type Command<P> = {
   // `again` lets a composer send its next message once the last is queued.
   run: (send: () => Promise<Id<'commands'>>, payload: P, opts?: { again?: boolean }) => Promise<void>;
   dismiss: () => void;
+  // What it acted on ended by itself (Stop's turn is over): back to idle,
+  // unless it failed, whose note stays to be read.
+  over: () => void;
   // An earlier message a composer sent before this one that failed later,
   // and its Dismiss. Its draft has gone to onFailed too.
   late?: string;
@@ -39,8 +42,9 @@ const RECHECK_MS = 250;
 // said so later, with what was sent, to put back; `queued` says whether the
 // backend had taken it (and so onQueued ran) first.
 // keepDone: stay done rather than settling back to idle (a reply button
-// stays Pressed, with its thread to open).
-export function useCommand<P = undefined>(token: string, handlers: { onQueued?: (payload: P) => void; onFailed?: (error: string, payload: P, queued: boolean) => void; keepDone?: boolean } = {}): Command<P> {
+// stays Pressed, with its thread to open). settleMs: how long done stays
+// locked first (Stop holds until its turn ends, `over`, or STOP_HOLD_MS).
+export function useCommand<P = undefined>(token: string, handlers: { onQueued?: (payload: P) => void; onFailed?: (error: string, payload: P, queued: boolean) => void; keepDone?: boolean; settleMs?: number } = {}): Command<P> {
   // The machine's state for the handlers (a double click lands before React
   // renders again), and the same for rendering.
   const now = useRef(idle<P>());
@@ -97,11 +101,12 @@ export function useCommand<P = undefined>(token: string, handlers: { onQueued?: 
 
   // Done settles back to idle a moment later.
   const keepDone = handlers.keepDone === true;
+  const settleMs = handlers.settleMs ?? SETTLE_MS;
   useEffect(() => {
     if (state.kind !== 'done' || keepDone) return;
-    const t = setTimeout(() => move({ kind: 'settle' }), SETTLE_MS);
+    const t = setTimeout(() => move({ kind: 'settle' }), settleMs);
     return () => clearTimeout(t);
-  }, [state, keepDone, move]);
+  }, [state, keepDone, settleMs, move]);
 
   const run = useCallback(
     async (send: () => Promise<Id<'commands'>>, payload: P, opts?: { again?: boolean }) => {
@@ -125,9 +130,10 @@ export function useCommand<P = undefined>(token: string, handlers: { onQueued?: 
     [move],
   );
   const dismiss = useCallback(() => void move({ kind: 'dismiss' }), [move]);
+  const over = useCallback(() => void move({ kind: 'over' }), [move]);
   const clearLate = useCallback(() => setLate(undefined), []);
   const watch = earlier.map((e) => <Earlier key={e.id} token={token} id={e.id} onEnd={ended} />);
-  return { state, busy: locked(state), spinning: state.kind === 'sending' || state.kind === 'waiting', run, dismiss, late, clearLate, watch };
+  return { state, busy: locked(state), spinning: state.kind === 'sending' || state.kind === 'waiting', run, dismiss, over, late, clearLate, watch };
 }
 
 // One earlier message, followed until its runner says how it went.

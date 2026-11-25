@@ -2443,6 +2443,16 @@ impl Interactivity {
                             } else {
                                 None
                             };
+                            // Before the window's tooltip check, which runs
+                            // after every element's prepaint.
+                            if let (Some(hitbox), Some(source_bounds)) = (
+                                hitbox.as_ref(),
+                                element_state
+                                    .as_ref()
+                                    .and_then(|s| s.tooltip_source_bounds.as_ref()),
+                            ) {
+                                source_bounds.set(hitbox.bounds);
+                            }
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
@@ -3264,13 +3274,19 @@ impl Interactivity {
                     Some(((tooltip_builder.build)(window, cx), tooltip_is_hoverable))
                 });
                 // Use bounds instead of testing hitbox since this is called during prepaint.
+                // The element's bounds as of this frame's prepaint, not this paint's copy:
+                // the show task and the tooltip keep this closure across frames.
+                let source_bounds = element_state
+                    .tooltip_source_bounds
+                    .get_or_insert_with(Default::default)
+                    .clone();
+                source_bounds.set(hitbox.bounds);
                 let check_is_hovered_during_prepaint = Rc::new({
                     let pending_mouse_down = pending_mouse_down.clone();
-                    let source_bounds = hitbox.bounds;
                     move |window: &Window| {
                         !window.last_input_was_keyboard()
                             && pending_mouse_down.borrow().is_none()
-                            && source_bounds.contains(&window.mouse_position())
+                            && source_bounds.get().contains(&window.mouse_position())
                     }
                 });
                 let check_is_hovered = Rc::new({
@@ -3685,6 +3701,12 @@ pub struct InteractiveElementState {
     ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
     long_press_tooltip_active: Option<Rc<Cell<bool>>>,
+    /// Where the element with a tooltip is now, kept up to date at every
+    /// prepaint, for the tooltip's own check that the pointer is still over
+    /// it. A copy taken when the pointer arrived went stale when a click
+    /// moved the element (a row opening as its list follows the tail), and
+    /// the tooltip came up over whatever was under the pointer then (23 Nov).
+    tooltip_source_bounds: Option<Rc<Cell<Bounds<Pixels>>>>,
 }
 
 /// Whether or not the element or a group that contains it is clicked by the mouse.
@@ -3950,6 +3972,16 @@ fn handle_tooltip_mouse_move(
                         return;
                     };
                     cx.update(|window, cx| {
+                        // Only if the pointer's still over the element where
+                        // it is now: a click that moved it away (a row
+                        // opening) must not bring its tooltip up over what's
+                        // under the pointer instead (23 Nov).
+                        if !check_is_hovered_during_prepaint(window) {
+                            // As show_tooltip does, this drops the
+                            // WaitingForShow that owns this task.
+                            active_tooltip.borrow_mut().take();
+                            return;
+                        }
                         show_tooltip(
                             &active_tooltip,
                             &build_tooltip,

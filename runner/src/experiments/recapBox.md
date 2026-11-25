@@ -13,7 +13,7 @@ When you open a thread that hasn't done anything for 12 hours or more, a box abo
 
 ## Lives in
 
-`recapShowing` and `recapText` in `runner/src/runner.ts`, `setBrief` in `runner/src/runner/titles.ts`, the `purpose` field in `runner/src/librarian.ts`; `recap` on a thread's row (`runner/src/sync.ts`, `runner/src/thread-index.ts`, `convex/schema.ts`, `convex/sync.ts`); the box itself in `app/Sources/Threadbear/Views/RecapBox.swift`, `ios/Threadbear/RecapBox.swift` and `web/src/App.tsx`; the shared rule in `app/Sources/ThreadbearCore/Threads/Recap.swift`, `ios/ThreadbearKit/Sources/ThreadbearKit/Recap.swift` and `web/src/view-logic.ts`.
+`recapShowing` in `runner/src/runner.ts`, `recapText` in `runner/src/runner/messages.ts`, `setBrief` in `runner/src/runner/titles.ts`, the `purpose` field in `runner/src/librarian.ts`; `recap` on a thread's row (`runner/src/sync.ts`, `runner/src/thread-index.ts`, `convex/schema.ts`, `convex/sync.ts`); the box itself in `app/Sources/Threadbear/Views/RecapBox.swift`, `ios/Threadbear/RecapBox.swift` and `web/src/App.tsx`; the shared rule in `app/Sources/ThreadbearCore/Threads/Recap.swift`, `ios/ThreadbearKit/Sources/ThreadbearKit/Recap.swift` and `web/src/view-logic.ts`.
 
 ## Taking it out
 

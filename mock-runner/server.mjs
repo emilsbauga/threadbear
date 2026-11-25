@@ -163,6 +163,18 @@ if (process.env.TB_MOCK_REVIEWERS) {
     { id: 'opencode-main', provider: 'opencode', title: 'OpenCode', configDir: '~/.config/opencode', models: [{ id: 'google/gemini-4-neon', model: 'google/gemini-4-neon', title: 'google/gemini-4-neon', effortLevels: ['low', 'medium', 'high'] }, { id: 'zai/glm-5', model: 'zai/glm-5', title: 'zai/glm-5' }] },
   ];
 }
+// TB_MOCK_GROK_OUT: a Grok login with the reading Grok's _x.ai/billing gave
+// Mike's on 24 Nov 2026 (the week's share used up, back when it resets), for
+// pictures of the Usage panel's Grok row. Off by default so the design set
+// stays as it was.
+if (process.env.TB_MOCK_GROK_OUT) {
+  const grokOut = {
+    id: 'grok-main', provider: 'grok', title: 'Grok', configDir: '~/.grok', plan: 'X Premium+',
+    models: [{ id: 'grok-4.7', model: 'grok-4.7', title: 'Grok 4.7', effortLevels: ['low', 'medium', 'high', 'xhigh'] }],
+    usage: { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 0, resetsAt: hoursFromNow(23) }], readAt: new Date().toISOString(), source: 'live', blocked: true },
+  };
+  accounts = [...accounts.filter((a) => a.id !== 'grok-main'), grokOut];
+}
 // TB_MOCK_SIGN_INS: claude-4 signed out and claude-3's sign-in ending in two
 // days, for pictures of the Usage panel's sign-in lines (docs/protocol/settings.md,
 // Pools, "Signed out"). Off by default so the design set stays as it was.
@@ -397,6 +409,10 @@ let moveClone;
 let lastMove;
 // The last archive's thread and verdict, for the specs (mock.lastArchive).
 let lastArchive;
+// The quiet inbox's "Should have shown me" (docs/protocol/threads.md, "Inbox
+// guess"): the last one asked for, and whether the next is refused.
+let lastWrongHide;
+let refuseWrongHide = false;
 // A look held until the spec says (mock.holdMovePreview, then
 // mock.releaseMovePreview), as the real one over the relay can take a
 // quarter of a minute (18 Nov 2026).
@@ -472,24 +488,130 @@ let connectors = {
 };
 addDemoProjects();
 if (process.env.TB_MOCK_LIVE_PAGES) addLivePageDemo(process.env.TB_MOCK_LIVE_PAGES);
-// The experiments the mock's hello says are on: Decisions on the Projects
-// page with TB_MOCK_DECISIONS, nested threads with TB_MOCK_NESTED, and the
-// done card's Archive menu with TB_MOCK_INBOX_GUESS.
+// The experiments the mock's hello says are on: nested threads with
+// TB_MOCK_NESTED, and the done card's Archive menu with TB_MOCK_INBOX_GUESS.
 function mockExperiments() {
   return [
-    ...(process.env.TB_MOCK_DECISIONS ? ['projectDecisions'] : []),
     // TB_MOCK_NESTED_OFF keeps its demo threads with the experiment off.
     ...(process.env.TB_MOCK_NESTED && !process.env.TB_MOCK_NESTED_OFF ? ['nestedThreads'] : []),
     ...(process.env.TB_MOCK_INBOX_GUESS ? ['inboxGuess'] : []),
-    // PR links opening as a tab in the pane, with TB_MOCK_PRS.
-    ...(process.env.TB_MOCK_PRS ? ['inlinePrs'] : []),
     // A live page's card, with TB_MOCK_LIVE_PAGES (addLivePageDemo).
     ...(process.env.TB_MOCK_LIVE_PAGES ? ['livePages'] : []),
     // The Recipes view, with TB_MOCK_RECIPES (addRecipesDemo).
     ...(process.env.TB_MOCK_RECIPES ? ['recipes'] : []),
-    // The Feed, with TB_MOCK_FEED (addDemoFeed).
-    ...(process.env.TB_MOCK_FEED ? ['feed'] : []),
+    // Reviews as a board you drag and zoom, with TB_MOCK_REVIEW_CANVAS (addCanvasMarks).
+    ...(process.env.TB_MOCK_REVIEW_CANVAS ? ['reviewCanvas'] : []),
+    // The Canvas page, with TB_MOCK_THREAD_CANVAS (with TB_MOCK_NESTED's threads
+    // for a tree with arrows).
+    ...(process.env.TB_MOCK_THREAD_CANVAS ? ['threadCanvas'] : []),
+    // Agent Archive in the sidebar's search, with TB_MOCK_ARCHIVE (ARCHIVE_SESSIONS).
+    ...(process.env.TB_MOCK_ARCHIVE ? ['archive'] : []),
   ];
+}
+
+// TB_MOCK_ARCHIVE: made-up Agent Archive sessions for the sidebar's search
+// (docs/protocol/threads.md, "Searching Agent Archive"). Two belong to demo
+// threads: "Compare SQLite and plain files" is in a search for "sqlite" among
+// the app's own results, so its session is left out there, and "Make uploads
+// resume" isn't, so its hit opens that thread. A search for "offline" fails
+// as an unreachable archive does; TB_MOCK_ARCHIVE_MS slows every answer.
+const ARCHIVE_SESSIONS = [
+  {
+    threadId: 'k57a2mq9x4rd8vbn3hcw6tzy1pejf0su', title: 'Keep the upload queue in SQLite', agent: 'claude',
+    folder: '/Users/alex/dev/photo-sync', machine: 'mac', createdAt: Date.parse('2026-10-23T08:10:00Z'), updatedAt: Date.parse('2026-10-25T09:12:00Z'),
+    match: 14,
+    items: [
+      [0, 'user', 'The upload queue is a JSON file and it got corrupted when the Mac crashed mid-write. Can we make it survive that?'],
+      [3, 'assistant', 'It can. The JSON file is rewritten whole on every change, so a crash halfway through leaves half a file. Two ways out: write to a temp file and rename it over the old one, or move the queue into a database that does this for us.'],
+      [6, 'user', 'Which would you pick?'],
+      [14, 'assistant', "SQLite. It's one file beside the photos, needs no server, and every change is a transaction, so the queue lives in SQLite, one row per file, and a crash only loses the file in flight.\n\n- `queue.db` next to the library\n- one table, `uploads`, with each file's path, size and how far it got\n- the old JSON read once on first start, then renamed"],
+      [15, 'user', 'Do it'],
+      [22, 'assistant', "Done. The queue's in `queue.db` now, and I stopped the app halfway through a 2 GB upload three times: each time it picked up from the last finished chunk."],
+    ],
+  },
+  {
+    threadId: 'p3x8wq2n7m5kd4c9vb6tzh1rjy0aesfg', title: 'Is SQLite fast enough for 50,000 photos?', agent: 'codex',
+    folder: '/Users/alex/code/misc', machine: 'mac', createdAt: Date.parse('2026-10-23T02:00:00Z'), updatedAt: Date.parse('2026-10-23T02:40:00Z'),
+    match: 4,
+    items: [
+      [0, 'user', 'Before we move to SQLite: will it stay quick with 50,000 photos?'],
+      [4, 'assistant', 'Yes. SQLite handles 50,000 rows in a few milliseconds with an index on the date. I timed it on a copy of the library: listing a month takes 3 ms, and the whole library 41 ms.'],
+    ],
+  },
+  {
+    threadId: 'r9d2kf7x3n8qw5m1vb4tzc6hyj0pesla', title: 'Compare SQLite and plain files for the runner', agent: 'claude',
+    folder: '/Users/alex/code/misc', machine: 'mac', updatedAt: Date.parse('2026-11-02T04:00:00Z'), match: 8,
+    threadbear: { threadId: 'demo_sqlite_vs_files', title: 'Compare SQLite and plain files for the runner' },
+    items: [
+      [0, 'user', 'Should the runner keep its threads in SQLite or in plain files?'],
+      [8, 'assistant', 'Plain files for now: SQLite would mean a native module in every install.'],
+    ],
+  },
+  {
+    threadId: 'm4n8b2v6c1x9z3l7k5j0h2g8f4d6s1aq', title: 'Make uploads resume after a crash', agent: 'claude',
+    folder: '/Users/alex/dev/photo-sync', machine: 'mac', updatedAt: Date.parse('2026-11-10T05:00:00Z'), match: 30,
+    threadbear: { threadId: 'demo_upload_resume', title: 'Make uploads resume after a crash' },
+    items: [
+      [0, 'user', 'Uploads start again from zero after a crash.'],
+      [30, 'assistant', 'The resume point is kept in SQLite with the rest of the queue, so a restart carries on from the last chunk.'],
+    ],
+  },
+  {
+    threadId: 'q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5hj', title: 'Back up the SQLite file every night', agent: 'grok',
+    folder: '/Users/alex/code/misc', machine: 'studio', updatedAt: Date.parse('2026-09-28T21:00:00Z'), match: 2,
+    items: [
+      [0, 'user', 'How should I back up the queue database every night?'],
+      [2, 'assistant', "Use SQLite's own backup command rather than copying the file while it's open: `sqlite3 queue.db \".backup nightly.db\"`, from a launchd job at 3 am."],
+    ],
+  },
+];
+
+function archiveText(session) {
+  return [session.title, ...session.items.map((i) => i[2])].join(' ').toLowerCase();
+}
+
+function archiveSnippet(session, words) {
+  const item = session.items.find((i) => i[0] === session.match) ?? session.items[0];
+  const text = item[2].replace(/\s+/g, ' ');
+  const lower = text.toLowerCase();
+  const at = Math.max(0, Math.min(...words.map((w) => lower.indexOf(w)).filter((i) => i >= 0), text.length) - 60);
+  const cut = text.slice(at, at + 240);
+  return `${at > 0 ? '…' : ''}${cut}${at + 240 < text.length ? '…' : ''}`;
+}
+
+async function archiveRequest(method, p) {
+  if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
+  await sleep(Number(process.env.TB_MOCK_ARCHIVE_MS ?? 150));
+  if (!process.env.TB_MOCK_ARCHIVE) {
+    if (method === 'archive.search') return { hits: [], off: 'experiment' };
+    throw rpcError(-32000, 'Agent Archive is off on this runner.');
+  }
+  if (method === 'archive.search') {
+    const query = String(p.query ?? '').toLowerCase();
+    if (query.includes('offline')) throw rpcError(-32000, "Couldn't reach Agent Archive: its server didn't answer in 20 seconds.");
+    const words = query.split(/\s+/).filter(Boolean);
+    const found = ARCHIVE_SESSIONS.filter((s) => words.every((w) => archiveText(s).includes(w)))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const limit = Math.min(Number(p.limit ?? 20), 50);
+    return {
+      hits: found.slice(0, limit).map((s) => ({
+        threadId: s.threadId, title: s.title, agent: s.agent, folder: s.folder, machine: s.machine, updatedAt: s.updatedAt,
+        sequence: s.match, snippet: archiveSnippet(s, words), ...(s.threadbear ? { threadbear: s.threadbear } : {}),
+      })),
+      more: found.length > limit,
+    };
+  }
+  const session = ARCHIVE_SESSIONS.find((s) => s.threadId === p.threadId);
+  if (!session) throw rpcError(-32602, `not_found: no archived thread ${p.threadId}`);
+  return {
+    thread: {
+      threadId: session.threadId, title: session.title, agent: session.agent, folder: session.folder, machine: session.machine,
+      ...(session.createdAt ? { createdAt: session.createdAt } : {}), updatedAt: session.updatedAt,
+      messages: session.items.length, url: `https://archive.example.test/?thread=${session.threadId}`,
+      ...(session.threadbear ? { threadbear: session.threadbear } : {}),
+    },
+    items: session.items.map(([sequence, role, text]) => ({ sequence, role, text })),
+  };
 }
 
 // TB_MOCK_RECIPES: the recipes experiment on, with recipes in every state
@@ -526,6 +648,11 @@ function addRecipesDemo() {
     description: "A short note each morning: today's calendar, the emails that need you, threads waiting on you and a few headlines.",
     about: 'A very short note each morning so you start the day knowing what needs you. It reads your calendar and the last day of email, lists only what needs you today, then any thread that is waiting on you, then a few headlines. A section with nothing in it is left out, and it stays under ten lines.',
     example: '**Today**\n- 10:00 dentist, 14:30 call with Sam\n\n**Needs you**\n- Ana asked for the invoice by Friday\n- The flight change wants confirming today\n\n**Waiting on you**\n- "Pick a colour for the Share button" since Wed',
+    examples: [
+      { title: 'Daily brief', reply: '**Today**\n- 10:00 dentist, 14:30 call with Sam\n\n**Needs you**\n- Ana asked for the invoice by Friday\n- The flight change wants confirming today\n\n**Waiting on you**\n- "Pick a colour for the Share button" since Wed\n\n**Headlines**\n- Rates held for another month\n- The new bridge opens to bikes on Saturday', card: { headline: '2 emails need you today', options: ['Done', 'Remind me at 2'] } },
+      { title: 'Daily brief', reply: '**Today**\n- Nothing in the calendar\n\nNo emails need you and no thread is waiting on you. A quiet one.' },
+      { title: 'Daily brief', reply: '**Today**\n- 9:00 school assembly\n- 13:00 lunch with Jo\n\n**Needs you**\n- The plumber can come Thursday or Friday: pick one', card: { headline: 'The plumber wants a day', options: ['Thursday', 'Friday', 'Neither'] } },
+    ],
     state: 'on', schedules: [{ id: 'sch_daily-brief', title: 'Daily brief', paused: false, nextRunAt: new Date(at(-1, 6, 30)).toISOString(), whenText: 'Every day at 6:30' }] });
   make({ id: 'email-watcher', name: 'Email watcher', icon: '✉️', color: '#4a7bd8', experiment: 'mailWatch', when: 'Every 5 minutes',
     description: "New emails wake the threads waiting on them, reach the threads they're about, or wait on a twice-daily list.",
@@ -550,6 +677,16 @@ function addRecipesDemo() {
     description: 'Keeps every Mac patched. Starts a thread only when an update is waiting, and installs at a safe moment.' });
   make({ id: 'stay-in-touch', name: 'Stay in touch', icon: '👋', color: '#d86a8c', when: 'Saturdays at 9:00', state: 'add', source: 'yours', by: undefined,
     description: "Once a week, picks a friend who's overdue and drafts a warm message with a photo. You send it." });
+  // Only a habit: Add is its switch, and it starts no threads.
+  const habit = "When the user is exploring something new, don't hand them one answer. Show about three options that really differ, say which you'd pick and why, and polish only the one they choose.";
+  make({ id: 'show-a-few-options', name: 'Show a few options', icon: '🔀', color: '#7a5cc4', when: 'In every thread', state: 'add', instant: true,
+    description: "When you're exploring something new, agents show you three directions that really differ and say which they'd pick.",
+    about: "Ask an agent for a design, a name or an approach and it hands you one answer, polished. With this on, it shows about three rough options that go in different directions, says which it would pick and why, and polishes only the one you choose.",
+    examples: [
+      { title: 'Tidy the settings page', you: 'The settings page feels cluttered. Can you tidy it up?', reply: '**A. Group, don\'t hide.** Four headed groups, the rare settings folded shut.\n\n**B. Search first.** A search box on top, and the five settings you change most.\n\n**C. Split by who it\'s for.** "Just me" and "the whole team" as two pages.\n\nI\'d pick A: it fixes the clutter without anyone relearning where things are. Mockups of all three are in the review window.', card: { headline: 'Which direction for the settings page?', options: ['A. Group', 'B. Search first', 'C. Split'] } },
+      { title: 'Name the new app', you: 'I need a name for the habit tracker.', reply: '**Streaky**: playful, says what it does.\n\n**Little Wins**: warmer, about the feeling rather than the streak.\n\n**Tally**: plain and short, room to grow past habits.\n\nI\'d pick Little Wins.', card: { headline: 'Which name?', options: ['Streaky', 'Little Wins', 'Tally'] } },
+    ],
+    habit: { text: habit, bytes: Buffer.byteLength(habit), given: false } });
   // A month of runs for the three that are on.
   const brief = recipes.get('daily-brief');
   for (let d = 0; d < 28; d++) {
@@ -568,7 +705,7 @@ function recipeSummary(r) {
   const since = Date.now() - 30 * 86_400_000;
   const runs = r.runs.filter((x) => Date.parse(x.at) >= since);
   const last = runs.reduce((a, b) => (!a || Date.parse(b.at) > Date.parse(a.at) ? b : a), undefined);
-  const { about, example, runs: _runs, ...rest } = r;
+  const { about, example, examples, runs: _runs, ...rest } = r;
   return { ...rest, stats: { runs: runs.length, neededYou: runs.filter((x) => x.needsYou).length, seen: runs.filter((x) => x.seen).length, ...(last ? { lastRunAt: last.at, lastHeadline: last.headline } : {}) } };
 }
 function recipeOrder(a, b) {
@@ -589,18 +726,26 @@ async function recipeRequest(client, method, p) {
       return { recipes: [...recipes.values()].map(recipeSummary).sort(recipeOrder) };
     case 'recipes.get': {
       const r = needRecipe(p.id);
-      return { recipe: { ...recipeSummary(r), about: r.about ?? r.description, ...(r.example ? { example: r.example } : {}), file: path.join(RECIPES_DIR, r.id, 'RECIPE.md'), runs: [...r.runs].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 60) } };
+      const examples = r.examples ?? (r.example ? [{ reply: r.example }] : []);
+      return { recipe: { ...recipeSummary(r), about: r.about ?? r.description, examples, ...(examples[0] ? { example: examples[0].reply } : {}), file: path.join(RECIPES_DIR, r.id, 'RECIPE.md'), runs: [...r.runs].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 60) } };
     }
     case 'recipes.setOn': {
       const r = needRecipe(p.id);
       if (process.env.TB_MOCK_RECIPES_REFUSE) throw rpcError(-32000, 'The runner could not reach your backend to pause its schedule.');
-      if (r.state !== 'add') r.state = r.state === 'settingUp' && p.on ? 'settingUp' : p.on ? 'on' : 'off';
+      if (r.state !== 'add' || r.instant) r.state = r.state === 'settingUp' && p.on ? 'settingUp' : p.on ? 'on' : 'off';
+      if (r.habit) r.habit = { text: r.habit.text, bytes: r.habit.bytes, given: Boolean(p.on) };
       r.schedules = r.schedules.map((s) => ({ ...s, paused: !p.on }));
       broadcast('recipes.updated', {});
       return { recipe: recipeSummary(r) };
     }
     case 'recipes.add': {
       const r = needRecipe(p.id);
+      if (r.instant) {
+        r.state = 'on';
+        r.habit = { ...r.habit, given: true };
+        broadcast('recipes.updated', {});
+        return { recipe: recipeSummary(r) };
+      }
       const made = await dispatch(client, 'threads.create', { text: `Set up the recipe "${r.name}" with me.`, title: `Set up ${r.name}`, cwd: `${os.homedir()}/ThreadbearThreads/recipes/${r.id}` });
       r.state = 'settingUp';
       r.setupThreadId = made.thread.id;
@@ -616,6 +761,7 @@ async function recipeRequest(client, method, p) {
     case 'recipes.remove': {
       const r = needRecipe(p.id);
       r.state = 'add';
+      if (r.habit) r.habit = { text: r.habit.text, bytes: r.habit.bytes, given: false };
       r.schedules = [];
       delete r.setupThreadId;
       broadcast('recipes.updated', {});
@@ -643,7 +789,7 @@ function addLivePageDemo(page) {
   threads.set(id, { summary, events, inProgress: new Map(), timers: [] });
 }
 
-// The inlinePrs experiment's GitHub, made up: one open PR whose checks
+// GitHub for the PR tab, made up: one open PR whose checks
 // have a failure, which Close turns closed a moment later, as gh would.
 const MOCK_PR_URL = 'https://github.com/acme/app/pull/72';
 const mockPr = {
@@ -659,17 +805,10 @@ const mockPr = {
   files: [{ path: 'runner/src/swift-changes.ts', additions: 3, deletions: 1, hunks: [{ oldStart: 41, oldLines: 3, newStart: 41, newLines: 5, lines: ['   const touched = files.filter(isSwift)', "-  if (touched.length) return 'port'", "+  if (!touched.length) return 'none'", "+  if (files.some((f) => f.startsWith('desktop/'))) return 'ported'", "+  return 'port'"] }] }],
 };
 
-// Decisions on the Projects page (the projectDecisions experiment): three of
-// Threadbear's threads waiting on a card of asks, with what they're for. Only
-// when asked, as it changes those threads' rows and the Projects page.
-if (process.env.TB_MOCK_DECISIONS) addDemoDecisions();
 // Nested threads (the nestedThreads experiment): a coordinator thread and the
 // threads it started, as in mockup sub-A. Only when asked, as it adds rows
 // other specs count.
 if (process.env.TB_MOCK_NESTED) addDemoNested();
-// The Feed (the feed experiment): the threads of mockup r3-c-status, as cards.
-// Only when asked, as it adds rows other specs count.
-if (process.env.TB_MOCK_FEED) addDemoFeed();
 // Parts of a project (docs/protocol/projects.md, Projects, "Parts"): Photo sync as a
 // part of Threadbear, for features/projects.feature.
 if (process.env.TB_MOCK_PARTS) {
@@ -1239,8 +1378,16 @@ async function dispatch(client, method, p) {
         if (!s.snoozedUntil) delete s.snoozedAt;
         if (s.snoozedUntil) { s.live = false; scheduleWake(s.id); }
       }
+      if (p.archived === false && p.verdict === 'shouldHaveShown') {
+        if (refuseWrongHide) throw rpcError(-32000, "Couldn't bring it back just now. Try again in a moment.");
+        lastWrongHide = { threadId: s.id };
+      }
       if (p.archived !== undefined) {
         s.archivedAt = p.archived ? iso() : undefined;
+        // Like the runner: the quiet inbox's mark goes with any move out of
+        // the archive, or Mike archiving it himself.
+        delete s.quietlyArchived;
+        if (!p.archived) delete s.archivedBy;
         if (p.archived) {
           s.live = false;
           // Like the runner: his pick from the done card's Archive menu is
@@ -1325,7 +1472,13 @@ async function dispatch(client, method, p) {
     }
     case 'threads.markSeen': {
       const t = need(p.threadId);
-      t.summary.lastSeenSeq = Math.max(t.summary.lastSeenSeq, p.seq ?? 0);
+      // Another runner's thread is marked read whole, as the relay does
+      // (relay.ts, `update { markSeen: true }`): the app's seq for its row is
+      // 1 (remote.rs), so taking it kept the row unread, and each
+      // remoteThreads.updated brought another markSeen, a flood that froze
+      // the app on Windows (remote-threads.feature, 24 Nov 2026).
+      const seq = t.runnerId ? t.summary.lastSeq : (p.seq ?? 0);
+      t.summary.lastSeenSeq = Math.max(t.summary.lastSeenSeq, seq);
       if (t.summary.status !== 'waiting') t.summary.needsYou = Boolean(t.summary.pendingReviews);
       delete t.summary.woke;
       broadcastSummary(t.summary.id);
@@ -1944,6 +2097,10 @@ async function dispatch(client, method, p) {
     case 'recipes.remove':
       if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
       return recipeRequest(client, method, p);
+    // Agent Archive in the sidebar's search, with TB_MOCK_ARCHIVE.
+    case 'archive.search':
+    case 'archive.read':
+      return archiveRequest(method, p);
     case 'connectors.status':
       if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
       if (p.refresh) connectors = { ...connectors, checkedAt: iso() };
@@ -2224,6 +2381,22 @@ async function dispatch(client, method, p) {
       return { params: lastMove ?? null };
     case 'mock.lastArchive':
       return { params: lastArchive ?? null };
+    case 'mock.quietArchive': {
+      // The quiet inbox archived these threads today, a minute apart, the
+      // first newest (docs/protocol/threads.md, "Inbox guess"). `refuse`:
+      // the runner turns down the next "Should have shown me".
+      if (typeof p.refuse === 'boolean') refuseWrongHide = p.refuse;
+      (p.titles ?? []).forEach((title, i) => {
+        const entry = [...threads.values()].find((t) => t.summary.title === title);
+        if (!entry) throw rpcError(-32602, `No thread called "${title}"`);
+        const at = new Date(Date.now() - (i + 1) * 60_000).toISOString();
+        Object.assign(entry.summary, { archivedAt: at, archivedBy: 'threadbear', quietlyArchived: { at, why: p.why ?? 'It only confirmed what was asked.' }, live: false });
+        broadcastSummary(entry.summary.id);
+      });
+      return { ok: true };
+    }
+    case 'mock.lastWrongHide':
+      return { params: lastWrongHide ?? null };
     case 'mock.holdMovePreview': {
       let release;
       const promise = new Promise((r) => { release = r; });
@@ -2292,7 +2465,7 @@ async function dispatch(client, method, p) {
       // Threads named in oldRunners get onOldRunner in their summaries, as
       // the real primary marks a draining runner's threads.
       updates = { state: p.state ?? 'idle', oldRunners: Array.isArray(p.oldRunners) ? p.oldRunners : [] };
-      for (const k of ['commit', 'subject', 'reason', 'launcherReason', 'webRuntimeProblem']) if (typeof p[k] === 'string') updates[k] = p[k];
+      for (const k of ['commit', 'subject', 'reason', 'launcherReason', 'webRuntimeProblem', 'webRuntimeNote']) if (typeof p[k] === 'string') updates[k] = p[k];
       if (p.launcherChanged) updates.launcherChanged = true;
       // Like the real runner since 15 Nov: its update of the launcher stages.
       if (p.launcherChanged && p.launcherStages !== false) updates.launcherStages = true;
@@ -2786,6 +2959,7 @@ async function playScripted(threadId, turnId, started, turn, interrupted) {
   t.inProgress.delete(itemId);
   persist(threadId, { type: 'assistant.text', itemId, text: finalText }, turnId);
   if (turn.limit && !interrupted()) return limitHit(threadId, turnId, started, turn.limit);
+  if (turn.labReview && !interrupted()) return labReviewStarts(threadId, turnId, started, turn.labReview);
   finishTurn(threadId, turnId, started, interrupted() ? 'interrupted' : 'completed', turn.end);
 }
 
@@ -2859,6 +3033,38 @@ function limitHit(threadId, turnId, started, limit) {
       if (threads.has(threadId) && !s.archivedAt && !t.interrupt) fakeTurn(threadId, CARRY_ON_MOVED, [], undefined, 'runner', { wakeReason: 'Moved to another login' });
     }, 1500));
   }, limit.moveMs ?? 1500));
+}
+
+// A scripted turn with `labReview` finishes into another lab's review, as the
+// runner's startLabReview does (runner/src/runner/lab-review.ts): the note
+// saying who reviews, the thread waiting on "Review: <title>", and `waitMs`
+// later (6 s) the findings back as the runner's message (deliverReview in
+// runner/src/runner/hibernation.ts). A scripted turn matching "reviewed the
+// change you just made" answers them, with the ledger as its `end.review`.
+// `labReview: { lab ("Codex"), login, findings: [{ severity, claim, where }], waitMs }`.
+// For the X series' review clip; no review thread is made.
+function labReviewStarts(threadId, turnId, started, review) {
+  const t = threads.get(threadId);
+  const s = t.summary;
+  persist(threadId, { type: 'turn.completed', turnId, outcome: 'completed', durationMs: Date.now() - started, costUsd: 0.0123, needs: 'nothing' }, turnId);
+  t.interrupt = undefined;
+  const lab = review.lab ?? 'Codex';
+  const login = review.login ?? accounts.find((a) => a.provider === lab.toLowerCase())?.title ?? `${lab.toLowerCase()}-1`;
+  const id8 = crypto.randomBytes(4).toString('hex');
+  persist(threadId, { type: 'system.note', text: `Another lab is reviewing this change before it's done: ${lab} (${login}), in thread ${id8}.` });
+  s.waitingOn = [{ threadId: `review_${id8}`, title: `Review: ${s.title}`, review: true }];
+  s.snoozedUntil = new Date(Date.now() + 86_400_000).toISOString();
+  setStatus(threadId, 'idle', false);
+  const findings = review.findings ?? [];
+  const text = findings.length
+    ? `${lab} reviewed the change you just made (thread ${id8}). Its findings, numbered:\n\n${findings.map((f, i) => `${i + 1}. [${f.severity ?? 'medium'}] ${f.claim}${f.where ? ` (${f.where})` : ''}`).join('\n')}\n\nAnswer each one by its number: fix it, dispute it and say why, or leave it for Mike to decide.`
+    : `${lab} reviewed the change you just made (thread ${id8}) and found nothing that holds up.\n\nSay so in a line in your reply and finish as you were.`;
+  t.timers.push(setTimeout(() => {
+    if (!threads.has(threadId) || s.archivedAt) return;
+    delete s.waitingOn;
+    delete s.snoozedUntil;
+    fakeTurn(threadId, text, [], undefined, 'runner', { wakeReason: `${lab} reviewed the change` });
+  }, review.waitMs ?? 6000));
 }
 
 function finishTurn(threadId, turnId, started, outcome, said) {
@@ -3138,6 +3344,23 @@ function wentBack() {
   delete codex.update;
   broadcastClis();
   return { clis };
+}
+
+// The review canvas (TB_MOCK_REVIEW_CANVAS, the reviewCanvas experiment): the
+// agent's notes on the demo review's first picture, as show_options keeps
+// them, on the option's one shot.
+function addCanvasMarks(review) {
+  const a = review.options.find((option) => option.id === 'A');
+  if (!a) return;
+  a.shots = [{ image: a.image, marks: [
+    { kind: 'circle', box: [0.405, 0.135, 0.765, 0.232], note: 'auto picks the login with the most room' },
+    { kind: 'underline', box: [0.39, 0.87, 0.455, 0.9], note: 'the chip just says Auto', ink: 'green' },
+  ] }, {
+    // A second page with a note of its own: the agent can mark any page.
+    image: a.image, title: 'A login runs dry', marks: [
+      { kind: 'highlight', box: [0.405, 0.3, 0.765, 0.36], note: 'a login out of room is skipped', ink: 'rose' },
+    ],
+  }];
 }
 
 function needReview(t, id) {
@@ -4000,113 +4223,6 @@ function addDemoNested() {
   });
 }
 
-/**
- * TB_MOCK_FEED: the Feed's demo (docs/protocol/threads.md, "What Mike first asked";
- * runner/src/experiments/feed.md), the cards of the mockup Mike picked on 20
- * Nov: one he started that needs him with a card of two asks (the agent's
- * pick starred), one started by another thread asking him something, one
- * working with a job in the background, one finished with a long
- * conversation, one a schedule started, and one running a turn. Every thread
- * carries `request`, its first message of Mike's, as the runner gives it.
- */
-function addDemoFeed() {
-  const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
-  const cwd = '/Users/mike/dev/me/threadbear';
-  const make = (id, title, minutes, { status = 'idle', said = [], needs, asks, startedBy, schedule, background, unread } = {}) => {
-    const summary = {
-      id, title, cwd, accountId: 'claude-main', provider: 'claude', model: 'claude-opus-5-5', permissionMode: 'full',
-      status, live: status !== 'idle', needsYou: needs === 'you', createdAt: ago(minutes + 90), updatedAt: ago(minutes), lastActivityAt: ago(minutes),
-      preview: '', lastSeq: 0, lastSeenSeq: 0,
-      ...(needs ? { needs } : {}), ...(startedBy ? { startedBy } : {}), ...(schedule ? { schedule } : {}), ...(background ? { background } : {}),
-    };
-    const events = [];
-    const push = (fields, turnId, at) => events.push({ seq: events.length + 1, ts: at, threadId: id, ...(turnId ? { turnId } : {}), ...fields });
-    // `said`: [who, words] in order, "mike" or "agent", each turn a pair.
-    let turn = 0;
-    said.forEach(([who, words], i) => {
-      const at = ago(minutes + (said.length - i) * 7);
-      if (who === 'mike') {
-        turn++;
-        push({ type: 'user.message', text: words, images: [] }, `${id}_t${turn}`, at);
-        push({ type: 'turn.started' }, `${id}_t${turn}`, at);
-      } else {
-        push({ type: 'assistant.text', itemId: `${id}_m${i}`, text: words }, `${id}_t${turn}`, at);
-        const last = i === said.length - 1;
-        if (!(last && status === 'running')) push({ type: 'turn.completed', outcome: 'completed', durationMs: 42_000, ...(last && needs ? { needs } : {}), ...(last && asks ? { asks } : {}) }, `${id}_t${turn}`, at);
-      }
-    });
-    const lastReply = said.filter(([who]) => who === 'agent').at(-1);
-    if (lastReply) summary.preview = lastReply[1].replace(/\s+/g, ' ').slice(0, 140);
-    const firstMine = said.find(([who]) => who === 'mike');
-    if (firstMine && !startedBy) summary.request = firstMine[1].replace(/\s+/g, ' ').slice(0, 200);
-    if (asks) {
-      summary.asks = asks;
-      summary.asksSeq = events.findLast((e) => e.type === 'turn.completed')?.seq ?? events.length;
-    }
-    summary.lastSeq = events.length;
-    summary.lastSeenSeq = unread ? Math.max(0, events.length - 2) : events.length;
-    threads.set(id, { summary, events, inProgress: new Map(), timers: [] });
-    return summary;
-  };
-  make('feed_limit', 'Explain the Claude 5-hour limit', 40, {
-    needs: 'you', unread: true,
-    said: [
-      ['mike', 'Explain the Claude 5-hour limit in the guide and FAQ'],
-      ['agent', 'The guide and FAQ are written. A T3 contributor found a 4th bug caused by the custom label: Claude Code switches off MCP Tasks for a label it doesn\'t recognise.'],
-    ],
-    asks: [{ action: 'Keep holding, or drop the custom label idea?', options: ['Drop the idea', 'Keep holding till 4 Dec'], suggested: 0 }],
-  });
-  make('feed_back_button', 'Browser pane: back button', 9, {
-    needs: 'you', unread: true,
-    startedBy: { kind: 'thread', label: 'Agent', threadId: 'feed_coordinator', threadTitle: 'GPUI Port Coordinator', why: 'building the Browser pane' },
-    said: [
-      ['mike', 'Take this on: the Browser pane\'s back button.'],
-      ['agent', 'Back works when the pane has history. A fresh pane has nowhere to go back to.'],
-    ],
-    asks: [{ action: 'Should Back go to the last page or close the pane when there\'s no history?', options: ['Close the pane', 'Do nothing'], suggested: 0 }],
-  });
-  make('feed_bedtime', 'Bedtime Tube', 20, {
-    said: [
-      ['mike', 'Bedtime Tube hasn\'t put anything on my phone for ages, can you have a look?'],
-      ['agent', 'Found it. Nothing has saved since 8 Nov: the Save step lost its link to VLC\'s folder after VLC moved it, so every download stopped at the last step and the files sat on Bruce. I put the link back and saved the backlog.'],
-      ['mike', 'Can you get Codex and Gemini to try to break it?'],
-      ['agent', 'Codex found a timing gap: if a save is still running when the next fetch starts, the same video can be sent to the phone twice.'],
-      ['agent', 'Gemini found that the new 48 h alert will fire after a quiet spell with no new videos, even though nothing is broken.'],
-      ['mike', 'Fix both'],
-      ['agent', 'Fixed both. A video is sent once, even if two runs overlap, and the alert only counts time when there was something to save.'],
-      ['mike', 'Thanks, and check again tonight?'],
-      ['agent', 'Fixed, and the backlog is on your phone: 50 videos saved, 2 left for tonight. Codex and Gemini each found a hole in the fix; both are closed. I\'ll check again at 6:20 pm.'],
-    ],
-    needs: 'nothing',
-  });
-  make('feed_main_green', 'Keep main green', 6, {
-    said: [
-      ['mike', 'main keeps going red and forks aren\'t getting releases, sort it out'],
-      ['agent', 'The Mac job wasn\'t failing, it was running out of time at 60 min. I split the specs into two jobs and landed it as 2c9638768.'],
-    ],
-    background: [{ kind: 'monitor', description: 'Waiting on the next Desktop run' }],
-  });
-  make('feed_kite', 'Kite watch', 3, {
-    startedBy: { kind: 'schedule', label: 'Schedule' }, schedule: { id: 'sched_kite', title: 'Kite watch' },
-    said: [['agent', 'Port Geographe tomorrow 7 to 10 am: 19 kn WSW, 24\u00b0C.']],
-    needs: 'nothing',
-  });
-  make('feed_hotel', 'San Francisco hotel', 50, {
-    said: [
-      ['mike', 'Find me somewhere near the office for the holiday party week'],
-      ['agent', 'Keep Beck\'s, A$777 under today\'s price.'],
-    ],
-    needs: 'nothing',
-  });
-  make('feed_running', 'Sort the Ramp receipts', 1, {
-    status: 'running',
-    said: [
-      ['mike', 'Can you sort this month\'s Ramp receipts?'],
-      ['agent', 'Reading the receipts in the mail.'],
-    ],
-  });
-}
-
 function addDemoDecisions() {
   const cards = {
     demo_settings_tabs: {
@@ -4482,6 +4598,29 @@ ${process.env.MOCK_SCRIPTED_TURNS ? '' : "<p>The mock runner's stand-in for the 
   }
 }
 
+// A second of a soft 440 Hz tone, 8 kHz mono 16-bit, as a WAV file: a sound
+// file for the pane's player (file-previews.feature).
+function toneWav() {
+  const rate = 8000;
+  const samples = rate;
+  const data = Buffer.alloc(samples * 2);
+  for (let i = 0; i < samples; i++) data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 3000), i * 2);
+  const head = Buffer.alloc(44);
+  head.write('RIFF', 0);
+  head.writeUInt32LE(36 + data.length, 4);
+  head.write('WAVEfmt ', 8);
+  head.writeUInt32LE(16, 16);
+  head.writeUInt16LE(1, 20);
+  head.writeUInt16LE(1, 22);
+  head.writeUInt32LE(rate, 24);
+  head.writeUInt32LE(rate * 2, 28);
+  head.writeUInt16LE(2, 32);
+  head.writeUInt16LE(16, 34);
+  head.write('data', 36);
+  head.writeUInt32LE(data.length, 40);
+  return Buffer.concat([head, data]);
+}
+
 // A real PDF of one US Letter page with a line of text, made by hand so the
 // mock needs no PDF library: each object's byte offset goes in the table at
 // the end, which is what readers find the objects by. ASCII only, so a
@@ -4519,7 +4658,7 @@ function addDemoHighlights() {
     const file = (rel, text) => {
       const full = path.join(root, rel);
       fs.mkdirSync(path.dirname(full), { recursive: true });
-      if (typeof text === 'string') fs.writeFileSync(full, text); else fs.copyFileSync(text.copy, full);
+      if (typeof text === 'string' || Buffer.isBuffer(text)) fs.writeFileSync(full, text); else fs.copyFileSync(text.copy, full);
       return full;
     };
     const home = file('mockups/home.html', homeMockup());
@@ -4544,6 +4683,8 @@ The new hero is shorter, and every page now leads with what the app does.
     // the pane (features/file-previews.feature). Only listed in the folder.
     const clip = path.join(here, '../site/public/clips/inbox.mp4');
     if (fs.existsSync(clip)) file('screens/hero-walkthrough.mp4', { copy: clip });
+    // A second of a quiet tone as a WAV, for a sound file in the pane.
+    file('recordings/standup-note.wav', toneWav());
     // And a one-page PDF, for a PDF in the pane.
     file('docs/launch-brief.pdf', onePagePdf('Launch brief: the new hero ships Friday', 'https://example.com/launch-brief'));
     // A page that draws itself, for a local page in the pane with its
@@ -4707,6 +4848,7 @@ function loadFixtures() {
         event.threadId = summary.id;
         if (event.images) event.images = fixPaths(event.images);
         if (event.type === 'review.updated') event.review.options = event.review.options.map((option) => ({ ...option, image: fixPaths([option.image])[0] }));
+        if (event.type === 'review.updated' && process.env.TB_MOCK_REVIEW_CANVAS) addCanvasMarks(event.review);
         return event;
       });
       summary.lastSeq = events.at(-1)?.seq ?? 0;

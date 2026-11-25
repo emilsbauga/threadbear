@@ -9,6 +9,7 @@ import com.mikerosoft.threadbear.kit.CommandKey
 import com.mikerosoft.threadbear.kit.PendingCommand
 import com.mikerosoft.threadbear.kit.PendingCommands
 import com.mikerosoft.threadbear.kit.InboxSections
+import com.mikerosoft.threadbear.kit.WaitGuess
 import com.mikerosoft.threadbear.kit.Pairing
 import com.mikerosoft.threadbear.kit.PairingRequest
 import com.mikerosoft.threadbear.kit.PairingSource
@@ -22,6 +23,9 @@ import com.mikerosoft.threadbear.kit.PhoneSection
 import com.mikerosoft.threadbear.kit.PhoneThread
 import com.mikerosoft.threadbear.kit.ScheduleWake
 import com.mikerosoft.threadbear.kit.SectionFolds
+import com.mikerosoft.threadbear.kit.ShareAsk
+import com.mikerosoft.threadbear.kit.ShareLinks
+import com.mikerosoft.threadbear.kit.ShareSheet
 import com.mikerosoft.threadbear.kit.ThreadChange
 import com.mikerosoft.threadbear.kit.ThreadsView
 import com.mikerosoft.threadbear.kit.TransportError
@@ -94,6 +98,13 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         _identity.value = me
         knownApi = me?.apiVersion ?: 0
     }
+
+    /**
+     * The website's address, for a shared thread's link: what phone:me says,
+     * else a cloud deployment's .convex.site twin (ShareLinks.site).
+     */
+    val site: StateFlow<String?> = combine(_pairing, _identity) { p, me -> ShareLinks.site(p?.deploymentUrl, me?.site) }
+        .stateIn(scope, SharingStarted.Eagerly, null)
 
     /** A pairing link waiting for a yes. */
     val pendingPair = MutableStateFlow<PairingRequest?>(null)
@@ -459,9 +470,9 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         fun held(key: CommandKey) = pending[key]?.takeIf { it.state.holdsChange }
         var t = thread
         held(CommandKey.Star(id))?.let { t = t.copy(starredAt = if (it.value == "on") t.starredAt ?: Instant.now() else null) }
-        if (held(CommandKey.MarkSeen(id)) != null) t = t.copy(unread = false, needsYou = false)
-        if (held(CommandKey.Wake(id)) != null) t = t.copy(snoozedUntil = null, snoozedUntilRestart = null)
-        if (held(CommandKey.Unarchive(id)) != null) t = t.copy(archivedAt = null)
+        if (held(CommandKey.MarkSeen(id)) != null) t = WaitGuess.seen(t)
+        if (held(CommandKey.Wake(id)) != null) t = WaitGuess.woken(t.copy(snoozedUntil = null, snoozedUntilRestart = null))
+        if (held(CommandKey.Unarchive(id)) != null) t = WaitGuess.unarchived(t.copy(archivedAt = null))
         held(CommandKey.Rename(id))?.value?.let { t = t.copy(title = it) }
         return t
     }
@@ -501,6 +512,16 @@ class AppModel(context: Context, private val scope: CoroutineScope) {
         commands.start(CommandKey.Rename(threadId), words, send = { b.update(threadId, ThreadChange.Rename(words)) }) {
             said(it, "The runner couldn't rename that thread.")
         }
+    }
+
+    /**
+     * Shares a thread by link, stops sharing it, or gives it a new link: the
+     * share sheet shows it at once (ShareSheet.view) and takes no more taps
+     * until the runner's done it or refused.
+     */
+    fun share(threadId: String, ask: ShareAsk) {
+        val b = _backend.value ?: return
+        commands.start(CommandKey.Share(threadId), ask.value, send = { b.share(threadId, ask) }) { said(it, ShareSheet.REFUSED) }
     }
 
     /** Stop is on its way: a spinner taking no more taps until the turn ends, it's refused, or the Mac hasn't picked it up. */

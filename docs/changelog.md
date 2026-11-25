@@ -60,6 +60,10 @@ that has no file yet (`git tag -l 'release/*'` against `ls site/changelog`).
      users/<login> -q .twitter_username` gives one, else their fork
      (`https://github.com/<login>/threadbear`, if it answers), else their GitHub profile. The
      build refuses a credit with nobody from that file in it, so add a new person there first.
+   - Only what's live for everyone. An experiment (off by default, on for Mike) never goes on
+     the page, as a card or a line: it goes on the day it's made standard, as Added. Mike, 22
+     Nov: "You shouldn't put anything that's not live in the updates." The build refuses the
+     word "experiment" from 21 Nov on.
    - `added` / `changed` / `fixed`: every other change a user would notice, one plain line each,
      several commits about one thing as one line. Leave out tests, refactors, docs, CI, agent
      instructions, review rounds and security-scan internals; security fixes users should know
@@ -87,6 +91,12 @@ as it holds Tinker Desk's build lock meanwhile.
 - Made-up replies (a reply with links to other threads, a draft) come from `--turns FILE`
   (MOCK_SCRIPTED_TURNS in the mock runner). The mock reads the file once, so a changed file needs
   `film.sh stop` and `start --no-build` again. Thread ids there are like `demo_ci_slow`.
+- The mock's demos for experiments and extra logins are off unless asked for: `film.sh start
+  --mock-env TB_MOCK_RECIPES=1 --mock-env TB_MOCK_NESTED=1` (and TB_MOCK_REVIEWERS, TB_MOCK_PRS...,
+  listed at the top of `mock-runner/server.mjs`). Scripted pointer events don't reach the
+  filmed window, so use dev-app commands: a panel cramped under the threads goes full height
+  with `{"cmd":"dock-move","panel":"usage","edge":"right"}`; the model picker's `search` also
+  presses Return, so it picks the first match.
 - A recording starts about three seconds after `film.sh record` returns to the background, so
   wait six or seven seconds before the first command.
 - Settings opens in a window of its own, which `film.sh record` doesn't record and scripted

@@ -28,19 +28,6 @@
     },
     {
       "kind": "changed",
-      "title": "Projects: a row each, and tabs on the page",
-      "text": "With the Decisions experiment on, the sidebar's Projects list is one row a project, with its decisions or thread count, and its arrow shows the threads. A project's page has Decisions and Project tabs; ⇧⌘[ and ⇧⌘] step between them.",
-      "media": {
-        "type": "clip",
-        "src": "projects.mp4",
-        "poster": "projects.webp",
-        "width": 1600,
-        "height": 1058,
-        "alt": "The Projects sidebar with a row for each of Photo sync, Threadbear, Walkies and Not in a project. Threadbear's and Photo sync's arrows open and fold their threads, then clicking Threadbear opens its page on the Decisions tab with its questions; the Project tab shows its goals, state and notes, then it goes back to Decisions."
-      }
-    },
-    {
-      "kind": "changed",
       "title": "Usage's weekly charts show the whole week",
       "text": "Each login's weekly chart in the Usage panel shows the last seven days with their names along the bottom, and breaks the line where the week reset. A switch in the panel's Settings card hides Weekly Fable.",
       "media": {
@@ -61,7 +48,7 @@
     "Click a picture's chip or thumbnail in the message box to look at it in Quick Look",
     "Schedule… in the message box's + menu opens a new schedule with what you've typed",
     "A link to another site in a patch's panel opens in your browser (or over the panel, as your web links setting says), and the panel's bar gets a Back button",
-    "A quiet inbox: threads another thread started archive themselves once they're finished, and a thread waiting only on its helpers hibernates until they're done (an experiment)"
+    "Threads another thread started archive themselves once they're finished"
   ],
   "changed": [
     "Move to another machine is on for everyone, no longer an experiment",
@@ -76,8 +63,8 @@
     },
     "The runner starts a couple of seconds faster",
     "Messages from Android say they came from the phone app, not the iPhone app",
-    "The done card counts work pushed to a branch but not merged as still open (with the loose ends experiment on)",
-    "The new app for Mac, Windows and Linux (an experiment) caught up on most of this one: the Terminal, Settings, Scheduled, Usage, the options review window, the limit box, videos and PDFs in the side pane, panels that glide, and sends that wait out a runner restart. It also shows the model a sub-agent runs on, keeps your last 24 threads ready so switching back is instant, and installs its updates by itself"
+    "The done card counts work pushed to a branch but not merged as still open",
+    "The new app for Mac, Windows and Linux caught up on most of this one: the Terminal, Settings, Scheduled, Usage, the options review window, the limit box, videos and PDFs in the side pane, panels that glide, and sends that wait out a runner restart. It also shows the model a sub-agent runs on, keeps your last 24 threads ready so switching back is instant, and installs its updates by itself"
   ],
   "fixed": [
     "Closing the Terminal could leave the thread blank until you switched threads",

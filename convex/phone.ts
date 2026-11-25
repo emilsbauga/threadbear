@@ -13,7 +13,7 @@ import { messageButton, threadFields, views } from './schema';
 import { checkPhoneToken, hasLiveKey, pageLimit, readRunnerOrder, runnerStatsRows, saveRunnerOrder, sha256, watchRunnersFor } from './lib';
 import { API_VERSION } from './version';
 import { pushOff } from './pushHealth';
-import { imagesFrom, phoneImage, replyImagesFrom } from './share';
+import { imagesFrom, phoneImage, replyImagesFrom, siteUrl } from './share';
 import { deleteIfUnused, endCommandFiles, eventBodyAnswer, finishedArgs, readEventBody, runnerName } from './sync';
 import { webLinksOnly, docBytes, holdReviewNumbers, holdThreadTimes, isReadableTime } from './runnerAccess';
 import { HEADS_MARK } from './projectHeads';
@@ -36,7 +36,7 @@ const WAITING_LIMIT = 50;
 
 const row = v.object({ ...threadFields, view: v.union(...views.map((x) => v.literal(x))) });
 const message = v.object({ seq: v.number(), role: v.union(v.literal('user'), v.literal('assistant')), text: v.string(), origin: v.optional(v.string()), at: v.string() });
-const pageMessage = v.object({ seq: v.number(), role: v.union(v.literal('user'), v.literal('assistant'), v.literal('tool'), v.literal('note')), text: v.string(), origin: v.optional(v.string()), toolKind: v.optional(v.string()), summary: v.optional(v.boolean()), plan: v.optional(v.boolean()), planDecision: v.optional(v.union(v.literal('go'), v.literal('revise'))), turn: v.optional(v.string()), wokeBy: v.optional(v.array(v.object({ kind: v.string(), description: v.string() }))), buttons: v.optional(v.array(messageButton)), answers: v.optional(v.array(v.object({ action: v.string(), answer: v.string() }))), at: v.string() });
+const pageMessage = v.object({ seq: v.number(), role: v.union(v.literal('user'), v.literal('assistant'), v.literal('tool'), v.literal('note')), text: v.string(), origin: v.optional(v.string()), toolKind: v.optional(v.string()), summary: v.optional(v.boolean()), plan: v.optional(v.boolean()), planDecision: v.optional(v.union(v.literal('go'), v.literal('revise'))), turn: v.optional(v.string()), wokeBy: v.optional(v.array(v.object({ kind: v.string(), description: v.string() }))), buttons: v.optional(v.array(messageButton)), answers: v.optional(v.array(v.object({ action: v.string(), answer: v.string() }))), wakeReason: v.optional(v.string()), at: v.string() });
 // phone:thread's newest text messages for an old phone, and how far back it
 // looks past tool rows for them.
 const MESSAGES_SHOWN = 20;
@@ -153,12 +153,17 @@ async function stripThread(doc: Doc<'threads'>, owners: ProjectOwners): Promise<
 // Threadbear on your Mac" when it's talking to a backend older than it needs.
 // pushOff: this backend can't send notifications (pushHealth.ts), so the
 // phone's Settings says so. An older phone ignores it.
+// site: where the website is (CONVEX_SITE_URL), for a shared thread's link,
+// <site>/s/<slug>. A self-hosted backend serves it at an address of its own,
+// which the phone can't work out from the deployment's; a phone that gets
+// none (an older backend) uses a cloud deployment's .convex.site twin.
 export const me = query({
   args: { token: v.string() },
-  returns: v.object({ name: v.string(), expiresAt: v.string(), apiVersion: v.number(), pushOff: v.optional(v.boolean()) }),
+  returns: v.object({ name: v.string(), expiresAt: v.string(), apiVersion: v.number(), pushOff: v.optional(v.boolean()), site: v.optional(v.string()) }),
   handler: async (ctx, { token }) => {
     const t = await checkPhoneToken(ctx, token);
-    return { name: t.name, expiresAt: new Date(t.expiresAt).toISOString(), apiVersion: API_VERSION, ...(pushOff(process.env) ? { pushOff: true } : {}) };
+    const site = siteUrl();
+    return { name: t.name, expiresAt: new Date(t.expiresAt).toISOString(), apiVersion: API_VERSION, ...(pushOff(process.env) ? { pushOff: true } : {}), ...(site ? { site } : {}) };
   },
 });
 
@@ -463,7 +468,7 @@ export const messages = query({
   handler: async (ctx, { token, threadId, beforeSeq, limit, tools, noImages, notes: withNotes }) => {
     await checkPhoneToken(ctx, token);
     const want = pageLimit(limit, PAGE_DEFAULT, PAGE_MAX);
-    const out: { seq: number; role: 'user' | 'assistant' | 'tool' | 'note'; text: string; origin?: string; toolKind?: string; summary?: boolean; turn?: string; buttons?: Doc<'messages'>['buttons']; answers?: Doc<'messages'>['answers']; at: string }[] = [];
+    const out: { seq: number; role: 'user' | 'assistant' | 'tool' | 'note'; text: string; origin?: string; toolKind?: string; summary?: boolean; turn?: string; buttons?: Doc<'messages'>['buttons']; answers?: Doc<'messages'>['answers']; wakeReason?: string; at: string }[] = [];
     const q = ctx.db
       .query('messages')
       .withIndex('by_thread_seq', (x) => (beforeSeq === undefined ? x.eq('threadId', threadId) : x.eq('threadId', threadId).lt('seq', beforeSeq)))
@@ -498,7 +503,7 @@ export const messages = query({
         hasMore = true;
         break;
       }
-      out.push({ seq: m.seq, role: m.role, text: m.text, ...(m.origin ? { origin: m.origin } : {}), ...(m.toolKind ? { toolKind: m.toolKind } : {}), ...(m.summary ? { summary: true } : {}), ...(m.plan ? { plan: true } : {}), ...(m.plan && m.planDecision ? { planDecision: m.planDecision } : {}), ...(m.turn ? { turn: m.turn } : {}), ...(m.wokeBy ? { wokeBy: m.wokeBy } : {}), ...(m.buttons?.length ? { buttons: m.buttons } : {}), ...(m.answers?.length ? { answers: m.answers } : {}), at: m.at });
+      out.push({ seq: m.seq, role: m.role, text: m.text, ...(m.origin ? { origin: m.origin } : {}), ...(m.toolKind ? { toolKind: m.toolKind } : {}), ...(m.summary ? { summary: true } : {}), ...(m.plan ? { plan: true } : {}), ...(m.plan && m.planDecision ? { planDecision: m.planDecision } : {}), ...(m.turn ? { turn: m.turn } : {}), ...(m.wokeBy ? { wokeBy: m.wokeBy } : {}), ...(m.buttons?.length ? { buttons: m.buttons } : {}), ...(m.answers?.length ? { answers: m.answers } : {}), ...(m.origin === 'runner' && m.wakeReason ? { wakeReason: m.wakeReason } : {}), at: m.at });
     }
     out.reverse();
     const from = hasMore || beforeSeq !== undefined ? out[0]?.seq ?? 0 : 0;

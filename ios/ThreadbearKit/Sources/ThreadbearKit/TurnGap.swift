@@ -24,17 +24,23 @@ public struct TurnGap: Hashable, Sendable {
     public var from: Date
     public var to: Date
     public var wokeBy: [WokeTask]
+    /// Why the runner sent the message that started the turn (its
+    /// `wakeReason`, backend API 98): "Codex answered". Said over what
+    /// finished, as the Mac's runner_wake is.
+    public var runnerWake: String?
 
-    public init(seq: Int, from: Date, to: Date, wokeBy: [WokeTask] = []) {
+    public init(seq: Int, from: Date, to: Date, wokeBy: [WokeTask] = [], runnerWake: String? = nil) {
         self.seq = seq
         self.from = from
         self.to = to
         self.wokeBy = wokeBy
+        self.runnerWake = runnerWake
     }
 
     public var label: String {
         let time = Self.later(max(0, to.timeIntervalSince(from)))
-        guard let cause = Self.cause(wokeBy) else { return time }
+        let runner = runnerWake.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+        guard let cause = runner ?? Self.cause(wokeBy) else { return time }
         return time + " · " + cause
     }
 

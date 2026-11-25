@@ -17,7 +17,7 @@ final class LinkGate {
     var ask: @MainActor (_ title: String, _ detail: String, _ yes: String?, _ answer: @escaping @MainActor () -> Void) -> Void = { LinkGate.alert($0, $1, $2, $3) }
 
     func decide(_ url: URL) -> OpenURLAction.Result {
-        switch LinkPolicy.kind(of: url) {
+        switch LinkCheck.kind(of: url) {
         case .web(let web):
             return .systemAction(web)
         case .file:
@@ -38,10 +38,10 @@ final class LinkGate {
         systemOpen(url)
     }
 
-    /// The question's words for a link that isn't a web page.
+    /// The question's words for a link that isn't a web page: all of it,
+    /// the same URL `systemOpen` is handed (LinkCheck.question).
     static func question(_ url: URL) -> (title: String, detail: String) {
-        ("Open this \(url.scheme ?? "") link?",
-         "It isn't a web page: it opens another app, which acts on what the link says. It's from a thread, so Threadbear asks first.\n\n\(LinkPolicy.shown(url))")
+        LinkCheck.question(url)
     }
 
     /// An alert over whatever's on top. Not SwiftUI's `.alert` at the root:

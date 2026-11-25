@@ -357,3 +357,43 @@ export function ownAddresses(text, add = {}) {
   const list = (k) => [...new Set([...(Array.isArray(was[k]) ? was[k] : []), ...(add[k] ?? [])].filter((x) => typeof x === 'string' && x))];
   return { api: list('api'), site: list('site') };
 }
+
+// The backend and dashboard images, pinned by manifest digest, never a tag:
+// a tag (even one that reads like a commit) is a registry mapping anyone
+// who can publish to it can move, and the backend holds the mirror's data
+// and makes its admin key (Daybreak 172, 23 Nov 2026). Docker checks the
+// bytes it pulls against the digest, and pinnedImage below checks again.
+//
+// Both are Convex's build of upstream commit CONVEX_IMAGE_COMMIT (the tag
+// they're published under). An upgrade can need an export and an import
+// (Convex's self-hosted/advanced/upgrading.md), so move them on
+// deliberately, both together: pick the new commit's tag, read each
+// image's index digest (`docker buildx imagetools inspect
+// ghcr.io/convex/convex-backend:<commit>`, the "Digest:" line), and change
+// all three lines here in one commit. Setup then makes the containers again
+// on the same volume.
+export const CONVEX_IMAGE_COMMIT = 'd1fcbeaf939502a23a0f4b7e9095a12e84866294';
+export const BACKEND_IMAGE = 'ghcr.io/convex/convex-backend@sha256:e9c084e8bd6c1f249012c672193f0988c748824f55a24cdad45f6185a8462f9a';
+export const DASHBOARD_IMAGE = 'ghcr.io/convex/convex-dashboard@sha256:caf95d3f2241cddc103a84b728294fa0777c6acc291a2c4612c1d06faaa1c43a';
+
+const PINNED = /^[a-z0-9.-]+(?::\d+)?\/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$/;
+
+// Has this image, by exactly that digest, pulling it if not; throws if the
+// reference isn't a digest or what Docker has under it doesn't carry it.
+// `docker` runs the docker CLI ({ status, stdout }), a stub in the test.
+export function pinnedImage(docker, ref) {
+  if (!PINNED.test(ref)) throw new Error(`${ref} isn't pinned by digest (name@sha256:<64 hex>), so setup won't run it.`);
+  if (docker(['image', 'inspect', ref]).status !== 0) {
+    if (docker(['pull', '-q', ref], { stdio: ['ignore', 'ignore', 'inherit'] }).status !== 0) throw new Error(`docker pull ${ref} failed.`);
+  }
+  const got = docker(['image', 'inspect', '--format', '{{json .RepoDigests}}', ref]);
+  let digests = [];
+  try {
+    digests = JSON.parse(got.stdout || '[]');
+  } catch {
+    digests = [];
+  }
+  if (got.status !== 0 || !Array.isArray(digests) || !digests.includes(ref)) {
+    throw new Error(`The image Docker has for ${ref} doesn't carry that digest (it has ${Array.isArray(digests) && digests.length ? digests.join(', ') : 'none'}), so setup won't run it. Remove it (docker image rm ${ref}) and run setup again.`);
+  }
+}

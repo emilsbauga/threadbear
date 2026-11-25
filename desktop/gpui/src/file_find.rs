@@ -17,6 +17,7 @@ use gpui_kit::component::input::{EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::{h_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use std::rc::Rc;
 use threadbear_core::find::{self as core_find, Finder};
 
 actions!(file_preview, [FindNext, FindPrevious]);
@@ -322,159 +323,176 @@ impl SidePane {
         self.find_changed(thread_id, cx);
     }
 
-    /// The bar, over the text (`NSTextFinder`'s, measured on the Swift app's
-    /// pictures): a 30 point strip with a hairline under it, the field taking
-    /// the room, then ‹ › and Done.
+    /// The bar over the file (`bar`), stepping and closing this file's search.
     pub(crate) fn render_find_bar(
         &self,
         thread_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let bar = self.files.open.get(thread_id)?.find.as_ref()?;
-        let p = palette(cx);
-        let input = bar.input.clone();
         let (query, current, total) = self.find_state(thread_id, cx).unwrap_or_default();
-        let count = core_find::count_label(&query, current, total);
-        let has_matches = total > 0;
-        let id = thread_id.to_owned();
-        let field_fill = style::primary_opacity(cx, 0.07);
-        let field = h_flex()
-            .flex_1()
-            .min_w_0()
-            .h(px(21.))
-            .pl(px(7.))
-            .pr(px(4.))
-            .gap(px(4.))
-            .rounded_full()
-            .bg(field_fill)
-            .child(icon("magnifyingglass", 12., p.secondary).flex_none())
-            .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&input)
-                        .appearance(false)
-                        .small()
-                        .cleanable(true)
-                        .pl(px(0.))
-                        .text_size(px(style::size::LABEL)),
-                ),
-            )
-            .when(!count.is_empty(), |s| {
-                s.child(
-                    div()
-                        .flex_none()
-                        .text_size(px(style::size::SMALL))
-                        .text_color(p.secondary)
-                        .child(count),
-                )
-            });
-        let (back_id, next_id, done_id) = (id.clone(), id.clone(), id.clone());
-        let step =
-            |this_id: &'static str,
-             symbol: &'static str,
-             tip: &'static str,
-             back: bool,
-             thread: String,
-             cx: &mut Context<Self>| {
-                let hover = p.hover;
-                tipped(
-                    div()
-                        .id(this_id)
-                        .w(px(16.))
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(has_matches, |s| {
-                            s.cursor_pointer().hover(move |s| s.bg(hover))
-                        })
-                        .child(icon(symbol, 12., if has_matches { p.fg } else { p.faint })),
-                    tip,
-                )
-                .when(has_matches, |s| {
-                    s.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.find_step(&thread, back, cx)
-                    }))
-                })
-            };
-        let steps = h_flex()
-            .flex_none()
-            .h(px(21.))
-            .rounded(px(6.))
-            .overflow_hidden()
-            .bg(field_fill)
-            .child(step(
-                "find-previous",
-                "chevron.left",
-                "Find the match before (⇧⌘G)",
-                true,
-                back_id,
-                cx,
-            ))
-            .child(div().w(gpui_kit::px(1.)).h(px(12.)).bg(p.hairline))
-            .child(step(
-                "find-next",
-                "chevron.right",
-                "Find the match after (⌘G)",
-                false,
-                next_id,
-                cx,
-            ));
-        let done = tipped(
-            div()
-                .id("find-done")
-                .flex_none()
-                .h(px(21.))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .rounded(px(6.))
-                .bg(field_fill)
-                .cursor_pointer()
-                .active(|s| s.opacity(0.7))
-                .text_size(px(style::size::LABEL))
-                .text_color(p.fg)
-                .child("Done"),
-            "Close the find bar (Escape)",
-        )
-        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-            this.close_find(&done_id, window, cx)
-        }));
-        let escape_id = id;
-        Some(
-            h_flex()
-                .id("find-bar")
-                .flex_none()
-                .w_full()
-                .h(px(31.))
-                .pl(px(6.))
-                .pr(px(8.))
-                .gap(px(7.))
-                .items_center()
-                .border_b_1()
-                .border_color(p.hairline)
-                // Escape in the field closes the bar, as AppKit's does.
-                .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
-                    if ev.keystroke.key == "escape" {
-                        this.close_find(&escape_id, window, cx);
-                        cx.stop_propagation();
-                    }
-                }))
-                .child(field)
-                .child(steps)
-                .child(done)
-                .into_any_element(),
-        )
+        let pane = cx.weak_entity();
+        let (step_id, done_id) = (thread_id.to_owned(), thread_id.to_owned());
+        let step_pane = pane.clone();
+        Some(find_bar(
+            &bar.input,
+            core_find::count_label(&query, current, total),
+            total > 0,
+            Rc::new(move |back, _, cx| {
+                let _ = step_pane.update(cx, |this, cx| this.find_step(&step_id, back, cx));
+            }),
+            Rc::new(move |window, cx| {
+                let _ = pane.update(cx, |this, cx| this.close_find(&done_id, window, cx));
+            }),
+            cx,
+        ))
     }
 }
 
-/// Every match on the page faintly, the picked one as a selection is, and
-/// that one scrolled to: the code editor's look for its own matches.
-fn mark_page(doc: &Entity<TextViewState>, finder: &Finder, cx: &mut App) {
-    let selection = cx.theme().selection;
-    let faint = Hsla {
-        s: 0.1,
-        ..selection
+/// ‹ or › pressed (`true` for ‹), or Done: what the bar's buttons do.
+pub(crate) type OnStep = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+pub(crate) type OnDone = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// The find bar (`NSTextFinder`'s, measured on the Swift app's pictures): a
+/// 30 point strip with a hairline under it, the field taking the room with
+/// `count` in it, then ‹ › and Done. Over a file in the pane and over a
+/// thread's transcript (thread/find.rs).
+pub(crate) fn find_bar(
+    input: &Entity<InputState>,
+    count: String,
+    has_matches: bool,
+    on_step: OnStep,
+    on_done: OnDone,
+    cx: &App,
+) -> AnyElement {
+    let p = palette(cx);
+    let field_fill = style::primary_opacity(cx, 0.07);
+    let field = h_flex()
+        .flex_1()
+        .min_w_0()
+        .h(px(21.))
+        .pl(px(7.))
+        .pr(px(4.))
+        .gap(px(4.))
+        .rounded_full()
+        .bg(field_fill)
+        .child(icon("magnifyingglass", 12., p.secondary).flex_none())
+        .child(
+            div().flex_1().min_w_0().child(
+                Input::new(input)
+                    .appearance(false)
+                    .small()
+                    .cleanable(true)
+                    .pl(px(0.))
+                    .text_size(px(style::size::LABEL)),
+            ),
+        )
+        .when(!count.is_empty(), |s| {
+            s.child(
+                div()
+                    .flex_none()
+                    .text_size(px(style::size::SMALL))
+                    .text_color(p.secondary)
+                    .child(count),
+            )
+        });
+    let step = |this_id: &'static str, symbol: &'static str, tip: &'static str, back: bool| {
+        let hover = p.hover;
+        let on_step = on_step.clone();
+        tipped(
+            div()
+                .id(this_id)
+                .w(px(16.))
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(has_matches, |s| {
+                    s.cursor_pointer().hover(move |s| s.bg(hover))
+                })
+                .child(icon(symbol, 12., if has_matches { p.fg } else { p.faint })),
+            tip,
+        )
+        .when(has_matches, |s| {
+            s.on_click(move |_: &ClickEvent, window, cx| on_step(back, window, cx))
+        })
     };
+    let steps = h_flex()
+        .flex_none()
+        .h(px(21.))
+        .rounded(px(6.))
+        .overflow_hidden()
+        .bg(field_fill)
+        .child(step(
+            "find-previous",
+            "chevron.left",
+            "Find the match before (⇧⌘G)",
+            true,
+        ))
+        .child(div().w(gpui_kit::px(1.)).h(px(12.)).bg(p.hairline))
+        .child(step(
+            "find-next",
+            "chevron.right",
+            "Find the match after (⌘G)",
+            false,
+        ));
+    let done_click = on_done.clone();
+    let done = tipped(
+        div()
+            .id("find-done")
+            .flex_none()
+            .h(px(21.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .bg(field_fill)
+            .cursor_pointer()
+            .active(|s| s.opacity(0.7))
+            .text_size(px(style::size::LABEL))
+            .text_color(p.fg)
+            .child("Done"),
+        "Close the find bar (Escape)",
+    )
+    .on_click(move |_: &ClickEvent, window, cx| done_click(window, cx));
+    h_flex()
+        .id("find-bar")
+        .flex_none()
+        .w_full()
+        .h(px(31.))
+        .pl(px(6.))
+        .pr(px(8.))
+        .gap(px(7.))
+        .items_center()
+        .border_b_1()
+        .border_color(p.hairline)
+        // Escape in the field closes the bar, as AppKit's does.
+        .capture_key_down(move |ev: &KeyDownEvent, window, cx| {
+            if ev.keystroke.key == "escape" {
+                on_done(window, cx);
+                cx.stop_propagation();
+            }
+        })
+        .child(field)
+        .child(steps)
+        .child(done)
+        .into_any_element()
+}
+
+/// Find's marks, the picked match's and the rest's: yellow, as Safari's and
+/// Xcode's are, so they stand out from a selection. The selection's own
+/// blue-grey was too dim to find on a dark page (Mike, 24 Nov). Only a
+/// background can be set, so the words keep their colour: strong enough to
+/// see from across the page, light enough to read through.
+pub(crate) fn match_colours() -> (Hsla, Hsla) {
+    let yellow = gpui_kit::hsla(46. / 360., 1., 0.5, 1.);
+    (yellow.opacity(0.62), yellow.opacity(0.24))
+}
+
+/// Every match on the page softly, the picked one strongly, and that one
+/// scrolled to.
+fn mark_page(doc: &Entity<TextViewState>, finder: &Finder, cx: &mut App) {
+    let (selection, faint) = match_colours();
     let current = finder.current_range();
     let marks: Vec<RangeHighlight> = finder
         .matches

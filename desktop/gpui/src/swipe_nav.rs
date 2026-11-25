@@ -329,20 +329,18 @@ impl Threadbear {
                     let mine = app
                         .update(cx, |this, cx| {
                             if event.touch_phase == TouchPhase::Started {
-                                this.swipe_nav.board_scroll = this
-                                    .panel_available(crate::shell::HIGHLIGHTS, cx)
-                                    && this
-                                        .dock
-                                        .read(cx)
-                                        .controller
-                                        .is_showing(crate::shell::HIGHLIGHTS)
-                                    && this.pane_thread().is_some_and(|thread| {
-                                        this.side.read(cx).board_scroll_at(
-                                            &thread,
-                                            event.position,
-                                            window,
-                                        )
-                                    });
+                                // The Canvas page's board takes two fingers too
+                                // (thread_canvas.rs).
+                                this.swipe_nav.board_scroll = this.thread_canvas.takes_scroll()
+                                    || this.panel_available(crate::shell::HIGHLIGHTS, cx)
+                                        && this.dock.read(cx).is_showing(crate::shell::HIGHLIGHTS)
+                                        && this.pane_thread().is_some_and(|thread| {
+                                            this.side.read(cx).board_scroll_at(
+                                                &thread,
+                                                event.position,
+                                                window,
+                                            )
+                                        });
                                 if this.swipe_nav.board_scroll {
                                     this.swipe_nav.swipe.reset();
                                     this.swipe_nav.held.clear();

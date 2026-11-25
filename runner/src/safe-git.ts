@@ -105,7 +105,7 @@ export type UntrustedGitOptions = {
   bytes?: boolean;
 };
 
-const TRUSTED_SCOPES = new Set(['system', 'global', 'unknown']); // 'unknown': Apple's own git config
+export const TRUSTED_SCOPES: ReadonlySet<string> = new Set(['system', 'global', 'unknown']); // 'unknown': Apple's own git config
 // diff.external too: a blank one is no program, even with --ext-diff (git
 // fails rather than run one).
 const ALWAYS: readonly string[] = ['-c', 'diff.external=', '-c', 'safe.bareRepository=explicit', '-c', 'http.saveCookies=false', '-c', 'commit.gpgSign=false', '-c', 'tag.gpgSign=false', '-c', 'submodule.recurse=false', '-c', 'fetch.recurseSubmodules=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false'];
@@ -131,8 +131,26 @@ export function parseConfigList(out: string): ConfigEntry[] {
   return list;
 }
 
+// The same from git's own bytes. A setting's name is bytes to git, and node
+// hands -c to git as UTF-8, so a name that isn't UTF-8 (a hook named with
+// byte 0xff) read as text comes back as U+FFFD and switching it off would
+// name a different setting, leaving the repo's on (Codex's review of
+// Daybreak 179, 24 Nov 2026): it fails instead, as one -c can't carry does.
+const UTF8 = new TextDecoder('utf-8', { fatal: true });
+export function parseConfigListBytes(out: Buffer): ConfigEntry[] {
+  return parseConfigList(out.toString('latin1')).map((e) => {
+    let key: string;
+    try {
+      key = UTF8.decode(Buffer.from(e.key, 'latin1'));
+    } catch {
+      throw new Error(`This repo's git config has a setting whose name isn't UTF-8 text (${JSON.stringify(e.key.slice(0, 80))}), which Threadbear can't switch off, so it left git alone.`);
+    }
+    return { scope: e.scope, key, value: Buffer.from(e.value, 'latin1').toString('utf8') };
+  });
+}
+
 // A name git's -c can carry: it splits `key=value` at the first =.
-function settable(key: string): string {
+export function settable(key: string): string {
   if (key.includes('=') || key.includes('\n')) throw new Error(`This repo's git config has a setting Threadbear can't switch off (${JSON.stringify(key.slice(0, 80))}), so it left git alone.`);
   return key;
 }
@@ -146,11 +164,13 @@ export function repoProofConfig(entries: readonly ConfigEntry[], network?: 'bund
   for (const e of entries) {
     // A protocol the repo names beats protocol.allow too (ftp, a helper's
     // name for `foo::`), so each one it names is turned off by name.
-    const p = /^protocol\.(.+)\.allow$/.exec(e.key);
+    // Any name, empty and with line separators too, which `.` skips
+    // (Gemini's review of Daybreak 179, as for hooks below).
+    const p = /^protocol\.([\s\S]*)\.allow$/.exec(e.key);
     if (p && !allowed.includes(p[1]!) && !PROTOCOL_NAMES.includes(p[1]!)) out.push('-c', `${settable(e.key)}=never`);
-    const f = /^filter\.(.+)\.[^.]+$/.exec(e.key);
+    const f = /^filter\.([\s\S]*)\.[^.]+$/.exec(e.key);
     if (f) drivers.add(`filter.${f[1]}`);
-    const d = /^diff\.(.+)\.(command|textconv)$/.exec(e.key);
+    const d = /^diff\.([\s\S]*)\.(command|textconv)$/.exec(e.key);
     if (d) out.push('-c', `${settable(`diff.${d[1]}.${d[2]}`)}=`);
     // A hook named in config (git 2.54's hook.<name>.command and .event)
     // runs whatever core.hooksPath says: update-ref ran a repo's
@@ -165,7 +185,7 @@ export function repoProofConfig(entries: readonly ConfigEntry[], network?: 'bund
   if (network === 'remote') {
     const fromRepo = (match: (k: string) => boolean) => entries.some((e) => match(e.key) && !TRUSTED_SCOPES.has(e.scope));
     const owners = (match: (k: string) => boolean) => entries.filter((e) => match(e.key) && TRUSTED_SCOPES.has(e.scope));
-    const helper = (k: string) => /^credential\.(.+\.)?helper$/.test(k);
+    const helper = (k: string) => /^credential\.([\s\S]*\.)?helper$/.test(k);
     if (fromRepo(helper)) {
       // An empty helper empties the list so far; then the owner's, in order.
       out.push('-c', 'credential.helper=');
@@ -210,13 +230,13 @@ export async function untrustedGit(dir: string, args: readonly string[], opts: U
   if (!sub || !SUBCOMMANDS.has(sub) || (sub === 'worktree' && rest[0] !== 'list')) return { ok: false, code: 1, stdout: '', stderr: `untrustedGit doesn't run git ${[sub, sub === 'worktree' ? rest[0] : undefined].filter(Boolean).join(' ')}: nobody has looked at what a repo's config could make it run.` };
   // The same variables as the command, so it reads the config the command will.
   const started = Date.now();
-  const listed = await execGit(dir, [...LISTING_GIT_CONFIG, '-C', dir, 'config', '--list', '--show-scope', '-z'], { ...untrustedGitEnv(), GIT_NO_LAZY_FETCH: '1', ...opts.env }, Math.min(10_000, timeout));
+  const listed = await execGit(dir, [...LISTING_GIT_CONFIG, '-C', dir, 'config', '--list', '--show-scope', '-z'], { ...untrustedGitEnv(), GIT_NO_LAZY_FETCH: '1', ...opts.env }, Math.min(10_000, timeout), true);
   // Outside a repo it still lists the owner's own config (empty is 0 too);
   // a config git can't parse fails the listing, and so this.
   if (!listed.ok) return { ok: false, code: listed.code || 1, stdout: '', stderr: `couldn't read the repo's git config: ${listed.stderr.trim() || `git config exited ${listed.code}`}` };
   let config: string[];
   try {
-    config = repoProofConfig(parseConfigList(listed.stdout), opts.network);
+    config = repoProofConfig(parseConfigListBytes(listed.bytes ?? Buffer.from(listed.stdout)), opts.network);
   } catch (e) {
     return { ok: false, code: 1, stdout: '', stderr: e instanceof Error ? e.message : String(e) };
   }

@@ -712,8 +712,10 @@ fn step(
         "shortcuts" => crate::settings_window::keyboard_automation(app, cmd, cx),
         // The sidebar's commands (sidebar.rs). Guarded ones only take the forms
         // that name a section, a row or a tip; the others fall through below.
-        "hover" | "sort" | "archive-more" | "star" | "unstar" | "unarchive" | "realMenu"
-        | "menu-popover" | "group" => crate::sidebar::automation(app, cmd, window, cx),
+        "hover" | "sort" | "archive-more" | "should-have-shown" | "star" | "unstar"
+        | "unarchive" | "realMenu" | "menu-popover" | "group" => {
+            crate::sidebar::automation(app, cmd, window, cx)
+        }
         "new" | "options" => crate::new_thread::automation(app, cmd, window, cx),
         // A threadbear:// link handed over as macOS hands one (deep_links.rs).
         "open-url" => crate::deep_links::automation(app, cmd, window.window_handle(), cx),
@@ -754,6 +756,30 @@ fn step(
         "terminal" => crate::terminal::automation(app, cmd, window, cx),
         // As the Swift app's: the window in front and key, for pictures on a
         // desktop of what only draws there (its Terminal's text).
+        // The find bar over the open thread (thread/find.rs): `find` types
+        // the words, `next`, `previous` and `done` press ›, ‹ and Done.
+        "threadFind" => {
+            let pane = app.read(cx).pane.clone().ok_or("no thread open")?;
+            pane.update(cx, |p, cx| {
+                if let Some(query) = cmd["find"].as_str() {
+                    p.find_typed(query, window, cx);
+                }
+                if cmd["next"].as_bool() == Some(true) {
+                    p.find_again(false, window, cx);
+                }
+                if cmd["previous"].as_bool() == Some(true) {
+                    p.find_again(true, window, cx);
+                }
+                if cmd["done"].as_bool() == Some(true) {
+                    p.close_find(window, cx);
+                }
+            });
+            let line = pane.read(cx).find_dump().map_or_else(
+                || "no find bar".to_owned(),
+                |d| d["line"].as_str().unwrap_or_default().to_owned(),
+            );
+            Ok(json!(format!("ok {line}")))
+        }
         "front" => {
             cx.activate(true);
             window.activate_window();
@@ -765,17 +791,11 @@ fn step(
         "expand" | "collapse" if cmd.get("scheduleSection").is_some() => {
             crate::scheduled::automation(app, cmd, cx)
         }
-        // Projects (projects.rs): a project's page, its parent, the Projects
-        // page's search, and the sidebar's folded project rows.
+        // Projects (projects.rs): a project's page, its parent and the
+        // Projects page's search.
         "project" | "projectParent" => crate::projects::automation(app, cmd, window, cx),
-        "decision" => crate::project_decisions::automation(app, cmd, window, cx),
-        "feed" => crate::inbox_feed::automation(app, cmd, window, cx),
-        "projectTab" => crate::project_decisions::tab_automation(app, cmd, cx),
         "search" if cmd["projects"].as_bool() == Some(true) => {
             crate::projects::automation(app, cmd, window, cx)
-        }
-        "expand" | "collapse" if cmd.get("projectRow").is_some() => {
-            crate::projects_list::fold_automation(app, cmd, cx)
         }
         "schedule" | "close-schedule" => crate::scheduled::editor_automation(app, cmd, window, cx),
         "archive" | "snooze" if cmd.get("id").is_some() || cmd.get("said").is_some() => {
@@ -904,7 +924,7 @@ fn step(
         "dock-move" | "panel" | "float" | "mode" | "zoom" | "rename" | "undo-archive"
         | "open-archived" | "error" | "mouse-button" | "copy-thread-id" | "menus" | "menu-item"
         | "app-menu" | "data-dir" | "share" | "signin" | "edit-message" | "message-words"
-        | "refusal" | "appearance" | "resize" => shell_step(app, cmd, window, cx),
+        | "refusal" | "appearance" | "resize" | "canvas" => shell_step(app, cmd, window, cx),
         "search" => {
             let words = text(cmd, "text").to_string();
             let search = app.read(cx).search.clone();
@@ -921,6 +941,7 @@ fn step(
         "type" | "send" => {
             type_in_composer(
                 app,
+                cmd,
                 text(cmd, "text"),
                 cmd["replace"].as_bool().unwrap_or(false),
                 window,
@@ -1106,9 +1127,8 @@ fn step(
                 }
                 return Ok(json!(app.read(cx).machine_menu_lines(&id)));
             }
-            let Some(composer) = app.read(cx).composer(cx) else {
-                return Err("no thread open".into());
-            };
+            // `thread`: the box of that thread's own panel, not the main one's.
+            let composer = app.read(cx).composer_for_command(cmd, cx)?;
             let data = composer.read(cx).chip_data(cx);
             match text(cmd, "menu") {
                 "permission" => {
@@ -1227,9 +1247,7 @@ fn step(
                 .map(|s| json!(s))
         }
         "ask" => {
-            let Some(composer) = app.read(cx).composer(cx) else {
-                return Err("no thread open".into());
-            };
+            let composer = app.read(cx).composer_for_command(cmd, cx)?;
             composer
                 .update(cx, |c, cx| c.card_action(text(cmd, "action"), window, cx))
                 .map(|_| json!("ok"))
@@ -1378,10 +1396,11 @@ fn step(
                 return Err(format!("no button called {title:?}"));
             };
             let at = target.visible_bounds().center();
+            let before = dialogs_up(window);
             window.pointer_move(at, None, cx);
             window.pointer_down(at, MouseButton::Left, cx);
             window.pointer_up(at, MouseButton::Left, cx);
-            Ok(json!("click ok"))
+            Ok(json!(clicked("click ok", &before, window, cx)))
         }
         // A click at a point in the window, in points from its top left,
         // through its hit testing as a real one goes, without moving the
@@ -1406,35 +1425,10 @@ fn step(
             } else {
                 MouseButton::Left
             };
-            window.pointer_move(at, None, cx);
-            // Each press carries its count, as a real double-click's second does.
-            for click_count in 1..=cmd["count"].as_u64().unwrap_or(1).clamp(1, 3) as usize {
-                let modifiers = window.modifiers();
-                window.dispatch_event(
-                    MouseDownEvent {
-                        button,
-                        position: at,
-                        modifiers,
-                        click_count,
-                        first_mouse: false,
-                    }
-                    .to_platform_input(),
-                    cx,
-                );
-                window.render_frame(cx);
-                window.dispatch_event(
-                    MouseUpEvent {
-                        button,
-                        position: at,
-                        modifiers,
-                        click_count,
-                    }
-                    .to_platform_input(),
-                    cx,
-                );
-                window.render_frame(cx);
-            }
-            Ok(json!("click-at ok"))
+            let count = cmd["count"].as_u64().unwrap_or(1).clamp(1, 3) as usize;
+            let before = dialogs_up(window);
+            click_at(window, at, button, count, cx);
+            Ok(json!(clicked("click-at ok", &before, window, cx)))
         }
         "expand" | "collapse" => {
             let open = text(cmd, "cmd") == "expand";
@@ -1483,7 +1477,10 @@ fn step(
             Ok(json!("ok"))
         }
         "archive" => {
-            app.update(cx, |t, cx| t.toggle_archive(window, cx));
+            // As ⌘E does: the thread being typed in, else the main panel's.
+            app.update(cx, |t, cx| {
+                t.run_command(crate::shell::Command::Archive, window, cx)
+            });
             Ok(json!("ok"))
         }
         "snooze" => {
@@ -1738,7 +1735,7 @@ fn shell_step(
                     }
                     t.show_pane(id, cx);
                 } else if let Some(show) = cmd["show"].as_bool() {
-                    let shown = t.dock.read(cx).controller.is_showing(shell::HIGHLIGHTS);
+                    let shown = t.dock.read(cx).is_showing(shell::HIGHLIGHTS);
                     if show != shown {
                         t.click_rail(shell::HIGHLIGHTS, cx);
                     }
@@ -1759,7 +1756,6 @@ fn shell_step(
                 .read(cx)
                 .dock
                 .read(cx)
-                .controller
                 .is_showing(cmd["id"].as_str().unwrap_or(shell::HIGHLIGHTS));
             Ok(json!(if showing { "ok showing" } else { "ok hidden" }))
         }
@@ -1776,13 +1772,21 @@ fn shell_step(
             }
             Ok(json!(format!("ok {}", dock_summary(app, cx))))
         }
+        // The Canvas page (thread_canvas.rs): show it, fly in and out, and
+        // read the board.
+        // Drawn first, as `click` is: the board is laid out as it's drawn,
+        // and a window the Mac isn't drawing (CI's, behind another) said
+        // only "showing" for good (24 Nov 2026).
+        "canvas" => {
+            window.render_frame(cx);
+            app.update(cx, |t, cx| t.canvas_command(cmd, window, cx))
+        }
         "mode" => {
             let mode = match cmd["mode"].as_str().unwrap_or("inbox") {
                 "scheduled" => shell::SidebarMode::Scheduled,
                 "projects" => shell::SidebarMode::Projects,
                 "librarian" => shell::SidebarMode::Librarian,
                 "recipes" => shell::SidebarMode::Recipes,
-                "feed" => shell::SidebarMode::Feed,
                 "archive" => {
                     app.update(cx, |t, cx| {
                         t.run_command(shell::Command::ShowArchived, window, cx)
@@ -2093,6 +2097,7 @@ fn shell_step(
 
 fn type_in_composer(
     app: &Entity<Threadbear>,
+    cmd: &Value,
     words: &str,
     replace: bool,
     window: &mut Window,
@@ -2100,12 +2105,11 @@ fn type_in_composer(
 ) -> Result<(), String> {
     // On the new-thread page the box is made at its first render; a script
     // may type before that frame has been drawn.
-    if app.read(cx).pane.is_none() {
+    if app.read(cx).pane.is_none() && cmd["thread"].is_null() {
         app.update(cx, |t, cx| t.ensure_new_composer(window, cx));
     }
-    let Some(composer) = app.read(cx).composer(cx) else {
-        return Err("no thread open".into());
-    };
+    // `thread`: the box in that thread's own panel.
+    let composer = app.read(cx).composer_for_command(cmd, cx)?;
     let input = composer.read(cx).input.clone();
     if replace {
         input.update(cx, |s, cx| s.set_value("", window, cx));
@@ -2116,6 +2120,97 @@ fn type_in_composer(
     window.render_frame(cx);
     window.input(words, cx);
     Ok(())
+}
+
+/// Each dialog drawn in the window (an alert, a sheet, a popover), by the
+/// labels of what's in it, its buttons in order. Not its title: a dialog's
+/// text is plain GPUI text, which gpui-kit's observation doesn't record.
+fn dialogs_up(window: &Window) -> Vec<String> {
+    let elements = window.elements();
+    elements
+        .iter()
+        .filter(|e| e.visible() && matches!(e.role(), Some(Role::AlertDialog | Role::Dialog)))
+        .map(|dialog| {
+            let inside = dialog.path();
+            let mut parts: Vec<&str> = dialog.label().into_iter().collect();
+            parts.extend(
+                elements
+                    .iter()
+                    .filter(|e| {
+                        e.visible() && e.path().len() > inside.len() && e.path().starts_with(inside)
+                    })
+                    .filter_map(|e| e.label()),
+            );
+            parts.join(", ")
+        })
+        .collect()
+}
+
+/// A click's reply, naming any dialog it brought up: a click can ask
+/// rather than do (a busy row's Archive confirms first), and a bare "ok"
+/// read as done. 24 Nov: three `click-at`s on waiting rows' Archive buttons
+/// each left "Archive and stop the turn?" up and archived nothing, and the
+/// film script took it for click-at missing the button.
+fn clicked(ok: &str, before: &[String], window: &mut Window, cx: &mut App) -> String {
+    // One frame mounts a dialog's layer, the next paints it.
+    window.render_frame(cx);
+    window.render_frame(cx);
+    let new: Vec<String> = dialogs_up(window)
+        .into_iter()
+        .filter(|d| !before.contains(d))
+        .collect();
+    if new.is_empty() {
+        return ok.to_owned();
+    }
+    let with: Vec<String> = new
+        .iter()
+        .map(|d| {
+            if d.is_empty() {
+                "a dialog".to_owned()
+            } else {
+                format!("a dialog with {d}")
+            }
+        })
+        .collect();
+    format!("{ok}, and it brought up {}", with.join("; "))
+}
+
+/// `click-at`'s presses: the pointer moved there, then each press with its
+/// count, as a real double-click's second carries 2.
+fn click_at(
+    window: &mut Window,
+    at: Point<Pixels>,
+    button: MouseButton,
+    count: usize,
+    cx: &mut App,
+) {
+    window.pointer_move(at, None, cx);
+    for click_count in 1..=count {
+        let modifiers = window.modifiers();
+        window.dispatch_event(
+            MouseDownEvent {
+                button,
+                position: at,
+                modifiers,
+                click_count,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        window.dispatch_event(
+            MouseUpEvent {
+                button,
+                position: at,
+                modifiers,
+                click_count,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+    }
 }
 
 /// label-point against a Highlights card scrolled half out of its pane, with
@@ -2267,5 +2362,254 @@ mod label_point_tests {
             assert_eq!(sliver(100., 150.), Some(125));
         })
         .expect("the test window");
+    }
+}
+
+/// `click-at` on a heading that opens its row, then on an empty spot: the
+/// heading's tooltip has to go, as it does for a real pointer moving away.
+/// And when the click moves the heading out from under the pointer (the
+/// transcript following its tail as the row opens), its tooltip doesn't come
+/// up over what's there now (23 Nov: the lab review's "Show every finding"
+/// stayed up over the findings in a filmed take).
+#[cfg(test)]
+mod click_at_tests {
+    use super::click_at;
+    use gpui_kit::prelude::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        div, px, size, AnyView, AnyWindowHandle, App, Bounds, MouseButton, Point, TestAppContext,
+        Window, WindowBounds, WindowOptions,
+    };
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    /// The tooltip, counting its draws: a draw only happens while it shows.
+    struct Tip(Rc<Cell<u32>>);
+
+    impl Render for Tip {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.0.set(self.0.get() + 1);
+            div().w(px(120.)).h(px(20.)).child("Show every finding")
+        }
+    }
+
+    /// A heading the width of the window that opens its row. With `moves`,
+    /// opening it pushes it down 60 points, as rows above it scroll.
+    struct Ledger {
+        open: bool,
+        moves: bool,
+        drawn: Rc<Cell<u32>>,
+    }
+
+    impl Render for Ledger {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let drawn = self.drawn.clone();
+            // GPUI's own tooltip, where the bug was, not the app's `.tip`
+            // (tips_source.rs looks for this written in place).
+            let tip = move |_: &mut Window, cx: &mut App| -> AnyView {
+                cx.new(|_| Tip(drawn.clone())).into()
+            };
+            let mut column = div().size_full().flex().flex_col();
+            if self.open && self.moves {
+                column = column.child(div().id("above").w_full().h(px(60.)));
+            }
+            column = column.child(
+                div()
+                    .id("heading")
+                    .w_full()
+                    .h(px(20.))
+                    .tooltip(tip)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open = !this.open;
+                        cx.notify();
+                    })),
+            );
+            if self.open {
+                column = column.child(div().id("findings").w_full().h(px(60.)));
+            }
+            column
+        }
+    }
+
+    fn ledger(moves: bool, cx: &mut TestAppContext) -> (AnyWindowHandle, Rc<Cell<u32>>) {
+        cx.update(gpui_kit::init);
+        let drawn = Rc::new(Cell::new(0));
+        let d = drawn.clone();
+        let window = cx.update(|cx| {
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Point::default(),
+                    size: size(px(400.), px(300.)),
+                })),
+                ..Default::default()
+            };
+            gpui_kit::open_window(options, cx, move |_, cx| {
+                cx.new(|_| Ledger {
+                    open: false,
+                    moves,
+                    drawn: d,
+                })
+            })
+            .expect("a test window")
+            .0
+        });
+        (window, drawn)
+    }
+
+    fn click(window: AnyWindowHandle, x: f32, y: f32, cx: &mut TestAppContext) {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            click_at(
+                window,
+                gpui_kit::point(px(x), px(y)),
+                MouseButton::Left,
+                1,
+                cx,
+            );
+        })
+        .expect("the test window");
+    }
+
+    /// Whether the tooltip is still up, once its wait is over. The window
+    /// lays a tooltip out before it checks the pointer is still over its
+    /// element, so a frame that drops it renders it too: it's up if the next
+    /// frame renders it again.
+    fn shows(window: AnyWindowHandle, drawn: &Cell<u32>, cx: &mut TestAppContext) -> bool {
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        let frame = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                .expect("the test window")
+        };
+        frame(cx);
+        let before = drawn.get();
+        frame(cx);
+        drawn.get() > before
+    }
+
+    #[gpui_kit::test]
+    fn moving_on_ends_the_last_spots_tooltip(cx: &mut TestAppContext) {
+        let (window, drawn) = ledger(false, cx);
+        click(window, 50., 10., cx);
+        assert!(
+            shows(window, &drawn, cx),
+            "the test needs the tooltip up after the click, as the pointer stays on the heading"
+        );
+        click(window, 300., 250., cx);
+        assert!(
+            !shows(window, &drawn, cx),
+            "the heading's tooltip stayed up after a click elsewhere"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_heading_the_click_moved_away_shows_no_tooltip(cx: &mut TestAppContext) {
+        let (window, drawn) = ledger(true, cx);
+        click(window, 50., 10., cx);
+        assert!(
+            !shows(window, &drawn, cx),
+            "the heading moved out from under the pointer, but its tooltip came up there"
+        );
+        // Along where the heading was, to the right of where its tooltip
+        // would be.
+        click(window, 300., 10., cx);
+        assert!(
+            !shows(window, &drawn, cx),
+            "a tooltip is up after a click on what's under the pointer now"
+        );
+    }
+}
+
+/// A click that brings up a dialog says so, with its buttons: the busy
+/// confirm a waiting row's Archive asks first read as a click that missed
+/// (24 Nov). One that doesn't, or a dialog already up, adds nothing.
+#[cfg(test)]
+mod clicked_tests {
+    use super::{click_at, clicked, dialogs_up};
+    use gpui_kit::component::dialog::DialogButtonProps;
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::prelude::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        div, px, size, AnyWindowHandle, Bounds, MouseButton, Point, TestAppContext, Window,
+        WindowBounds, WindowOptions,
+    };
+
+    /// An Archive button that asks first, as a busy row's does, and a spot
+    /// that does nothing.
+    struct Row;
+
+    impl Render for Row {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .id("archive")
+                        .w(px(40.))
+                        .h(px(20.))
+                        .on_click(|_, window, cx| {
+                            window.open_alert_dialog(cx, |alert, _, _| {
+                                alert
+                                    .title("Archive and stop the turn?")
+                                    .description("This thread is waiting for you.")
+                                    .button_props(
+                                        DialogButtonProps::default()
+                                            .ok_text("Archive")
+                                            .show_cancel(true),
+                                    )
+                            })
+                        }),
+                )
+        }
+    }
+
+    fn press(window: AnyWindowHandle, x: f32, y: f32, cx: &mut TestAppContext) -> String {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let before = dialogs_up(window);
+            click_at(
+                window,
+                gpui_kit::point(px(x), px(y)),
+                MouseButton::Left,
+                1,
+                cx,
+            );
+            clicked("click-at ok", &before, window, cx)
+        })
+        .expect("the test window")
+    }
+
+    #[gpui_kit::test]
+    fn a_click_that_brings_up_a_dialog_says_what_it_asks(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
+        });
+        let window = cx.update(|cx| {
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Point::default(),
+                    size: size(px(600.), px(400.)),
+                })),
+                ..Default::default()
+            };
+            gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| Row))
+                .expect("a test window")
+                .0
+        });
+        assert_eq!(
+            press(window, 300., 300., cx),
+            "click-at ok",
+            "a click on nothing brought up nothing"
+        );
+        let reply = press(window, 20., 10., cx);
+        assert_eq!(
+            reply, "click-at ok, and it brought up a dialog with Cancel, Archive",
+            "the reply didn't name the confirm"
+        );
+        // Under the dialog now: the same dialog still up isn't news.
+        assert_eq!(press(window, 590., 390., cx), "click-at ok");
     }
 }

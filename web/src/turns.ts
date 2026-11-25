@@ -19,15 +19,31 @@ export type TurnMessage = {
   // Go ahead or Send back, once the plan's card is answered (API 76).
   planDecision?: 'go' | 'revise';
   turn?: string;
+  // On the first row of a turn the agent started by itself: the sub-agents
+  // and jobs whose finishing woke it (API 33).
+  wokeBy?: WokeTask[];
+  // Why the runner sent its own message (origin "runner"), a few words:
+  // "Codex answered" (API 98).
+  wakeReason?: string;
   // The reply buttons its text links (API 59, reply-buttons.ts).
   buttons?: MessageButton[];
   at: string;
 };
 
+export type WokeTask = { kind: string; description: string };
+
+// The wait before a turn the agent started by itself, or the runner's own
+// message did with its reason: "6 min later · Mine the repo finished",
+// "Moments later · Codex answered". The iPhone's TurnGap
+// (ios/ThreadbearKit/Sources/ThreadbearKit/TurnGap.swift), from the Mac's.
+export type TurnGap = { seq: number; from: string; to: string; wokeBy: WokeTask[]; runnerWake?: string };
+
 export type Item<M extends TurnMessage = TurnMessage> =
   | { kind: 'message'; m: M }
   | { kind: 'tools'; items: M[] }
   | { kind: 'worked'; items: Item<M>[]; ms?: number; key: number }
+  // The divider before a turn the agent woke up for (gapLabel).
+  | { kind: 'gap'; gap: TurnGap }
   // A login's note: a quiet line of its own, never folded into the work.
   | { kind: 'note'; m: M };
 
@@ -77,6 +93,7 @@ export function fold<M extends TurnMessage>(messages: M[], busy: boolean): Item<
 // after (Codex's review, 13 Nov). The note goes by the messages instead.
 function placedSeq(item: Item): number | undefined {
   if (item.kind === 'worked') return undefined;
+  if (item.kind === 'gap') return item.gap.seq;
   if (item.kind === 'tools') return item.items[0]?.seq;
   return item.m.seq;
 }
@@ -95,7 +112,7 @@ function foldTurns<M extends TurnMessage>(messages: M[], busy: boolean): Item<M>
     if (starter) out.push({ kind: 'message', m: starter });
     // The turn still going shows its work as it comes.
     if (busy && i === turns.length - 1) {
-      out.push(...group(body));
+      out.push(...shownWhole(body));
       return;
     }
     // A plan stays out of the fold wherever it is in the turn, as on the
@@ -104,7 +121,7 @@ function foldTurns<M extends TurnMessage>(messages: M[], busy: boolean): Item<M>
     const replyOnly = replies(body);
     const reply = replyOnly.length ? [...new Set([...replyOnly, ...body.flatMap((m, j) => (m.plan ? [j] : []))])] : [];
     if (!reply.length) {
-      out.push(...group(body));
+      out.push(...shownWhole(body));
       return;
     }
     const keep = new Set(reply);
@@ -115,9 +132,118 @@ function foldTurns<M extends TurnMessage>(messages: M[], busy: boolean): Item<M>
       const ms = starter ? end - Date.parse(starter.at) : undefined;
       out.push({ kind: 'worked', items: group(folded), ms, key: folded[0]!.seq });
     } else out.push(...group(folded));
-    for (const j of [...reply].sort((a, b) => a - b)) out.push({ kind: 'message', m: body[j]! });
+    // A wait between two of the replies gets its divider before the reply after it.
+    const walls = dividers(body, new Set(reply));
+    const placed = new Set<number>();
+    for (const j of [...reply].sort((a, b) => a - b)) {
+      const k = Math.max(-1, ...[...walls.keys()].filter((w) => w <= j));
+      if (k >= 0 && !placed.has(k)) {
+        placed.add(k);
+        out.push({ kind: 'gap', gap: walls.get(k)! });
+      }
+      out.push({ kind: 'message', m: body[j]! });
+    }
   });
   return out;
+}
+
+// A stretch shown as it is, every row, with a divider before each turn the
+// agent woke up for.
+function shownWhole<M extends TurnMessage>(body: M[]): Item<M>[] {
+  const walls = dividers(body, new Set(body.keys()));
+  const out: Item<M>[] = [];
+  let start = 0;
+  for (const k of [...walls.keys()].sort((a, b) => a - b)) {
+    out.push(...group(body.slice(start, k)), { kind: 'gap', gap: walls.get(k)! });
+    start = k;
+  }
+  return [...out, ...group(body.slice(start))];
+}
+
+// Why the runner sent this message of its own, when it says.
+function runnerWake(m: TurnMessage): string | undefined {
+  if (m.role !== 'user' || m.origin !== 'runner') return undefined;
+  return m.wakeReason?.trim() || undefined;
+}
+
+// The wait before each turn in a stretch the agent started by itself (no
+// message starts it), or the runner's own message did with its reason (API
+// 98), by the index of its first row: from the row before to that one. Rows
+// from before API 26 have no turn, so there are none.
+function waits(body: TurnMessage[]): Map<number, TurnGap> {
+  const out = new Map<number, TurnGap>();
+  let i = 1;
+  while (i < body.length) {
+    const m = body[i]!;
+    const why = runnerWake(m);
+    if (m.turn === undefined || m.turn === body[i - 1]!.turn || (m.role === 'user' && !why)) {
+      i++;
+      continue;
+    }
+    let end = i + 1;
+    while (end < body.length && body[end]!.turn === m.turn && body[end]!.role !== 'user') end++;
+    const woke = body.slice(i, end).find((r) => r.wokeBy)?.wokeBy ?? [];
+    out.set(i, { seq: m.seq, from: body[i - 1]!.at, to: m.at, wokeBy: woke, ...(why ? { runnerWake: why } : {}) });
+    i = end;
+  }
+  return out;
+}
+
+// The waits that get a divider, as the Mac picks them: only one with
+// something shown above and below it. Waits with nothing shown between
+// them are one divider, from the first one's start to the last one's end.
+function dividers(body: TurnMessage[], shown: Set<number>): Map<number, TurnGap> {
+  const gaps = waits(body);
+  const out = new Map<number, TurnGap>();
+  let shownBefore = false;
+  let waiting: [number, TurnGap] | undefined;
+  for (let k = 0; k < body.length; k++) {
+    const gap = gaps.get(k);
+    if (gap && shownBefore) {
+      const earlier = waiting?.[1];
+      const runner = gap.runnerWake ?? earlier?.runnerWake;
+      waiting = earlier ? [k, { seq: gap.seq, from: earlier.from, to: gap.to, wokeBy: [...earlier.wokeBy, ...gap.wokeBy], ...(runner ? { runnerWake: runner } : {}) }] : [k, gap];
+    }
+    if (!shown.has(k) || body[k]!.role === 'user') continue;
+    if (waiting) out.set(waiting[0], waiting[1]);
+    waiting = undefined;
+    shownBefore = true;
+  }
+  return out;
+}
+
+// "6 min later · Mine the repo finished", as the Mac says it.
+export function gapLabel(gap: TurnGap): string {
+  // A time that won't parse is no time at all, as on the Mac, never "NaN days" (Gemini's review).
+  const span = Date.parse(gap.to) - Date.parse(gap.from);
+  const time = later(Number.isFinite(span) ? Math.max(0, span) / 1000 : 0);
+  const cause = gap.runnerWake?.trim() || wakeCause(gap.wokeBy);
+  return cause ? `${time} · ${cause}` : time;
+}
+
+function later(interval: number): string {
+  const seconds = Math.round(interval);
+  if (seconds < 60) return seconds < 2 ? 'Moments later' : `${seconds}s later`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min later`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours < 24) return rest === 0 ? `${hours} h later` : `${hours} h ${rest} min later`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? 'A day later' : `${days} days later`;
+}
+
+// Sub-agents are named over the shells they ran, as on the Mac.
+function wakeCause(tasks: WokeTask[]): string | undefined {
+  if (!tasks.length) return undefined;
+  const agents = tasks.filter((t) => t.kind === 'agent');
+  const shown = agents.length ? agents : tasks;
+  const names = shown.map((t) => t.description.trim()).filter(Boolean);
+  const noun = agents.length ? 'sub-agent' : 'background job';
+  if (!names.length) return shown.length === 1 ? `A ${noun} finished` : `${shown.length} ${noun}s finished`;
+  if (names.length === 1 && shown.length === 1) return `${names[0]} finished`;
+  if (names.length === 2 && shown.length === 2) return `${names[0]} and ${names[1]} finished`;
+  return `${names[0]} and ${shown.length - 1} more finished`;
 }
 
 // Which of a finished stretch's messages are its replies, as the Mac picks

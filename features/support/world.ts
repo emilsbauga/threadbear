@@ -34,6 +34,8 @@ export class ThreadbearWorld extends World {
   shareResult?: string;
   /** The thread whose page flew to its heading (archive-flight.steps.ts). */
   flownFrom?: string;
+  /** The panels' layout (`dock`) just before the last ⌘J, for panel-motion.steps.ts. */
+  dockBefore?: string;
   /** A stand-in BrowserBear, for @browserbear scenarios (support/browserbear.ts). */
   bear?: StandInBrowserBear;
 
@@ -162,10 +164,6 @@ Before(async function (this: ThreadbearWorld, { pickle }) {
   // each state (MOCK_VIRTUAL_RUNNERS in its server.mjs).
   if (pickle.tags.some((t) => t.name === '@virtual-runners')) process.env.MOCK_VIRTUAL_RUNNERS = '1';
   else delete process.env.MOCK_VIRTUAL_RUNNERS;
-  // Decisions on the Projects page: the mock's cards of asks in Threadbear,
-  // and the projectDecisions experiment on in its hello.
-  if (pickle.tags.some((t) => t.name === '@project-decisions')) process.env.TB_MOCK_DECISIONS = '1';
-  else delete process.env.TB_MOCK_DECISIONS;
   // Nested threads: the mock's coordinator and the threads it started, with
   // the nestedThreads experiment on, or off with @nested-threads-off.
   const nestedOff = pickle.tags.some((t) => t.name === '@nested-threads-off');
@@ -173,22 +171,29 @@ Before(async function (this: ThreadbearWorld, { pickle }) {
   else delete process.env.TB_MOCK_NESTED;
   if (nestedOff) process.env.TB_MOCK_NESTED_OFF = '1';
   else delete process.env.TB_MOCK_NESTED_OFF;
-  // The Feed: the feed experiment on in the hello, and its demo threads.
-  if (pickle.tags.some((t) => t.name === '@feed')) process.env.TB_MOCK_FEED = '1';
-  else delete process.env.TB_MOCK_FEED;
   // The done card's Archive menu: the inboxGuess experiment on in the hello.
   if (pickle.tags.some((t) => t.name === '@inbox-guess')) process.env.TB_MOCK_INBOX_GUESS = '1';
   else delete process.env.TB_MOCK_INBOX_GUESS;
-  // PR links opening as a tab in the pane (the inlinePrs experiment), with
-  // the mock's made-up PR.
-  if (pickle.tags.some((t) => t.name === '@inline-prs')) process.env.TB_MOCK_PRS = '1';
-  else delete process.env.TB_MOCK_PRS;
   // Its files read 3 s after the rest of it, as a big PR's are.
   if (pickle.tags.some((t) => t.name === '@slow-pr-files')) process.env.TB_MOCK_PR_FILES_MS = '3000';
   else delete process.env.TB_MOCK_PR_FILES_MS;
   // The Recipes view: the recipes experiment on, with the mock's recipes.
   if (pickle.tags.some((t) => t.name === '@recipes')) process.env.TB_MOCK_RECIPES = '1';
   else delete process.env.TB_MOCK_RECIPES;
+  if (pickle.tags.some((t) => t.name === '@review.canvas')) process.env.TB_MOCK_REVIEW_CANVAS = '1';
+  else delete process.env.TB_MOCK_REVIEW_CANVAS;
+  // The Canvas page, with the nested demo's coordinator and the threads it started.
+  if (pickle.tags.some((t) => t.name === '@thread.canvas')) {
+    process.env.TB_MOCK_THREAD_CANVAS = '1';
+    process.env.TB_MOCK_NESTED = '1';
+    process.env.TB_MOCK_NESTED_OFF = '1';
+  } else delete process.env.TB_MOCK_THREAD_CANVAS;
+  // Agent Archive in the sidebar's search: the archive experiment on, with
+  // the mock's made-up sessions, and its answers slow with @slow-archive.
+  if (pickle.tags.some((t) => t.name === '@archive')) process.env.TB_MOCK_ARCHIVE = '1';
+  else delete process.env.TB_MOCK_ARCHIVE;
+  if (pickle.tags.some((t) => t.name === '@slow-archive')) process.env.TB_MOCK_ARCHIVE_MS = '2500';
+  else delete process.env.TB_MOCK_ARCHIVE_MS;
   // Parts of a project: Photo sync as a part of Threadbear.
   if (pickle.tags.some((t) => t.name === '@project-parts')) process.env.TB_MOCK_PARTS = '1';
   else delete process.env.TB_MOCK_PARTS;

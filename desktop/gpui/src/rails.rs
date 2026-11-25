@@ -483,13 +483,15 @@ impl Threadbear {
         let mut views = vec![];
         let mode = self.mode;
         // The view on show; its button's square slides to it from the last.
+        // The Canvas page is up in place of the list (thread_canvas.rs).
+        let on_canvas = self.thread_canvas.showing;
         let lit_id: SharedString = match mode {
+            _ if on_canvas => "rail-canvas",
             SidebarMode::Inbox => "rail-threads",
             SidebarMode::Scheduled => "rail-scheduled",
             SidebarMode::Projects => "rail-projects",
             SidebarMode::Librarian => "rail-librarian",
             SidebarMode::Recipes => "rail-recipes",
-            SidebarMode::Feed => "rail-feed",
         }
         .into();
         let sliding = lit(Some(lit_id.clone()), cx.reduce_motion());
@@ -502,7 +504,7 @@ impl Threadbear {
             "rail-threads",
             "bubble.left.and.bubble.right",
             "Threads",
-            mode == SidebarMode::Inbox,
+            mode == SidebarMode::Inbox && !on_canvas,
         ));
         button.tip = self.shortcut_tip("Threads", ShortcutCommand::ShowInbox);
         button.hint = self.shortcut_display(ShortcutCommand::ShowInbox);
@@ -515,24 +517,12 @@ impl Threadbear {
             },
             cx,
         ));
-        // The Feed (experiment `feed`, inbox_feed.rs): the Inbox as cards in
-        // the main panel, the list staying as it is.
-        if self.feed_on() {
-            let mut button = view_button(RailButton::new(
-                "rail-feed",
-                "text.alignleft",
-                "Feed",
-                mode == SidebarMode::Feed,
-            ));
-            button.tip = "Feed: your Inbox as cards, one after another".into();
-            views.push(rail_button(button, |this, _, cx| this.show_feed(cx), cx));
-        }
         if self.schedules_supported {
             let mut button = view_button(RailButton::new(
                 "rail-scheduled",
                 "clock",
                 "Scheduled",
-                mode == SidebarMode::Scheduled,
+                mode == SidebarMode::Scheduled && !on_canvas,
             ));
             button.tip = self.shortcut_tip("Scheduled", ShortcutCommand::ShowScheduled);
             button.hint = self.shortcut_display(ShortcutCommand::ShowScheduled);
@@ -555,7 +545,7 @@ impl Threadbear {
                 "rail-projects",
                 "square.stack.3d.up",
                 "Projects",
-                mode == SidebarMode::Projects,
+                mode == SidebarMode::Projects && !on_canvas,
             ));
             button.tip = self.shortcut_tip("Projects", ShortcutCommand::ShowProjects);
             button.hint = self.shortcut_display(ShortcutCommand::ShowProjects);
@@ -575,7 +565,7 @@ impl Threadbear {
                 "rail-librarian",
                 "books.vertical",
                 "Librarian",
-                mode == SidebarMode::Librarian,
+                mode == SidebarMode::Librarian && !on_canvas,
             ));
             button.tip = self.shortcut_tip("Librarian", ShortcutCommand::ShowLibrarian);
             button.hint = self.shortcut_display(ShortcutCommand::ShowLibrarian);
@@ -600,7 +590,7 @@ impl Threadbear {
                 "rail-recipes",
                 "book",
                 "Recipes",
-                mode == SidebarMode::Recipes,
+                mode == SidebarMode::Recipes && !on_canvas,
             ));
             button.tip = "Recipes: techniques worth keeping, set up for you by an agent".into();
             button.badge = self
@@ -618,6 +608,22 @@ impl Threadbear {
                     window.focus(&this.sidebar.focus, cx);
                     crate::web_panels::keyboard_to_app(window);
                 },
+                cx,
+            ));
+        }
+        // Canvas, with its experiment on (thread_canvas.rs): every live
+        // thread on one board, in place of the list and the thread.
+        if self.thread_canvas_on() {
+            let mut button = view_button(RailButton::new(
+                "rail-canvas",
+                "rectangle.3.group",
+                "Canvas",
+                on_canvas,
+            ));
+            button.tip = "Canvas: every live thread on one board, by project".into();
+            views.push(rail_button(
+                button,
+                |this, window, cx| this.show_thread_canvas(window, cx),
                 cx,
             ));
         }
@@ -696,7 +702,7 @@ impl Threadbear {
         // Usage, as a honey pot filled to the room the next thread would get,
         // its tooltip each pool's best room (usage.rs). Toggles its panel
         // under the threads, as VS Code's bar does its views.
-        let usage_shown = self.dock.read(cx).controller.is_showing(shell::USAGE);
+        let usage_shown = self.dock.read(cx).is_showing(shell::USAGE);
         let (pot, tip) = self.honey_pot();
         let mut button = RailButton::new(
             "rail-usage",
@@ -779,7 +785,7 @@ impl Threadbear {
             return div().into_any_element();
         };
         let dock = self.dock.read(cx);
-        let showing = |panel: &str| dock.controller.is_showing(panel);
+        let showing = |panel: &str| dock.is_showing(panel);
         let highlights_shown = showing(shell::HIGHLIGHTS);
         let files_shown = showing(shell::FILES);
         let patches_shown = showing(shell::PATCHES);
@@ -796,10 +802,8 @@ impl Threadbear {
             .into_iter()
             .map(|p| {
                 // Or the thread's pinned copy of it (pinned_panels.rs).
-                let shown = dock.controller.is_showing(&p.id)
-                    || dock
-                        .controller
-                        .is_showing(&crate::pinned_panels::pinned_panel(&thread.id, &p.id));
+                let shown = dock.is_showing(&p.id)
+                    || dock.is_showing(&crate::pinned_panels::pinned_panel(&thread.id, &p.id));
                 (p, shown)
             })
             .collect();
@@ -919,9 +923,6 @@ impl Threadbear {
         let mut activity = vec![
             json!({ "title": "Threads", "badge": self.inbox_count(cx), "active": mode == SidebarMode::Inbox }),
         ];
-        if self.feed_on() {
-            activity.push(json!({ "title": "Feed", "active": mode == SidebarMode::Feed }));
-        }
         if self.schedules_supported {
             activity.push(json!({ "title": "Scheduled", "badge": self.scheduled.active_count(), "active": mode == SidebarMode::Scheduled }));
         }
@@ -948,7 +949,7 @@ impl Threadbear {
         if let Some(thread) = self.pane_thread() {
             let project_page = self.projects.open.is_some();
             let dock = self.dock.read(cx);
-            let showing = |p: &str| dock.controller.is_showing(p);
+            let showing = |p: &str| dock.is_showing(p);
             let open_ask = thread
                 .asks
                 .iter()

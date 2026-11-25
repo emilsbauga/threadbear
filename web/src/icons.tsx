@@ -142,6 +142,11 @@ export const Photo = () => (
     <circle cx="5.5" cy="5.8" r=".8" />
   </svg>
 );
+export const Card = () => (
+  <svg {...base}>
+    <path d="M2.5 3.5h11v9h-11zM4.5 6h7M4.5 8.5h4.5" />
+  </svg>
+);
 export const Bubbles = () => (
   <svg {...base}>
     <path d="M2 3.5h9v6H5.5L3 11.5v-2H2zM12.5 6.5H14V12h-1v1.8L10.8 12H7" />

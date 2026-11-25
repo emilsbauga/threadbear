@@ -320,6 +320,91 @@ test('following is bounded: a loop ends, and a chain deeper than it follows fail
   assert.match((await load(deep.folder, t2)).patches[0].error ?? '', /more than 12 deep/);
 });
 
+// Past a problem only writes are read (writesOnly). Scripts that run
+// themselves and each other were read again at every level down to the
+// limit, doubling each time: Threadbear's check.sh and check-remote.sh
+// made one look at its checks patch take 40 to 100 s, and every runner's
+// trust worker ran flat out redoing it (23 Nov). Each is read once per
+// place it runs, and what it's handed each time still counts. Run as
+// `sh x.sh`, not `./x.sh`, so the follow's look at named paths doesn't
+// read them first and the writes-only read is what's tested.
+const FOLLOW = (folder: string) => ({ folder, top: folder, scanJs: scanModule as never, resolveImport: (d: string, s: string) => path.resolve(d, s), namedPaths });
+
+test("past a problem, scripts that run each other are read for writes once each, and what each run hands them still counts", () => {
+  const { folder } = repo(HOOK('true'), {
+    's.sh': ['eval :', 'sh a.sh', 'sh w.sh first.txt', 'sh w.sh run.sh', 'sh run.sh'].join('\n') + '\n',
+    'a.sh': ['sh b.sh', 'sh b.sh', 'sh a.sh', 'sh a.sh', 'echo a > out-a.txt'].join('\n') + '\n',
+    'b.sh': ['sh a.sh', 'sh b.sh', 'sh b.sh', 'echo b > out-b.txt'].join('\n') + '\n',
+    'w.sh': 'cat payload.dat > "$1"\n',
+    'run.sh': 'echo original\n',
+    'payload.dat': 'echo replacement\n',
+  });
+  const r = reachOf(path.join(folder, 's.sh'), FOLLOW(folder));
+  const written = new Set((r.writes?.written ?? []).map(([p]) => path.basename(p)));
+  assert.ok(written.has('out-a.txt') && written.has('out-b.txt'), JSON.stringify([...written]));
+  // No longer cut off at the depth limit as somewhere it can't tell.
+  assert.equal(r.writes?.somewhere, undefined);
+  // w.sh is read once, but the second name it was handed is its $1 too:
+  // it writes run.sh, which s.sh runs.
+  assert.match(r.writeProblem ?? '', /run\.sh/);
+});
+
+test("past a problem, a script first read too deep to follow is read again from higher up", () => {
+  const files: Record<string, string> = {
+    'main.sh': ['eval :', 'sh d1.sh', 'sh cut.sh', 'sh run.sh'].join('\n') + '\n',
+    'cut.sh': 'sh writer.sh\n',
+    'writer.sh': 'cp payload.dat run.sh\n',
+    'run.sh': 'echo original\n',
+    'payload.dat': 'echo replacement\n',
+  };
+  for (let i = 1; i <= 7; i++) files[`d${i}.sh`] = i < 7 ? `sh d${i + 1}.sh\n` : 'sh cut.sh\n';
+  const { folder } = repo(HOOK('true'), files);
+  const r = reachOf(path.join(folder, 'main.sh'), FOLLOW(folder));
+  // cut.sh is read at the limit first, where writer.sh isn't reached; the
+  // read from main.sh itself reaches it, and the copy over run.sh.
+  assert.match(r.writeProblem ?? '', /run\.sh/);
+});
+
+test("past a problem, more script than it reads for writes fails as a write it can't allow, not as one it can't tell", () => {
+  const files: Record<string, string> = {
+    'writer.sh': 'cp payload.dat run.sh\n',
+    'run.sh': 'echo original\n',
+    'payload.dat': 'echo replacement\n',
+    // A `sh -c` is counted too, however deep.
+    'nested.sh': `sh -c 'sh -c "${'echo hi; '.repeat(1000)}"'\n`,
+  };
+  const lines = ['eval :'];
+  for (let i = 0; i < 20; i++) {
+    files[`n${i}.sh`] = ':\n';
+    lines.push(`sh n${i}.sh`);
+  }
+  files['main.sh'] = [...lines, 'sh writer.sh', 'sh run.sh'].join('\n') + '\n';
+  files['c.sh'] = ['eval :', 'sh nested.sh', 'sh nested.sh', 'sh writer.sh', 'sh run.sh'].join('\n') + '\n';
+  const { folder } = repo(HOOK('true'), files);
+  // 20 scripts of at least 4 KB each are past 64 KB; under it, it's the write itself.
+  assert.match(reachOf(path.join(folder, 'main.sh'), { ...FOLLOW(folder), writesBudget: 64 * 1024 }).writeProblem ?? '', /more scripts than patch trust reads/);
+  assert.match(reachOf(path.join(folder, 'main.sh'), { ...FOLLOW(folder), writesBudget: 256 * 1024 }).writeProblem ?? '', /writes run\.sh/);
+  // nested.sh and its two `sh -c`s, about 9 KB each, and writer.sh 4 KB:
+  // the second nested.sh is the same read, so about 31 KB (13 KB without
+  // the `sh -c`s counted).
+  assert.match(reachOf(path.join(folder, 'c.sh'), { ...FOLLOW(folder), writesBudget: 20 * 1024 }).writeProblem ?? '', /more scripts than patch trust reads/);
+  assert.match(reachOf(path.join(folder, 'c.sh'), { ...FOLLOW(folder), writesBudget: 40 * 1024 }).writeProblem ?? '', /writes run\.sh/);
+});
+
+test("past a problem, helpers run from every script it unwinds through are all read for writes, not refused", () => {
+  // s1.sh runs s2.sh and so on, each then running common.sh; s12.sh fails.
+  // Each level's $0 is another context for common.sh's 50 helpers (612
+  // reads), which a count of 600 refused.
+  const files: Record<string, string> = {
+    'common.sh': Array.from({ length: 50 }, (_, i) => `sh h${i}.sh`).join('\n') + '\n',
+    's12.sh': 'eval :\nsh common.sh\n',
+  };
+  for (let i = 0; i < 50; i++) files[`h${i}.sh`] = ':\n';
+  for (let i = 1; i < 12; i++) files[`s${i}.sh`] = `sh s${i + 1}.sh\nsh common.sh\n`;
+  const { folder } = repo(HOOK('true'), files);
+  assert.equal(reachOf(path.join(folder, 's1.sh'), FOLLOW(folder)).writeProblem, undefined);
+});
+
 test("a file a script runs that turns up later changes the hash: it's watched while missing", () => {
   const { folder, file } = repo(SETUP('./setup.sh'), { 'setup.sh': '[ -f ./local.sh ] && . ./local.sh\n' });
   const before = patchHash(file);

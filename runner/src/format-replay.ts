@@ -98,7 +98,7 @@ export function parseFormatList(text: string): FormatEntry[] {
 
 type Run = { ok: boolean; code: number; stdout: string; stderr: string };
 
-const GIT_SAFE = ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
+const GIT_SAFE = ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'advice.graftFileDeprecated=false'];
 
 function cleanEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -106,12 +106,38 @@ function cleanEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   // And config handed down from a `git -c` or a hook, which would beat GIT_SAFE.
   for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT']) delete env[k];
   for (const k of Object.keys(env)) if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
-  return { ...env, GIT_TERMINAL_PROMPT: '0', ...extra };
+  // Replacement objects and grafts off, after the caller's: an id is that
+  // object, so a release's signed commit merges as itself, never what a
+  // refs/replace/ entry or info/grafts in this checkout puts in its place
+  // (Daybreak 180, 24 Nov 2026). --merge refuses a checkout with either.
+  return { ...env, GIT_TERMINAL_PROMPT: '0', ...extra, GIT_NO_REPLACE_OBJECTS: '1', GIT_GRAFT_FILE: '/dev/null' };
 }
+
+// Why a release can't be merged here as its id names it, or undefined: the
+// checkout has replacement refs or grafts (scripts/merge-preview.sh says
+// the same).
+export async function substitutes(cwd: string): Promise<string | undefined> {
+  const listed = await git(cwd, ['for-each-ref', '--count=1', '--format=%(refname)', 'refs/replace/']);
+  const found = await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  // A look that fails can't say there are none (git older than 2.31 has no
+  // --path-format).
+  if (!listed.ok || !found.ok) return `Couldn't tell whether this checkout has git replacement refs or grafts (${(listed.ok ? found : listed).stderr.trim().split('\n')[0]}), so the release isn't merged.`;
+  const replaced = listed.stdout.trim();
+  if (replaced) return `This checkout has git replacement refs (${replaced}), which could have git merge other objects in place of the release's: remove them (git replace -d) first.`;
+  const common = found.stdout.trim();
+  if (common && fs.existsSync(path.join(common, 'info', 'grafts'))) return `This checkout has git grafts (${path.join(common, 'info', 'grafts')}), which could have git merge other history in place of the release's: remove that file first.`;
+  return undefined;
+}
+
+// Bringing in a release (--merge): the commit-graph off too, a file in the
+// checkout's objects git reads a commit's tree and parents from in place of
+// the commit (Codex's review of Daybreak 180). Not for tb land's replays,
+// which carry the owner's own commits.
+let noCommitGraph = false;
 
 export function git(cwd: string, args: string[], extra: NodeJS.ProcessEnv = {}): Promise<Run> {
   return new Promise((resolve) => {
-    execFile('git', [...GIT_SAFE, '-C', cwd, ...args], { env: cleanEnv(extra), maxBuffer: 64 * 1024 * 1024, timeout: 10 * 60_000, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
+    execFile('git', [...GIT_SAFE, ...(noCommitGraph ? ['-c', 'core.commitGraph=false'] : []), '-C', cwd, ...args], { env: cleanEnv(extra), maxBuffer: 64 * 1024 * 1024, timeout: 10 * 60_000, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
       const e = err as { code?: unknown; signal?: unknown } | null;
       const code = !e ? 0 : typeof e.code === 'number' ? e.code : e.signal ? -1 : 1;
       resolve({ ok: !err, code, stdout: String(stdout), stderr: String(stderr) });
@@ -384,7 +410,7 @@ export class TreeFormatter {
         const target = path.join(work, c);
         // Not under a link the tree has for a folder on the way, either.
         if (!realFoldersTo(work, c)) return { tree, failed: `${c} is under a link in this tree, so it wasn't formatted` };
-        fs.rmSync(target, { force: true, recursive: true });
+        removeEntry(target, true);
         const blob = await gitBuffer(this.cwd, `${f.commit}:${c}`);
         if (blob) {
           fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -393,7 +419,7 @@ export class TreeFormatter {
       }
       const ran = await runCommand(f.entry.command, work, this.limitMs);
       // Config files go back to the tree's own, so only formatting is read.
-      for (const c of f.entry.config) fs.rmSync(path.join(work, c), { force: true });
+      for (const c of f.entry.config) removeEntry(path.join(work, c), false);
       const back = f.entry.config.filter((c) => inTree.has(c));
       if (back.length) await stdinGit(this.cwd, [attr, 'checkout-index', '-f', '-u', '-z', '--stdin', `--prefix=${work}/`], back.join('\0'), env);
       if (f.entry.adds) {
@@ -417,7 +443,7 @@ export class TreeFormatter {
 
 function stdinGit(cwd: string, args: string[], input: string, extra: NodeJS.ProcessEnv): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const child = execFile('git', [...GIT_SAFE, '-C', cwd, ...args], { env: cleanEnv(extra), maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60_000, killSignal: 'SIGKILL' }, (err, _o, stderr) =>
+    const child = execFile('git', [...GIT_SAFE, ...(noCommitGraph ? ['-c', 'core.commitGraph=false'] : []), '-C', cwd, ...args], { env: cleanEnv(extra), maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60_000, killSignal: 'SIGKILL' }, (err, _o, stderr) =>
       err ? reject(new Error(`git ${args.join(' ')}: ${String(stderr).trim()}`)) : resolve(),
     );
     child.stdin?.end(input);
@@ -426,7 +452,7 @@ function stdinGit(cwd: string, args: string[], input: string, extra: NodeJS.Proc
 
 function gitBuffer(cwd: string, object: string): Promise<Buffer | undefined> {
   return new Promise((resolve) => {
-    execFile('git', [...GIT_SAFE, '-C', cwd, 'cat-file', 'blob', object], { env: cleanEnv(), encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 60_000, killSignal: 'SIGKILL' }, (err, stdout) =>
+    execFile('git', [...GIT_SAFE, ...(noCommitGraph ? ['-c', 'core.commitGraph=false'] : []), '-C', cwd, 'cat-file', 'blob', object], { env: cleanEnv(), encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 60_000, killSignal: 'SIGKILL' }, (err, stdout) =>
       resolve(err ? undefined : stdout),
     );
   });
@@ -447,6 +473,36 @@ function realFoldersTo(root: string, rel: string): boolean {
     }
   }
   return true;
+}
+
+// Whatever is at a path gone, a link itself rather than through it, as
+// fs.rmSync with force would (recursive only where asked). On Node 24.11
+// fs.rmSync returns without error and leaves a link whose target is missing,
+// so writing the config there failed with EEXIST and a fork's runner couldn't
+// update (Crispaul Obana, 21 Nov).
+function removeEntry(file: string, recursive: boolean): void {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(file);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return;
+    throw e;
+  }
+  if (!st.isSymbolicLink()) return fs.rmSync(file, { force: true, recursive });
+  try {
+    fs.unlinkSync(file);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return;
+    // A link to a folder on Windows refuses unlink and goes with rmdir.
+    if (process.platform !== 'win32' || code !== 'EPERM') throw e;
+    try {
+      fs.rmdirSync(file);
+    } catch (e2) {
+      if ((e2 as NodeJS.ErrnoException).code !== 'ENOENT') throw e2;
+    }
+  }
 }
 
 function rmQuietly(dir: string): void {
@@ -928,6 +984,12 @@ async function cli(argv: string[]): Promise<number> {
     }
     const mi = argv.indexOf('-m');
     const message = mi > 0 ? argv[mi + 1] : undefined;
+    noCommitGraph = true;
+    const substituted = await substitutes(top);
+    if (substituted) {
+      say(substituted);
+      return 1;
+    }
     const r = await mergeAcross(top, target, { message, leave: true });
     for (const n of r.notes) say(n);
     if (r.ok) {

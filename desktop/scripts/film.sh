@@ -4,7 +4,7 @@
 # on Tinker Desk's desktop, recorded at 2x. Run it from the M5; everything
 # that shows a window happens on Tinker Desk, never here.
 #
-#   desktop/scripts/film.sh start [--turns FILE] [--fixtures DIR]... [--live-page FILE] [--size 1240x820]
+#   desktop/scripts/film.sh start [--turns FILE] [--fixtures DIR]... [--live-page FILE] [--mock-env K=V]... [--size 1240x820]
 #                                 [--appearance dark|light] [--no-build]
 #   desktop/scripts/film.sh do '<json>'...        (dev-app.sh's commands)
 #   desktop/scripts/film.sh dump | shot <file.png> | log [--mock]
@@ -40,9 +40,14 @@
 # The app keeps every other safety dev-app.sh gives it: the mock's own data
 # folder, never the real one, and a pasteboard of its own. dev-app.sh's
 # --film refuses to start without THREADBEAR_FILM_HOST=1, which only this
-# sets, on the host. FILM_HOST picks another Mac (default tinker-desk) and
+# sets, on the host. FILM_HOST picks another Mac (default tinker-desk, in Mike's copy only) and
 # FILM_DIR the folder there (default /Volumes/TinkerSSD/threadbear-film, as
-# Tinker Desk's own disk is nearly full).
+# Tinker Desk's own disk is nearly full). When Desk Runner can't open the SSD
+# (an unanswered macOS prompt there, below) and FILM_DIR isn't set, start
+# films from ~/threadbear-film on the host's own disk instead and says so.
+# start remembers the folder it picked (film-dir in this checkout's git
+# folder), so the other commands use it without FILM_DIR; FILM_DIR on any
+# command still wins.
 #
 # While it's filming it holds the host's build-and-measurement lock (the one
 # remote.sh's runs and checks take, film/hold.pl), so the stage never swaps
@@ -53,21 +58,54 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-host="${FILM_HOST:-tinker-desk}"
+# tinker-desk is Mike's own Mac: only his copy defaults to it. A fork's agent
+# read the default and tried to ssh there (21 Nov 2026).
+case "$(git -C "$root" remote get-url origin 2>/dev/null)" in
+  *mikecann/threadbear*) host="${FILM_HOST:-tinker-desk}" ;;
+  *) host="${FILM_HOST:-}" ;;
+esac
 key="$(printf '%s' "$root" | shasum | cut -c1-10)"
-base="${FILM_DIR:-/Volumes/TinkerSSD/threadbear-film}/$key"
+default_dir=/Volumes/TinkerSSD/threadbear-film
 SSH=(ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o BatchMode=yes)
-# What every command there starts with: dev-app.sh's state in the account's
-# own temp folder, named outright so ssh's commands and Desk Runner's agree
-# (ssh has no TMPDIR, Desk Runner the per-user one; not the SSD, whose root
-# any account can write to, which dev-app.sh refuses), the build film.sh
-# made, and the turns.
-env_there="cd $base/checkout && export TMPDIR=\$(getconf DARWIN_USER_TEMP_DIR) THREADBEAR_FILM_HOST=1 DEV_APP_IDLE_QUIT_SECONDS=1200 TB_GPUI_BIN=$base/bin/threadbear-gpui; [ ! -f $base/turns.json ] || export MOCK_SCRIPTED_TURNS=$base/turns.json; [ ! -f $base/live-page.html ] || export TB_MOCK_LIVE_PAGES=$base/live-page.html"
+# The folder start picked when it isn't the default: "<host> <folder>
+# [fallback]" in this checkout's own git folder (each worktree has its own,
+# as each has its own key), so do, shot, record, cut and stop find a take on
+# the host's own disk without FILM_DIR (23 Nov: it had to go on every call).
+state="$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null)/film-dir" || state=""
+remembered() {
+  local h d rest
+  [ -n "$state" ] && [ -f "$state" ] || return 0
+  read -r h d rest <"$state" || true
+  [ "$h" != "$host" ] || printf '%s\n' "$d${rest:+ $rest}"
+}
+remember() {
+  [ -n "$state" ] || return 0
+  if [ "$1" = "$default_dir" ]; then rm -f "$state"; else printf '%s %s%s\n' "$host" "$1" "${2:+ $2}" >"$state"; fi
+}
+# Sets the take's folder there, and with it what every command there starts
+# with: dev-app.sh's state in the account's own temp folder, named outright
+# so ssh's commands and Desk Runner's agree (ssh has no TMPDIR, Desk Runner
+# the per-user one; not the SSD, whose root any account can write to, which
+# dev-app.sh refuses), the build film.sh made, and the turns.
+use_dir() {
+  base="$1/$key"
+  env_there="cd $base/checkout && export TMPDIR=\$(getconf DARWIN_USER_TEMP_DIR) THREADBEAR_FILM_HOST=1 DEV_APP_IDLE_QUIT_SECONDS=1200 TB_GPUI_BIN=$base/bin/threadbear-gpui; [ ! -f $base/turns.json ] || export MOCK_SCRIPTED_TURNS=$base/turns.json; [ ! -f $base/live-page.html ] || export TB_MOCK_LIVE_PAGES=$base/live-page.html; [ ! -f $base/mock.env ] || . $base/mock.env"
+}
 q() { printf '%q ' "$@"; }
 there() { "${SSH[@]}" "$host" "$env_there; $1"; }
 desk() { "${SSH[@]}" "$host" "~/.local/bin/desk $(q "$env_there; $1")"; }
 devapp() { there "desktop/scripts/dev-app.sh $(q "$@") --id film"; }
 die() { echo "film: $*" >&2; exit 1; }
+[ -n "$host" ] || die "set FILM_HOST to an ssh host of yours (a Mac with a screen to film on); tinker-desk is Mike's own"
+read -r last_dir last_how <<<"$(remembered)" || true
+use_dir "${FILM_DIR:-${last_dir:-$default_dir}}"
+# Whether Desk Runner there can make and open a file in a folder, with a time
+# limit: ssh reads it while Desk Runner's every open there can sit forever.
+# Without desk()'s cd into it, which nothing could time out.
+desk_can_open() {
+  "${SSH[@]}" "$host" "mkdir -p $1/bin $1/rec $1/fixtures" &&
+    "${SSH[@]}" "$host" "~/.local/bin/desk $(q "perl -e 'alarm 15; exec @ARGV' /bin/sh -c ': > $1/.desk-probe && rm -f $1/.desk-probe'")" >/dev/null 2>&1
+}
 # Who has the host's screen: with fast user switching another account's
 # session can be on the console while ours sits behind it, and then the
 # stage's virtual display comes up 0x0 (19 Nov: an ADEMark run's ademark
@@ -92,7 +130,7 @@ cmd="${1:-help}"
 [ $# -eq 0 ] || shift
 case "$cmd" in
   start)
-    turns="" size=1240x820 appearance=dark build=1 fixtures=() fix_src=() live_page=""
+    turns="" size=1240x820 appearance=dark build=1 fixtures=() fix_src=() live_page="" mock_env=()
     while [ $# -gt 0 ]; do
       case "$1" in
         --turns) turns="$2"; shift 2 ;;
@@ -102,6 +140,9 @@ case "$cmd" in
         --no-build) build=0; shift ;;
         # A live page for the mock's demo_live_page thread (the livePages experiment).
         --live-page) live_page="$2"; shift 2 ;;
+        # The mock's demo switches (TB_MOCK_RECIPES=1, TB_MOCK_NESTED=1...),
+        # which the changelog's clips of an experiment need.
+        --mock-env) [[ "$2" =~ ^[A-Z_][A-Z0-9_]*= ]] || die "--mock-env takes NAME=value"; mock_env+=("$2"); shift 2 ;;
         *) die "unknown start option $1" ;;
       esac
     done
@@ -115,22 +156,41 @@ case "$cmd" in
     if "${SSH[@]}" "$host" "pgrep -f '[t]hreadbear-film/.*/stage ' >/dev/null && ! pgrep -f '[t]hreadbear-film/$key/stage ' >/dev/null"; then
       die "another checkout is filming on $host (one at a time, as there's one stage)"
     fi
-    "${SSH[@]}" "$host" "mkdir -p $base/bin $base/rec $base/fixtures"
-    # Desk Runner has to be able to open $base, with a time limit: ssh reads
-    # it while Desk Runner's every open there can sit forever. On 19 Nov an
-    # unanswered "would like to access files on a removable volume" prompt
-    # for another app (bun, 18 Nov 19:23) had macOS hold every later
-    # removable-volume request on Tinker Desk, Desk Runner's included, behind
-    # it, with the screen asleep so nobody saw it, and start waited 20 minutes
-    # on a hold.pl that never ran.
-    # Checked first, so it fails in seconds rather than after the build, and
-    # without desk()'s cd into $base, which nothing could time out.
-    if ! "${SSH[@]}" "$host" "~/.local/bin/desk $(q "perl -e 'alarm 15; exec @ARGV' /bin/sh -c ': > $base/.desk-probe && rm -f $base/.desk-probe'")" >/dev/null 2>&1; then
-      die "Desk Runner on $host can't open $base (gave up after 15 seconds). Most likely macOS has an unanswered \"would like to access files on a removable volume\" prompt on its screen, for Desk Runner or any other app, and every later request for that disk waits behind it. See it with ssh $host '~/.local/bin/desk \"screencapture -x /tmp/s.png\"' and copy /tmp/s.png back, then answer it on $host. Or film from a folder on its own disk, with FILM_DIR=<home there>/threadbear-film on every film.sh command"
-    fi
-    # A previous take's app and stage go first, and with them its hold on the
-    # lock, which the build below waits for.
+    # A previous take's app and stage go first, from wherever it was, and
+    # with them its hold on the lock, which the build below waits for.
     [ "$("${SSH[@]}" "$host" "[ -d $base/checkout ] && echo yes")" != yes ] || there "desktop/scripts/dev-app.sh stop --id film >/dev/null 2>&1; touch $base/stage.stop; for i in \$(seq 1 20); do pgrep -f '[t]hreadbear-film/$key/stage ' >/dev/null || break; sleep 0.5; done; pkill -f '^perl desktop/scripts/film/hold.pl $base ' || true; rm -f $base/stage.stop $base/stage.json $base/locked $base/go"
+    last_base="$base"
+    # Each take tries the SSD (or FILM_DIR) again, as the prompt may have
+    # been answered since.
+    use_dir "${FILM_DIR:-$default_dir}"
+    # Desk Runner has to be able to open $base. On 19 Nov an unanswered
+    # "would like to access files on a removable volume" prompt for another
+    # app (bun, 18 Nov 19:23) had macOS hold every later removable-volume
+    # request on Tinker Desk, Desk Runner's included, behind it, with the
+    # screen asleep so nobody saw it, and start waited 20 minutes on a
+    # hold.pl that never ran (23 Nov: ruby's). Checked first, so it fails in
+    # seconds rather than after the build.
+    how=""
+    if ! desk_can_open "$base"; then
+      ssd_base="$base"
+      why="Desk Runner on $host can't open $base (gave up after 15 seconds). Most likely macOS has an unanswered \"would like to access files on a removable volume\" prompt on its screen, for Desk Runner or any other app, and every later request for that disk waits behind it. See it with ssh $host '~/.local/bin/desk \"screencapture -x /tmp/s.png\"' and copy /tmp/s.png back, then answer it on $host."
+      [ -z "${FILM_DIR:-}" ] || die "$why Or leave FILM_DIR out, and film.sh films from $host's own disk"
+      # Its own disk is small (about 47 GB free on Tinker Desk): only the
+      # binaries, the scripts and the takes go there, never cargo's target.
+      home="$("${SSH[@]}" "$host" 'printf %s "$HOME"')"
+      use_dir "$home/threadbear-film"
+      desk_can_open "$base" || die "$why Its own disk's $base didn't open either"
+      how=fallback
+      if [ "$build" = 0 ]; then
+        "${SSH[@]}" "$host" "for b in threadbear-gpui threadbear-web-helper; do s=$ssd_base/bin/\$b d=$base/bin/\$b; if [ -f \$s ] && { [ ! -f \$d ] || [ \$s -nt \$d ]; }; then cp -p \$s \$d.new && mv \$d.new \$d; fi; done"
+      fi
+      echo "film: $why Meanwhile it films from $base on $host's own disk, and the other film.sh commands find it there." >&2
+    elif [ "$last_how" = fallback ] && [ "$last_base" != "$base" ]; then
+      # Back on the SSD: the copy on the small disk goes.
+      "${SSH[@]}" "$host" "rm -rf $last_base"
+    fi
+    remember "${base%/"$key"}" "$how"
+    [ "$build" = 1 ] || "${SSH[@]}" "$host" "[ -x $base/bin/threadbear-gpui ]" || die "no build in $base yet: film.sh start without --no-build"
     if [ "$build" = 1 ]; then
       echo "Building on $host..." >&2
       log="$(mktemp -t film-build)"
@@ -144,6 +204,7 @@ case "$cmd" in
     (cd "$root" && rsync -rlpcR --delete -e "${SSH[*]}" --exclude node_modules \
       desktop/scripts runner/scripts/find-node.sh runner/src mock-runner site/scripts/record-window.swift "$host:$base/checkout/")
     "${SSH[@]}" "$host" "rm -f $base/live-page.html"
+    if [ ${#mock_env[@]} -gt 0 ]; then printf 'export %q\n' "${mock_env[@]}" | "${SSH[@]}" "$host" "cat > $base/mock.env"; else "${SSH[@]}" "$host" "rm -f $base/mock.env"; fi
     [ -z "$live_page" ] || rsync -c -e "${SSH[*]}" "$live_page" "$host:$base/live-page.html"
     for f in "${fix_src[@]+"${fix_src[@]}"}"; do rsync -rlpc --delete -e "${SSH[*]}" "${f%/}/" "$host:$base/fixtures/$(basename "$f")/"; done
     if [ -n "$turns" ]; then scp -q "$turns" "$host:$base/turns.json"; else "${SSH[@]}" "$host" "rm -f $base/turns.json"; fi

@@ -23,7 +23,6 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use threadbear_core::inbox::{Project as Membership, ThreadSummary};
 use threadbear_core::projects::{self as rules, Project, TextField, Update};
 
@@ -47,9 +46,6 @@ pub(crate) struct ProjectsState {
     pub(crate) archived_open: bool,
     /// How many archived threads each project shows in the sidebar.
     pub(crate) archived_shown: HashMap<String, usize>,
-    /// The folded rows that are open (the projectDecisions experiment), by
-    /// project id or `rules::UNFILED_ID`, kept between launches.
-    pub(crate) open_rows: HashSet<String>,
     /// What's under the pointer in the project views (a heading, a card, a
     /// page's row), for their hover looks.
     pub(crate) hovered: Option<String>,
@@ -62,12 +58,6 @@ pub(crate) struct ProjectsState {
     pub(crate) list_far: std::rc::Rc<crate::far_rows::FarRows>,
     pub(crate) home_scroll: ScrollHandle,
     pub(crate) page_scroll: ScrollHandle,
-    /// Answers sent from a project's page that their threads haven't taken
-    /// yet, by thread (`decisionSends`).
-    pub(crate) decision_sends: HashMap<String, crate::project_decisions::DecisionSend>,
-    /// Each decision's card on a project's page, by thread: what's picked on
-    /// it (project_decisions.rs).
-    pub(crate) decision_cards: HashMap<String, Entity<crate::project_decisions::DecisionCard>>,
     /// `pane_thread`'s answer on a project's page, by project, until the app
     /// next changes (the observer in app.rs clears it): the dock and the rail
     /// ask several times a frame, and finding it reads each of the project's
@@ -76,14 +66,6 @@ pub(crate) struct ProjectsState {
     /// Each picture icon's blurred copy for its card's backdrop, by path;
     /// None while it's being made or when it can't be (projects_page.rs).
     pub(crate) backdrops: HashMap<String, Option<std::sync::Arc<Image>>>,
-    /// The tab last picked on each project's page, kept while the app runs,
-    /// and the one each opened on this visit (`projectTabsPicked`,
-    /// `projectTabsOpenedOn`; project_page.rs).
-    pub(crate) tabs_picked: HashMap<String, rules::ProjectTab>,
-    pub(crate) tabs_opened_on: HashMap<String, rules::ProjectTab>,
-    /// The page the last visit was to, so a new visit (opened from the list,
-    /// Back, a link) works out again which tab it opens on.
-    pub(crate) tab_visit: Option<String>,
 }
 
 /// The title field on a project's page, for that project.
@@ -99,15 +81,6 @@ pub(crate) struct Editing {
     pub(crate) field: TextField,
     pub(crate) input: Entity<TextareaState>,
     _events: Subscription,
-}
-
-impl ProjectsState {
-    pub(crate) fn new(open_rows: Option<&[String]>) -> Self {
-        ProjectsState {
-            open_rows: open_rows.unwrap_or_default().iter().cloned().collect(),
-            ..Default::default()
-        }
-    }
 }
 
 /// What a project menu's line does (`MenuAction::Project`).
@@ -206,15 +179,6 @@ impl Threadbear {
         });
         *self.projects.pane_cache.borrow_mut() = Some((project.id.clone(), made.clone()));
         made
-    }
-
-    /// The projectDecisions experiment is on for this Mac's runner (its hello
-    /// lists it): the Projects page gathers each project's open cards of asks.
-    pub(crate) fn project_decisions_on(&self) -> bool {
-        self.remote
-            .experiments
-            .iter()
-            .any(|e| e == "projectDecisions")
     }
 
     fn replace_project(&mut self, project: Project) {
@@ -780,14 +744,9 @@ impl Threadbear {
             this.update(cx, |this, cx| {
                 match res {
                     Ok(v) => {
-                        if let Ok(mut t) =
-                            serde_json::from_value::<ThreadSummary>(v["thread"].clone())
+                        if let Ok(t) = serde_json::from_value::<ThreadSummary>(v["thread"].clone())
                         {
-                            t.runner_id = this
-                                .threads
-                                .get(&t.id)
-                                .and_then(|old| old.runner_id.clone());
-                            this.threads.insert(t.id.clone(), std::sync::Arc::new(t));
+                            this.store_reply_summary(t);
                         }
                     }
                     Err(e) => {
@@ -1274,8 +1233,6 @@ impl Threadbear {
             "title": project.title,
             "parent": project.parent_id.as_deref().and_then(|p| self.project(p)).map(|p| p.title.clone()),
             "parts": sections.parts_of(&project.id).iter().map(|s| s.project.title.clone()).collect::<Vec<_>>(),
-            // The tab showing, while the page is in tabs (projectDecisions).
-            "tab": self.project_decisions_on().then(|| self.project_tab(&project.id).name()),
             "folders": project.folders,
             "threads": threads.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
             "patches": rules::patches_across(project, &threads).iter().map(|(p, _)| p.id.clone()).collect::<Vec<_>>(),
@@ -1328,7 +1285,7 @@ pub(crate) fn project_icon(
         // The letter stands in if the file can't be read (a project on
         // another Mac's disk, or a picture this app can't draw).
         let fallback = letter_tile;
-        return img(PathBuf::from(path))
+        return img(crate::fit_picture::icon_source(&path))
             .size(px(size))
             .flex_none()
             .rounded(px(size * 0.22))

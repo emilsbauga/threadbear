@@ -80,7 +80,7 @@ impl Threadbear {
             self.threads.values().map(|t| &**t),
             now_ms(),
         );
-        let cards = rules::cards(&sections, 3, self.project_decisions_on());
+        let cards = rules::cards(&sections, 3);
         rules::matching(cards, &self.projects_query(cx).unwrap_or_default())
             .into_iter()
             .map(|c| (c.project.title.clone(), c.project.id.clone()))
@@ -102,7 +102,6 @@ impl Threadbear {
             let handle = search.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
         }
-        let decisions = self.project_decisions_on();
         let query = self.projects_query(cx);
         let (all, total, summary) = {
             let sections = Sections::build(
@@ -110,11 +109,11 @@ impl Threadbear {
                 self.threads.values().map(|t| &**t),
                 now_ms(),
             );
-            let all = rules::cards(&sections, 3, decisions);
+            let all = rules::cards(&sections, 3);
             let total = all.len();
             let summary = match &query {
                 Some(_) => None,
-                None => Some(rules::summary(total, &rules::overall(&sections, decisions))),
+                None => Some(rules::summary(total, &rules::overall(&sections))),
             };
             let shown: Vec<CardView> = rules::matching(all, query.as_deref().unwrap_or(""))
                 .into_iter()
@@ -451,16 +450,32 @@ impl Threadbear {
         let path = path.to_owned();
         cx.spawn(async move |this, cx| {
             let file = path.clone();
+            let turn = cx.update(crate::fit_picture::decode_now_turn);
+            let _turn = turn.await;
             let made = cx
                 .background_executor()
                 .spawn(async move { blurred_backdrop(&file) })
                 .await;
-            if made.is_some() {
-                this.update(cx, |this, cx| {
-                    this.projects.backdrops.insert(path, made);
-                    cx.notify();
-                })
-                .ok();
+            match made {
+                Ok(made) => {
+                    this.update(cx, |this, cx| {
+                        this.projects.backdrops.insert(path, Some(made));
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                // No room then: made again the next time it's shown after.
+                Err(crate::fit_picture::Missed::Busy) => {
+                    cx.background_executor()
+                        .timer(crate::fit_picture::BUSY_AGAIN)
+                        .await;
+                    this.update(cx, |this, cx| {
+                        this.projects.backdrops.remove(&path);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(crate::fit_picture::Missed::Failed) => {}
             }
         })
         .detach();
@@ -482,7 +497,7 @@ impl Threadbear {
             self.threads.values().map(|t| &**t),
             now_ms(),
         );
-        let cards = rules::cards(&sections, 3, self.project_decisions_on());
+        let cards = rules::cards(&sections, 3);
         Some(
             cards
                 .iter()
@@ -506,29 +521,77 @@ impl Threadbear {
     }
 }
 
+/// A project icon's decode budget, the runner's (runner/src/icon-budget.ts):
+/// at most 4096 px a side and 64 MB decoded, from a file of at most 10 MB.
+/// The runner only keeps 256 px PNGs now; this holds a copy an older runner
+/// made of a repo's own file (or anything else at the path) to the same, so
+/// a small file whose header says it's huge is refused before any pixels
+/// are allocated (Daybreak, 24 Nov).
+const ICON_MAX_SIDE: u32 = 4096;
+const ICON_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// A project icon's bytes, within the budget; None for one over it, or one
+/// that won't read. Only a PNG, which is all the runner keeps: the image
+/// crate builds an ICO's inner PNG decoder (and reads its metadata, a
+/// compressed colour profile included) before the limits apply, so an old
+/// runner's raw `.ico` copy is no backdrop (Codex's review, 24 Nov). Its
+/// size is read from its header; its pixels are decoded only within the
+/// picture budget (`fit_picture::decode_now`, Daybreak 170).
+fn icon_bytes(path: &str) -> Option<Vec<u8>> {
+    let bytes =
+        threadbear_core::open_policy::local_read(std::path::Path::new(path), ICON_MAX_BYTES + 1)
+            .ok()?;
+    if bytes.len() > ICON_MAX_BYTES {
+        return None;
+    }
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let (width, height) = crate::fit_picture::size_of(&bytes)?;
+    (width <= ICON_MAX_SIDE && height <= ICON_MAX_SIDE).then_some(bytes)
+}
+
+/// A project icon's pixels, within both budgets.
+#[cfg(test)]
+fn decode_icon(path: &str) -> Option<image::RgbaImage> {
+    let side = u64::from(ICON_MAX_SIDE);
+    crate::fit_picture::decode_now(
+        || icon_bytes(path),
+        crate::fit_picture::Plan::small(side * side),
+        Some,
+    )
+    .ok()
+}
+
 /// The picture as the Swift tile fills with it (scaled to cover a 2 by 1
 /// tile, so the middle of a square one shows), blurred by about what its
 /// 28 pt is across a 340 pt card. Small: drawing it stretched smooths it more.
-fn blurred_backdrop(path: &str) -> Option<Arc<Image>> {
+fn blurred_backdrop(path: &str) -> Result<Arc<Image>, crate::fit_picture::Missed> {
     use image::imageops::{self, FilterType};
-    let picture = image::open(path).ok()?.to_rgba8();
-    let (w, h) = picture.dimensions();
-    if w == 0 || h == 0 {
-        return None;
-    }
-    let (cw, ch) = if w >= h * 2 {
-        (h * 2, h)
-    } else {
-        (w, (w / 2).max(1))
-    };
-    let band = imageops::crop_imm(&picture, (w - cw) / 2, (h - ch) / 2, cw, ch).to_image();
-    let small = imageops::resize(&band, 96, 48, FilterType::Triangle);
-    let blurred = imageops::blur(&small, 8.);
-    let mut png = Vec::new();
-    blurred
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    Some(Arc::new(Image::from_bytes(gpui_kit::ImageFormat::Png, png)))
+    // Held to the icon budget (`icon_bytes`) and decoded within the
+    // picture budget (fit_picture.rs): a project's icon is a repo's picture.
+    let read = || icon_bytes(path);
+    let plan = crate::fit_picture::Plan::small(4 * 1024 * 1024);
+    let png = crate::fit_picture::decode_now(read, plan, |picture| {
+        let (w, h) = picture.dimensions();
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let (cw, ch) = if w >= h * 2 {
+            (h * 2, h)
+        } else {
+            (w, (w / 2).max(1))
+        };
+        let band = imageops::crop_imm(&picture, (w - cw) / 2, (h - ch) / 2, cw, ch).to_image();
+        let small = imageops::resize(&band, 96, 48, FilterType::Triangle);
+        let blurred = imageops::blur(&small, 8.);
+        let mut png = Vec::new();
+        blurred
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .ok()?;
+        Some(png)
+    })?;
+    Ok(Arc::new(Image::from_bytes(gpui_kit::ImageFormat::Png, png)))
 }
 
 /// `ThreadCount`: how many open threads it has, in the tile's corner.
@@ -587,7 +650,7 @@ fn project_status_line(status: &CardStatus, last_activity_ms: i64, cx: &App) -> 
             line = line.child(div().text_color(faint).child("·"));
         }
         let color = match part {
-            CardPart::NeedsYou(_) | CardPart::Decisions(_) => style::needs_you(cx),
+            CardPart::NeedsYou(_) => style::needs_you(cx),
             CardPart::Working(_) => style::control_accent(cx),
             CardPart::Failed(_) => style::failed(cx),
             CardPart::Unread(_) => style::secondary_text(cx),
@@ -654,4 +717,64 @@ pub(crate) fn icon_push_button(
         .child(mark)
         .child(label);
     crate::highlights::tipped(button, tip).into_any_element()
+}
+
+#[cfg(test)]
+mod icon_budget_tests {
+    use super::{blurred_backdrop, decode_icon, ICON_MAX_SIDE};
+
+    fn png_file(dir: &std::path::Path, name: &str, width: u32, height: u32) -> String {
+        let path = dir.join(name);
+        image::RgbaImage::new(width, height).save(&path).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// A PNG whose header alone says it's `side` px square, with no pixels.
+    fn png_header(dir: &std::path::Path, side: u32) -> String {
+        fn crc(bytes: &[u8]) -> u32 {
+            let mut c = 0xffff_ffffu32;
+            for &b in bytes {
+                c ^= u32::from(b);
+                for _ in 0..8 {
+                    c = if c & 1 == 1 {
+                        0xedb8_8320 ^ (c >> 1)
+                    } else {
+                        c >> 1
+                    };
+                }
+            }
+            !c
+        }
+        let mut ihdr = b"IHDR".to_vec();
+        ihdr.extend(side.to_be_bytes());
+        ihdr.extend(side.to_be_bytes());
+        ihdr.extend([8, 6, 0, 0, 0]);
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend(13u32.to_be_bytes());
+        png.extend(&ihdr);
+        png.extend(crc(&ihdr).to_be_bytes());
+        let path = dir.join(format!("header-{side}.png"));
+        std::fs::write(&path, png).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn an_icon_over_the_budget_is_never_decoded() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = png_file(dir.path(), "ok.png", 256, 256);
+        assert_eq!(decode_icon(&ok).map(|p| p.dimensions()), Some((256, 256)));
+        assert!(blurred_backdrop(&ok).is_ok());
+        // One side past the budget: refused, though it's tiny.
+        let long = png_file(dir.path(), "long.png", ICON_MAX_SIDE + 1, 1);
+        assert!(decode_icon(&long).is_none());
+        assert!(blurred_backdrop(&long).is_err());
+        let edge = png_file(dir.path(), "edge.png", ICON_MAX_SIDE, 1);
+        assert!(decode_icon(&edge).is_some());
+        // A header claiming 60,000 px square: refused before any pixels.
+        assert!(decode_icon(&png_header(dir.path(), 60_000)).is_none());
+        // Anything but a PNG (an older runner's raw .ico or .jpg copy).
+        let jpeg = dir.path().join("icon.jpg");
+        image::RgbImage::new(64, 64).save(&jpeg).unwrap();
+        assert!(decode_icon(&jpeg.to_string_lossy()).is_none());
+    }
 }

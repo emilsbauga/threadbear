@@ -30,9 +30,9 @@ const settle = () => new Promise((r) => setTimeout(r, 150));
 
 type Answer = string | ModelResult<string>;
 
-function setup(o: { on?: boolean; cheap?: Answer; strong?: Answer; hold?: Promise<void> } = {}) {
+function setup(o: { on?: boolean; quiet?: boolean; cheap?: Answer; strong?: Answer; hold?: Promise<void> } = {}) {
   const home = tmpDir();
-  fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ experiments: { inboxGuess: o.on !== false } }));
+  fs.writeFileSync(path.join(home, 'runner.json'), JSON.stringify({ experiments: { inboxGuess: o.on !== false, ...(o.quiet ? { quietInboxMine: true } : {}) } }));
   const asked: GenerateParams[] = [];
   const models = {
     generate: async (p: GenerateParams): Promise<ModelResult<string>> => {
@@ -76,7 +76,7 @@ test('a finished thread of his own gets a guess from each model, written down an
   assert.equal(typeof line.seq, 'number');
   assert.deepEqual(line.guesses, [
     { by: 'claude-haiku-5-5', skip: true, why: 'It only did what he picked.' },
-    { by: 'claude-opus-5-5', skip: false, why: 'It landed past failing tests, which he may want to know.' },
+    { by: 'claude-opus-5-5', skip: false, why: 'It landed past failing tests, which he may want to know.', strong: true },
   ]);
   // Each was shown what he asked and what came back, as data.
   assert.equal(h.asked.length, 2);
@@ -87,6 +87,25 @@ test('a finished thread of his own gets a guess from each model, written down an
   await settle();
   assert.equal(h.runner.get(id).archivedAt, undefined);
   assert.deepEqual(notes(h, id), []);
+});
+
+test('a job that ended mid-turn and was read in it: guessed once the wake grace passes with no turn', async () => {
+  const h = setup();
+  const id = mine(h);
+  const s = h.adapter.sessions.filter((x) => x.opts.threadId === id).at(-1)!;
+  s.init();
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'tb land' }] });
+  s.out({ kind: 'tasks', tasks: [] });
+  s.out({ kind: 'event', event: { type: 'system.note', text: 'tb land', wake: true } });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('m1', 'Landed on main.');
+  s.result('completed');
+  await settle();
+  assert.equal(h.lines().length, 0, 'not while a turn reading the result may still come');
+  h.clock.advance(20_000);
+  await until(() => h.lines().length === 1, 'the guess written down');
+  assert.equal(h.lines()[0].seq, h.events(id).filter((e) => e.type === 'turn.completed').at(-1).seq);
+  assert.match(h.asked[0].prompt, /Landed on main\./);
 });
 
 test('off unless the experiment is on', async () => {
@@ -369,4 +388,173 @@ test('reading a model’s answer: only a clear skip or show counts', () => {
   assert.equal(readGuess('I think skip'), undefined);
   assert.equal(readGuess('{"guess":"maybe","why":"x"}'), undefined);
   assert.equal(readGuess('{"guess":"skip"}'), undefined, 'a guess with no reason is no use when it turns out wrong');
+});
+
+// ---- The quiet inbox for his own threads (experiment quietInboxMine) ----
+
+const quietLines = (h: H) => h.lines().filter((l) => l.kind === 'quiet');
+
+test("Opus's skip archives his finished thread quietly, says why, and marks it", async () => {
+  const h = setup({ quiet: true, strong: '{"guess":"skip","why":"A receipt for what he asked."}' });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => Boolean(h.runner.get(id).archivedAt), 'the thread archived');
+  const t = h.runner.get(id);
+  assert.equal(t.archivedBy, 'threadbear');
+  assert.equal(t.quietlyArchived?.why, 'A receipt for what he asked.');
+  assert.equal(typeof t.quietlyArchived?.at, 'string');
+  assert.ok(notes(h, id).some((n) => n.startsWith('Archived quietly: it finished with nothing for you') && n.endsWith('A receipt for what he asked.')));
+  const [guess, quiet] = h.lines();
+  assert.equal(guess.kind, 'guess');
+  assert.deepEqual({ ...quiet, at: undefined }, { at: undefined, kind: 'quiet', threadId: id, seq: guess.seq, why: 'A receipt for what he asked.' });
+});
+
+test("off without the experiment: Opus's skip is only written down", async () => {
+  const h = setup({ strong: '{"guess":"skip","why":"A receipt."}' });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => h.lines().length === 1, 'the guess written down');
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
+  assert.deepEqual(quietLines(h), []);
+});
+
+test("Opus's show keeps it in the inbox, whatever Haiku said", async () => {
+  const h = setup({ quiet: true, cheap: '{"guess":"skip","why":"A receipt."}', strong: '{"guess":"show","why":"It changed the plan."}' });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => h.lines().length === 1, 'the guess written down');
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
+  assert.deepEqual(quietLines(h), []);
+});
+
+test('only Haiku answering archives nothing', async () => {
+  const h = setup({ quiet: true, strong: { ok: false, reason: 'no-room', message: 'none' } });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => h.lines().length === 1, 'the guess written down');
+  assert.deepEqual((h.lines()[0].guesses as Array<{ by: string }>).map((g) => g.by), ['claude-haiku-5-5']);
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
+});
+
+test('follow-ups (a rule) keep it in the inbox with no model asked', async () => {
+  const h = setup({ quiet: true });
+  const id = mine(h);
+  finish(h, id, { needs: 'nothing', next: ['Stop the Threadbear transcript jumping when a long reply arrives'] });
+  await until(() => h.lines().length === 1, 'the guess written down');
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
+  assert.equal(h.asked.length, 0);
+});
+
+test('a new message while the models think: the card is stale, so nothing is archived', async () => {
+  let answer: (() => void) | undefined;
+  const hold = new Promise<void>((r) => (answer = r));
+  const h = setup({ quiet: true, hold });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => h.asked.length === 2, 'both models asked');
+  h.runner.send(id, 'And the other one too');
+  answer!();
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
+  assert.deepEqual(quietLines(h), []);
+});
+
+test("one he's already looked at, starred, or once brought back is his to put away", async () => {
+  let answer: (() => void) | undefined;
+  const hold = new Promise<void>((r) => (answer = r));
+  const h = setup({ quiet: true, hold });
+  const seen = mine(h);
+  finish(h, seen);
+  const starred = mine(h, 'Look at the deploy');
+  finish(h, starred);
+  await until(() => h.asked.length === 4, 'all four asked');
+  h.runner.markSeen(seen, h.runner.get(seen).lastSeq);
+  h.runner.update({ threadId: starred, starred: true });
+  answer!();
+  await until(() => h.lines().length === 2, 'both guesses');
+  await settle();
+  assert.equal(h.runner.get(seen).archivedAt, undefined);
+  assert.equal(h.runner.get(starred).archivedAt, undefined);
+  assert.deepEqual(quietLines(h), []);
+});
+
+test('"Should have shown me" brings it back, writes the wrong hide down, and clears the mark', async () => {
+  const h = setup({ quiet: true });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => Boolean(h.runner.get(id).quietlyArchived), 'quietly archived');
+  const seq = quietLines(h)[0].seq;
+  const t = h.runner.update({ threadId: id, archived: false, verdict: 'shouldHaveShown' }).thread;
+  assert.equal(t.archivedAt, undefined);
+  assert.equal(t.quietlyArchived, undefined);
+  assert.equal(h.runner.threads.get(id)!.rec.quietlyArchived, undefined);
+  assert.ok(notes(h, id).includes('Brought back by you: you should have been shown this.'));
+  const line = h.lines().at(-1)!;
+  assert.equal(line.kind, 'wrongHide');
+  assert.equal(line.threadId, id);
+  assert.equal(line.seq, seq);
+  assert.equal(line.quiet, true);
+  assert.deepEqual(line.guesses, h.lines()[0].guesses);
+  // Brought back by hand, so its next clean finish stays in the inbox.
+  h.runner.send(id, 'One more thing');
+  finish(h, id);
+  await until(() => h.lines().filter((l) => l.kind === 'guess').length === 2, 'the second guess');
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
+});
+
+test('a plain unarchive or a new message clears the mark too, and Mike re-archiving it is his', async () => {
+  const h = setup({ quiet: true });
+  const a = mine(h);
+  finish(h, a);
+  const b = mine(h, 'Rename the panel');
+  finish(h, b);
+  const c = mine(h, 'Tidy the docs');
+  finish(h, c);
+  await until(() => [a, b, c].every((id) => Boolean(h.runner.get(id).quietlyArchived)), 'all three quietly archived');
+  h.runner.update({ threadId: a, archived: false });
+  assert.equal(h.runner.threads.get(a)!.rec.quietlyArchived, undefined);
+  assert.equal(h.lines().some((l) => l.kind === 'wrongHide'), false, 'a plain unarchive is no label');
+  h.runner.send(b, 'Now the other panel');
+  assert.equal(h.runner.threads.get(b)!.rec.quietlyArchived, undefined);
+  h.runner.update({ threadId: c, archived: true });
+  assert.equal(h.runner.get(c).quietlyArchived, undefined);
+  assert.equal(h.runner.get(c).archivedBy, 'mike');
+});
+
+test("another agent answering for Opus (a pool with no Claude login) archives nothing", async () => {
+  const h = setup({ quiet: true, strong: { ok: true, value: '{"guess":"skip","why":"A receipt."}', model: 'codex default on codex-1' } });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => h.lines().length === 1, 'the guess written down');
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
+});
+
+test('a design review waiting on his answer keeps it in the inbox', async () => {
+  const h = setup({ quiet: true });
+  const id = mine(h);
+  h.runner.threads.get(id)!.rec.reviews = [{ status: 'pending' } as never];
+  finish(h, id);
+  await until(() => h.lines().length === 1, 'the guess written down');
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
+});
+
+test('an edit under way while the models think archives nothing', async () => {
+  let answer: (() => void) | undefined;
+  const hold = new Promise<void>((r) => (answer = r));
+  const h = setup({ quiet: true, hold });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => h.asked.length === 2, 'both models asked');
+  h.runner.threads.get(id)!.rt.editing = true;
+  answer!();
+  await until(() => h.lines().length === 1, 'the guess written down');
+  await settle();
+  assert.equal(h.runner.get(id).archivedAt, undefined);
 });

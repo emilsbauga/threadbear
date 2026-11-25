@@ -32,7 +32,8 @@ function youtubeFolder(): { dir: string; file: string } {
 };
 `);
   // As scripts/youtube-panel.mjs starts the YouTube panel's server.
-  fs.writeFileSync(path.join(dir, 'start.mjs'), "import fs from 'node:fs';\nfs.writeFileSync('started', '');\nconsole.log(3);\n");
+  // Slow to start once there's a file called slow.
+  fs.writeFileSync(path.join(dir, 'start.mjs'), "import fs from 'node:fs';\nfs.writeFileSync('running', '');\nif (fs.existsSync('slow')) await new Promise((r) => setTimeout(r, 3000));\nfs.writeFileSync('started', '');\nconsole.log(3);\n");
   return { dir, file };
 }
 
@@ -133,4 +134,159 @@ test('a folder gone by the press fails it', async () => {
   fs.rmSync(yt.dir, { recursive: true, force: true });
   assert.throws(() => h.runner.pressButton(brief.id, id), /has gone/);
   assert.match(h.runner.listButtons(brief.id).buttons[0]!.failed!.error, /has gone/);
+});
+
+// Daily brief, 23 Nov 2026: Mike pressed Go through comments six times and
+// nothing opened. The press waited for the brief's whole patch read, every
+// patch's live state included, before asking for the panel, and on the busy
+// runner that read kept going for 13 minutes; the panel came up long after
+// he'd given up. The panel is shown from its own folder now, straight away,
+// whatever the thread's other patches are doing.
+test('a panel button opens its panel without waiting for the thread\'s own slow patches', async () => {
+  const yt = youtubeFolder();
+  const briefDir = fs.realpathSync(tmpDir());
+  const slow = path.join(briefDir, '.threadbear', 'patches', 'slow.ts');
+  fs.mkdirSync(path.dirname(slow), { recursive: true });
+  // Slow once the flag is there: the first read, before the press, is quick.
+  fs.writeFileSync(slow, `export default {
+  panels: [{ title: "Slow", url: "http://127.0.0.1:1/", badge: async ({ sh }) => Number(await sh("node ./slow.mjs")) }],
+};
+`);
+  fs.writeFileSync(path.join(briefDir, 'slow.mjs'), "import fs from 'node:fs';\nif (fs.existsSync('slow')) await new Promise((r) => setTimeout(r, 4000));\nconsole.log(1);\n");
+  const trust = new PatchTrust({ file: path.join(tmpDir(), 'patch-trust.json') });
+  assert.ok(trust.trust(yt.file, patchHash(yt.file).hash));
+  assert.ok(trust.trust(slow, patchHash(slow).hash));
+  const h = makeHarness(undefined, {}, { panelsRoot: fs.realpathSync(tmpDir()), patchTrust: trust, actionShell: SHELL, actionTimeoutMs: 10_000 });
+  const brief = h.runner.create({ text: 'Daily brief', accountId: 'claude-3', cwd: briefDir }).thread;
+  await settle(h);
+  assert.ok(h.runner.get(brief.id).panels?.some((p) => p.title === 'Slow'));
+  const made = await addButton(h, brief.id)({ title: 'Go through comments', panel: { folder: yt.dir, panel: 'YouTube' } });
+  const id = /button:([a-z0-9]{8})/.exec(made.text)![1]!;
+  fs.writeFileSync(path.join(briefDir, 'slow'), '');
+  // Past the live share, so the brief's read runs its slow badge again.
+  h.clock.advance(60_000);
+  const started = Date.now();
+  h.runner.pressButton(brief.id, id);
+  let after = h.runner.get(brief.id);
+  while (!after.panelRequest && Date.now() - started < 3000) {
+    await new Promise((r) => setTimeout(r, 20));
+    after = h.runner.get(brief.id);
+  }
+  const panel = after.panels?.find((p) => p.from === yt.dir);
+  assert.ok(after.panelRequest, 'the panel was asked for while the slow badge still ran');
+  assert.ok(panel, 'and the thread has it, so the app can show it');
+  assert.deepEqual(checkSummary(after as never), []);
+  assert.equal(after.panelRequest.panel, panel.id);
+  assert.equal(panel.url, 'http://127.0.0.1:6427/?thread=');
+  assert.ok(fs.existsSync(path.join(yt.dir, 'started')), 'its badge ran, so its server is up');
+  // The slow read ends with the panel still there, badge and all.
+  await settle(h);
+  const later = h.runner.get(brief.id).panels?.find((p) => p.from === yt.dir);
+  assert.equal(later?.badge, 3);
+});
+
+// A second panel button pressed while the thread's read is still running
+// the first one's slow badge: that read looked before the press, and must
+// not take the second panel away again once it's on screen (Codex's review).
+test('a read that started before a press keeps the panel the press opened', async () => {
+  const a = youtubeFolder();
+  const b = youtubeFolder();
+  const trust = new PatchTrust({ file: path.join(tmpDir(), 'patch-trust.json') });
+  assert.ok(trust.trust(a.file, patchHash(a.file).hash));
+  assert.ok(trust.trust(b.file, patchHash(b.file).hash));
+  const h = makeHarness(undefined, {}, { panelsRoot: fs.realpathSync(tmpDir()), patchTrust: trust, actionShell: SHELL, actionTimeoutMs: 10_000 });
+  const brief = h.runner.create({ text: 'Daily brief', accountId: 'claude-3', cwd: fs.realpathSync(tmpDir()) }).thread;
+  await settle(h);
+  const add = addButton(h, brief.id);
+  const idOf = (text: string) => /button:([a-z0-9]{8})/.exec(text)![1]!;
+  const first = idOf((await add({ title: 'A', panel: { folder: a.dir, panel: 'YouTube' } })).text);
+  const second = idOf((await add({ title: 'B', panel: { folder: b.dir, panel: 'YouTube' } })).text);
+  const bId = borrowedPanelId(b.dir, 'youtube.youtube');
+  const inside = h.runner as unknown as { threads: Map<string, { rt: { patches?: { set: { panels: { id: string }[] } } } }>; markDirty: (s: unknown) => void; borrowedPanels: (s: unknown) => unknown };
+  const st = inside.threads.get(brief.id)!;
+  // Every time the thread's panels change once B is open, B is among them.
+  let bOpen = false;
+  const lost: string[][] = [];
+  const markDirty = inside.markDirty.bind(h.runner);
+  inside.markDirty = (s: unknown) => {
+    const ids = (st.rt.patches?.set.panels ?? []).map((p) => p.id);
+    if (bOpen && !ids.includes(bId)) lost.push(ids);
+    if (ids.includes(bId)) bOpen = true;
+    markDirty(s);
+  };
+  fs.writeFileSync(path.join(a.dir, 'slow'), '');
+  fs.rmSync(path.join(a.dir, 'running'), { force: true });
+  // The thread's read looks at what's pressed through borrowedPanels.
+  let looked = 0;
+  const borrowedPanels = inside.borrowedPanels.bind(h.runner);
+  inside.borrowedPanels = (s: unknown) => {
+    looked += 1;
+    return borrowedPanels(s);
+  };
+  h.runner.pressButton(brief.id, first);
+  // The read has looked, and is running A's slow badge.
+  let started = Date.now();
+  while ((!looked || !fs.existsSync(path.join(a.dir, 'running'))) && Date.now() - started < 3000) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(looked && fs.existsSync(path.join(a.dir, 'running')), "the read never got to A's badge");
+  h.runner.pressButton(brief.id, second);
+  started = Date.now();
+  while (h.runner.get(brief.id).panelRequest?.panel !== bId && Date.now() - started < 2000) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(h.runner.get(brief.id).panelRequest?.panel, bId, 'B opened while A\'s badge still ran');
+  // A's badge ends and the read that started before B's press is saved.
+  started = Date.now();
+  while (!h.runner.get(brief.id).panels?.some((p) => p.id === borrowedPanelId(a.dir, 'youtube.youtube')) && Date.now() - started < 8000) await new Promise((r) => setTimeout(r, 20));
+  await settle(h);
+  assert.deepEqual(lost, [], 'B went from the panels after it opened');
+  // And A, pressed first but slower, didn't open over B (Codex's second look).
+  assert.equal(h.runner.get(brief.id).panelRequest?.panel, bId);
+  const ids = h.runner.get(brief.id).panels?.filter((p) => p.from).map((p) => p.id).sort();
+  assert.deepEqual(ids, [borrowedPanelId(a.dir, 'youtube.youtube'), bId].sort());
+});
+
+// Pressed again later, its badge runs again before the panel is shown, so a
+// server that has stopped since is started first (Gemini's review).
+test('a panel button pressed again runs its badge again before showing it', async () => {
+  const { h, yt, brief } = await fixture();
+  const made = await addButton(h, brief.id)({ title: 'Go through comments', panel: { folder: yt.dir, panel: 'YouTube' } });
+  const id = /button:([a-z0-9]{8})/.exec(made.text)![1]!;
+  h.runner.pressButton(brief.id, id);
+  await settle(h);
+  const first = h.runner.get(brief.id).panelRequest!;
+  h.runner.panelShown(brief.id, first.id);
+  fs.rmSync(path.join(yt.dir, 'started'));
+  // Past the live share, so the badge's command runs again.
+  h.clock.advance(60_000);
+  h.runner.pressButton(brief.id, id);
+  const started = Date.now();
+  let request = h.runner.get(brief.id).panelRequest;
+  while (!request && Date.now() - started < 3000) {
+    await new Promise((r) => setTimeout(r, 5));
+    request = h.runner.get(brief.id).panelRequest;
+  }
+  assert.ok(request, 'shown again');
+  assert.ok(fs.existsSync(path.join(yt.dir, 'started')), 'its server was started before it was shown');
+});
+
+// A button for a panel of the thread's own folder opens that panel, under
+// its own id, once its badge has run.
+test('a panel button for the thread\'s own folder opens its own panel', async () => {
+  const yt = youtubeFolder();
+  const trust = new PatchTrust({ file: path.join(tmpDir(), 'patch-trust.json') });
+  assert.ok(trust.trust(yt.file, patchHash(yt.file).hash));
+  const h = makeHarness(undefined, {}, { panelsRoot: fs.realpathSync(tmpDir()), patchTrust: trust, actionShell: SHELL, actionTimeoutMs: 10_000 });
+  const thread = h.runner.create({ text: 'Comments', accountId: 'claude-3', cwd: yt.dir }).thread;
+  await settle(h);
+  const made = await addButton(h, thread.id)({ title: 'Open it', panel: { folder: yt.dir, panel: 'YouTube' } });
+  fs.rmSync(path.join(yt.dir, 'started'));
+  h.clock.advance(60_000);
+  h.runner.pressButton(thread.id, /button:([a-z0-9]{8})/.exec(made.text)![1]!);
+  const started = Date.now();
+  let request = h.runner.get(thread.id).panelRequest;
+  while (!request && Date.now() - started < 3000) {
+    await new Promise((r) => setTimeout(r, 5));
+    request = h.runner.get(thread.id).panelRequest;
+  }
+  assert.equal(request?.panel, 'youtube.youtube');
+  assert.ok(fs.existsSync(path.join(yt.dir, 'started')), 'its badge ran first');
+  assert.equal(h.runner.get(thread.id).panels?.some((p) => p.from), false);
 });

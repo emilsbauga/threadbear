@@ -218,6 +218,67 @@ test('waitFor: a pending follow-up after a job ended mid-turn means not finished
   assert.ok(h.runner.get(waiter).snoozedUntil, 'the turn reading the result is still to come');
 });
 
+// The CLI folds a job that ends mid-turn into that turn (its notification
+// shows as a note), and then starts no turn of its own: the finish waited
+// for one that never came, so threads waiting on it slept on, and the
+// quiet-inbox and inbox-guess steps never ran (17 of 21 unguessed done
+// cards, 19-22 Nov 2026).
+test('waitFor: a job that ended mid-turn and was read in it: finished once the wake grace passes with no turn', () => {
+  const { h, waiter, target, session, turn } = setup();
+  turn(waiter, { needs: 'nothing', waitFor: [target] });
+  h.runner.send(target, 'measure it');
+  const s = session(target);
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'measure' }] });
+  s.out({ kind: 'tasks', tasks: [] });
+  s.out({ kind: 'event', event: { type: 'system.note', text: 'measure', wake: true } });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('m1', 'Saved 4.1 MB.');
+  s.result();
+  assert.ok(h.runner.get(waiter).snoozedUntil, 'a turn reading the result may still come');
+  h.clock.advance(20_000);
+  assert.equal(h.runner.get(waiter).snoozedUntil, undefined, 'none came, so it finished');
+  assert.match(h.events(waiter).filter((e) => e.type === 'user.message').at(-1).text, /Saved 4\.1 MB\./);
+});
+
+test('waitFor: a job that ended mid-turn, then the turn the CLI opens to read it, finishes there and only there', () => {
+  const { h, waiter, target, session, turn } = setup();
+  turn(waiter, { needs: 'nothing', waitFor: [target] });
+  h.runner.send(target, 'measure it');
+  const s = session(target);
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'measure' }] });
+  s.out({ kind: 'tasks', tasks: [] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('m1', 'Started it.');
+  s.result();
+  h.clock.advance(5_000);
+  s.out({ kind: 'cliTurn' });
+  h.clock.advance(20_000);
+  assert.ok(h.runner.get(waiter).snoozedUntil, 'the earlier card is not a finish once a turn has started');
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e2', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'you', asks: [{ question: 'Ship it?' }] } } });
+  s.text('m2', 'Want me to ship it?');
+  s.result();
+  h.clock.advance(20_000);
+  assert.ok(h.runner.get(waiter).snoozedUntil, 'it ended asking Alex something');
+});
+
+test('waitFor: a job that ended just before a turn gives the CLI the whole wake grace after that turn', () => {
+  const { h, waiter, target, session, turn } = setup();
+  turn(waiter, { needs: 'nothing', waitFor: [target] });
+  const s = session(target);
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'measure' }] });
+  s.out({ kind: 'tasks', tasks: [] });
+  // Alex writes in the grace, and that turn ends 10 s after the job did.
+  h.runner.send(target, 'how is it going?');
+  h.clock.advance(10_000);
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('m1', 'Still measuring.');
+  s.result();
+  h.clock.advance(10_000);
+  assert.ok(h.runner.get(waiter).snoozedUntil, 'the first grace ending mid-wait is not the end of it');
+  h.clock.advance(10_000);
+  assert.equal(h.runner.get(waiter).snoozedUntil, undefined);
+});
+
 test('waitFor: held while the runner is starting, then checked', () => {
   const { h, waiter, target, turn } = setup();
   turn(waiter, { needs: 'nothing', waitFor: [target] });
@@ -261,4 +322,34 @@ test('waitFor: a snooze time that is no time is refused before the wait is touch
   const after = h.runner.get(waiter);
   assert.deepEqual(after.waitingOn, before.waitingOn);
   assert.equal(after.snoozedUntil, before.snoozedUntil);
+});
+
+test('a job that ended mid-turn, then the runner stopping in the wake grace: finished, for the next runner', async () => {
+  const { h, target, session } = setup();
+  h.runner.send(target, 'measure it');
+  const s = session(target);
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'measure' }] });
+  s.out({ kind: 'tasks', tasks: [] });
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('m1', 'Saved 4.1 MB.');
+  s.result();
+  assert.equal(h.runner.threads.get(target)!.rec.finished, undefined);
+  await h.runner.shutdown();
+  assert.match(h.runner.threads.get(target)!.rec.finished?.reply ?? '', /Saved 4\.1 MB\./);
+});
+
+test('waitFor: a job that ended just before a turn longer than the wake grace still gives the CLI the grace after it', () => {
+  const { h, waiter, target, session, turn } = setup();
+  turn(waiter, { needs: 'nothing', waitFor: [target] });
+  const s = session(target);
+  s.out({ kind: 'tasks', tasks: [{ id: 'b1', type: 'local_bash', kind: 'shell', description: 'measure' }] });
+  s.out({ kind: 'tasks', tasks: [] });
+  h.runner.send(target, 'how is it going?');
+  h.clock.advance(20_000);
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.text('m1', 'Still measuring.');
+  s.result();
+  assert.ok(h.runner.get(waiter).snoozedUntil, 'the CLI may still read the result after this turn');
+  h.clock.advance(20_000);
+  assert.equal(h.runner.get(waiter).snoozedUntil, undefined);
 });

@@ -6,15 +6,17 @@
 // icon. A project with no picture anywhere gets an SF Symbol the librarian
 // picks from SYMBOLS instead (librarian.ts).
 //
-// The picture is copied into the runner's data dir (at most 256 px, PNG,
-// or SVG as it is), so the app never reads from a repo and an icon
-// doesn't vanish when a branch changes under it.
+// The picture is copied into the runner's data dir (a PNG of at most
+// 256 px), so the app never reads from a repo and an icon
+// doesn't vanish when a branch changes under it. One whose header says it's
+// bigger than the icon budget (icon-budget.ts) is never a candidate or
+// converted, and one that can't be converted isn't kept at all.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { ImageRef } from './protocol.ts';
-import { convertImage, pictureKindOf, svgToPng } from './images.ts';
+import { convertImage, pictureKind } from './images.ts';
+import { ICON_MAX_PIXELS, ICON_MAX_SIDE, checkIcon } from './icon-budget.ts';
 
 export type IconCandidate = {
   path: string;
@@ -48,16 +50,21 @@ export const ICON_PX = 256;
 // preferred (it's usually the project's main repo). `names` are words a
 // file named after the project would have (its title, its folders' names).
 export async function findIcon(folders: string[], names: string[] = []): Promise<IconCandidate | undefined> {
+  return (await findIcons(folders, names))[0];
+}
+
+// Every picture good enough to show, best first: when the best can't be
+// copied here (an .icns on Linux, which nothing there converts), the next.
+export async function findIcons(folders: string[], names: string[] = []): Promise<IconCandidate[]> {
   const words = [...new Set([...names, ...folders.map((f) => path.basename(f))].map(squash).filter((w) => w.length >= 3))];
-  let best: IconCandidate | undefined;
+  const all: IconCandidate[] = [];
   for (const [i, folder] of folders.entries()) {
     for (const c of await candidatesIn(folder, words)) {
       if (c.score < MIN_SCORE) continue;
-      const scored = { ...c, score: c.score + (i === 0 ? 3 : 0) };
-      if (!best || better(scored, best)) best = scored;
+      all.push({ ...c, score: c.score + (i === 0 ? 3 : 0) });
     }
   }
-  return best;
+  return all.sort((a, b) => (better(a, b) ? -1 : better(b, a) ? 1 : 0));
 }
 
 function better(a: IconCandidate, b: IconCandidate): boolean {
@@ -138,6 +145,8 @@ export async function scoreFile(full: string, rel: string, words: string[] = [])
     if (!GENERIC_DIRS.has(s) && !s.endsWith('.xcassets') && !s.endsWith('.appiconset') && !words.some((w) => squash(s).includes(w) || w.includes(squash(s)))) score -= 40;
   }
 
+  // Over the icon budget, moving, or a size its header doesn't say: no icon.
+  if (!(await withinBudget(full, ext))) return undefined;
   const size = await imageSize(full, ext);
   if (size?.width && size.height) {
     const aspect = size.width / size.height;
@@ -193,8 +202,33 @@ async function fromManifest(file: string, root: string): Promise<IconCandidate |
   } catch {
     return undefined;
   }
+  if (!(await withinBudget(full, ext))) return undefined;
   const size = await imageSize(full, ext);
   return { path: full, score, ...size };
+}
+
+// A file's bytes, when it's a file of at most MAX_FILE_BYTES; read from the
+// one open file that was checked.
+async function readIconFile(file: string): Promise<Buffer | undefined> {
+  let fh: fs.promises.FileHandle | undefined;
+  try {
+    // Non-blocking, so a FIFO swapped in for the file can't hold the open.
+    fh = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > MAX_FILE_BYTES) return undefined;
+    const buf = Buffer.alloc(st.size);
+    const { bytesRead } = await fh.read(buf, 0, st.size, 0);
+    return buf.subarray(0, bytesRead);
+  } catch {
+    return undefined;
+  } finally {
+    await fh?.close();
+  }
+}
+
+async function withinBudget(file: string, ext: string): Promise<boolean> {
+  const bytes = await readIconFile(file);
+  return Boolean(bytes && checkIcon(bytes, ext === '.svg').ok);
 }
 
 // A PNG's size from its header, an SVG's from its viewBox; .icns and .ico
@@ -220,7 +254,7 @@ export async function imageSize(file: string, ext: string): Promise<{ width?: nu
 }
 
 async function readHead(file: string, n: number): Promise<Buffer> {
-  const fh = await fs.promises.open(file, 'r');
+  const fh = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
   try {
     const buf = Buffer.alloc(n);
     const { bytesRead } = await fh.read(buf, 0, n, 0);
@@ -233,65 +267,91 @@ async function readHead(file: string, n: number): Promise<Buffer> {
 // A short hash of a file's bytes: whether the picture behind an icon has
 // changed since it was copied.
 export async function fileHash(file: string): Promise<string | undefined> {
-  try {
-    const st = await fs.promises.stat(file);
-    if (!st.isFile() || st.size > MAX_FILE_BYTES) return undefined;
-    return crypto.createHash('sha1').update(await fs.promises.readFile(file)).digest('hex').slice(0, 10);
-  } catch {
-    return undefined;
-  }
+  // Read once, from the open file that was checked, never more than
+  // MAX_FILE_BYTES however the file changes under it.
+  const bytes = await readIconFile(file);
+  return bytes && crypto.createHash('sha1').update(bytes).digest('hex').slice(0, 10);
 }
 
-// Copies a picture into `dir` as `<projectId>-<hash>`: SVG as it is,
-// anything else (images.ts) to a PNG of at most ICON_PX (an .icns or a
-// 1024 px app icon would otherwise be a megabyte for a 16 pt dot). The
-// project's older copies go.
+// Copies a picture into `dir` as `<projectId>-<hash>`, as a PNG of at most
+// ICON_PX (images.ts; an .icns or a 1024 px app icon would otherwise be a
+// megabyte for a 16 pt dot). The file is read once, checked against the
+// icon budget (icon-budget.ts, which takes no SVG) and only that copy is
+// converted, so a repo can't swap a bigger one in between; a picture the
+// converter can't make a small PNG of isn't kept at all (never the file as
+// it was, which the app would then decode whole). The project's older
+// copies go.
 export async function storeIcon(src: string, dir: string, projectId: string, hash: string): Promise<ImageRef> {
   await fs.promises.mkdir(dir, { recursive: true });
-  const ext = path.extname(src).toLowerCase();
+  const bytes = await readIconFile(src);
+  if (!bytes) throw new Error(`Picture not found (or over 10 MB): ${path.basename(src)}`);
+  // Only a picture by its bytes, the ones read, is converted (images.ts,
+  // pictureKind): one named .png that's something else is no icon.
+  if (!pictureKind(bytes.subarray(0, 32))) throw new Error(`Not a picture: ${path.basename(src)}`);
+  const checked = checkIcon(bytes, path.extname(src).toLowerCase() === '.svg');
+  if (!checked.ok) throw new Error(`Not taken as an icon (${checked.reason}): ${path.basename(src)}`);
+  const dest = path.join(dir, `${projectId}-${hash}.png`);
+  const copy = path.join(dir, `.${projectId}-${hash}-${crypto.randomBytes(6).toString('hex')}.src`);
   let ref: ImageRef;
-  if (ext === '.svg') {
-    const dest = path.join(dir, `${projectId}-${hash}.svg`);
-    await fs.promises.copyFile(src, dest);
-    ref = { path: dest, mediaType: 'image/svg+xml', ...(await imageSize(dest, '.svg')) };
-  } else {
-    // Only a picture by its bytes is copied or converted (images.ts,
-    // pictureKind): one named .png that's something else is no icon.
-    if (!pictureKindOf(src)) throw new Error(`Not a picture: ${path.basename(src)}`);
-    const dest = path.join(dir, `${projectId}-${hash}.png`);
-    const size = await imageSize(src, ext);
-    const small = Boolean(size?.width) && Math.max(size?.width ?? 0, size?.height ?? 0) <= ICON_PX;
-    const made = await convertImage(src, dest, { format: 'png', ...(small ? {} : { maxPx: ICON_PX }) });
-    if (made && fs.existsSync(dest)) {
-      ref = { path: dest, mediaType: 'image/png', ...(await imageSize(dest, '.png')) };
-    } else {
-      // No converter (or it couldn't read it): the file as it is, which the app
-      // can still draw.
-      const raw = path.join(dir, `${projectId}-${hash}${ext}`);
-      await fs.promises.copyFile(src, raw);
-      ref = { path: raw, mediaType: MEDIA_TYPES[ext] ?? 'application/octet-stream', ...size };
+  try {
+    await fs.promises.writeFile(copy, bytes, { mode: 0o600, flag: 'wx' });
+    const small = Math.max(checked.size.width, checked.size.height) <= ICON_PX;
+    const made = await convertImage(copy, dest, { format: 'png', decodeLimit: { side: ICON_MAX_SIDE, pixels: ICON_MAX_PIXELS }, ...(small ? {} : { maxPx: ICON_PX }) });
+    const size = made && fs.existsSync(dest) ? await imageSize(dest, '.png') : undefined;
+    if (!size?.width || !size.height || Math.max(size.width, size.height) > ICON_PX) {
+      await fs.promises.rm(dest, { force: true });
+      throw new Error(`Could not make a ${ICON_PX} px PNG of ${path.basename(src)} (sips, or ImageMagick on Linux)`);
     }
+    ref = { path: dest, mediaType: 'image/png', ...size };
+  } finally {
+    await fs.promises.rm(copy, { force: true });
   }
   removeIcons(dir, projectId, path.basename(ref.path));
   return ref;
 }
 
-// The picture as the phone can show it (sync.ts): a PNG, JPEG or WebP as
-// it is; an SVG drawn to a 256 px PNG (images.ts), since the phone can't
-// draw SVG. Throws when the file can't be read or drawn.
-export async function phonePicture(iconPath: string, mediaType: string): Promise<{ bytes: Uint8Array; mediaType: string }> {
-  if (mediaType !== 'image/svg+xml') {
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(mediaType)) throw new Error(`the phone can't show a ${mediaType} picture`);
-    return { bytes: new Uint8Array(await fs.promises.readFile(iconPath)), mediaType };
-  }
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'threadbear-icon-'));
+// Whether a copy made before (storeIcon) is one this release would make: a
+// PNG of at most ICON_PX. Copies from before 24 Nov 2026 could be the repo's
+// file as it was, whatever its size, or an SVG; the librarian makes those
+// again (or picks a symbol).
+export async function storedIconOk(image: ImageRef): Promise<boolean> {
+  const bytes = await readIconFile(image.path);
+  if (!bytes) return false;
+  const checked = checkIcon(bytes, image.mediaType === 'image/svg+xml');
+  return checked.ok && checked.kind === 'png' && Math.max(checked.size.width, checked.size.height) <= ICON_PX;
+}
+
+// storedIconOk, at once, for the runner's start (projects.ts): a copy an
+// older release kept is dropped before any app is sent its path.
+export function storedIconOkSync(image: ImageRef): boolean {
+  let fd: number | undefined;
   try {
-    const out = path.join(dir, path.basename(iconPath) + '.png');
-    if (!(await svgToPng(iconPath, out, ICON_PX))) throw new Error('Could not draw the SVG (Quick Look, or rsvg-convert on Linux)');
-    return { bytes: new Uint8Array(await fs.promises.readFile(out)), mediaType: 'image/png' };
+    fd = fs.openSync(image.path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > MAX_FILE_BYTES) return false;
+    const bytes = Buffer.alloc(st.size);
+    const got = fs.readSync(fd, bytes, 0, st.size, 0);
+    const checked = checkIcon(bytes.subarray(0, got), image.mediaType === 'image/svg+xml');
+    return checked.ok && checked.kind === 'png' && Math.max(checked.size.width, checked.size.height) <= ICON_PX;
+  } catch {
+    return false;
   } finally {
-    await fs.promises.rm(dir, { recursive: true, force: true });
+    if (fd !== undefined) fs.closeSync(fd);
   }
+}
+
+// The picture as the phone can show it (sync.ts): a PNG within the icon
+// budget, as it is. An older copy that's anything else (an SVG, which this
+// drew with Quick Look or rsvg-convert, or a repo's file as it was) isn't
+// sent. Throws when the file can't be read or isn't taken.
+export async function phonePicture(iconPath: string, mediaType: string): Promise<{ bytes: Uint8Array; mediaType: string }> {
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(mediaType)) throw new Error(`the phone can't show a ${mediaType} picture`);
+  const bytes = await readIconFile(iconPath);
+  if (!bytes) throw new Error('Could not read the icon');
+  const checked = checkIcon(bytes, false);
+  if (!checked.ok) throw new Error(`the icon isn't sent to the phone (${checked.reason})`);
+  if (checked.kind !== 'png') throw new Error(`the icon isn't sent to the phone (a ${checked.kind}, not a PNG)`);
+  return { bytes: new Uint8Array(bytes), mediaType: 'image/png' };
 }
 
 // Takes away a project's copies, all of them or all but `keep`.
@@ -306,15 +366,6 @@ export function removeIcons(dir: string, projectId: string, keep?: string): void
     if (n.startsWith(projectId + '-') && n !== keep) fs.rmSync(path.join(dir, n), { force: true });
   }
 }
-
-const MEDIA_TYPES: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-  '.icns': 'image/icns',
-};
 
 function squash(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');

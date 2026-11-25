@@ -617,7 +617,7 @@ export function formatUpstream(u: UpstreamStatus, now: number): string {
         ...(r.notes ?? []).flatMap((n) => [`  What changed in ${n.tag}:`, ...n.lines.map((l) => `    ${l}`)]),
         ...(r.notes?.length ? ['  Every change:'] : []),
         ...r.subjects.map((x) => `  ${x}`),
-      ].join('\n') + more + `\nIts commit, signed with the pinned key: ${r.commit}. To bring it in, follow docs/bringing-in-updates.md and merge that commit (git merge ${r.commit}), or use Bring them in, in the app's Updates panel.`;
+      ].join('\n') + more + `\nIts commit, signed with the pinned key: ${r.commit}. To bring it in, follow docs/bringing-in-updates.md, which merges that commit with scripts/merge-preview.sh --prepare and scripts/merge-prepared.sh (they read it as itself, never through this checkout's git replacement refs or grafts, as a plain git merge would), or use Bring them in, in the app's Updates panel.`;
     }
     default:
       return `Mike's releases: up to date${r ? ` with ${r.tag}` : ''}${u.reason ? ` (${u.reason})` : ''}${checked}${published}`;
@@ -1044,7 +1044,7 @@ async function checkupCommand(client: RunnerClient, f: Flags): Promise<number> {
   const id = process.env.THREADBEAR_THREAD_ID;
   const self = id ? (await listAll(client)).find((t) => t.id === id) : undefined;
   const logLines = s.logFile && fs.existsSync(s.logFile) ? lastLines(s.logFile, 20_000, ' ERROR ') : [];
-  const c = buildCheckup({ home: s.home, checkout, logLines, patches: self?.patches ?? [], updateFailing: s.update?.state === 'failed', ...(typeof f.text === 'string' ? { note: f.text } : {}), now: Date.now() });
+  const c = await buildCheckup({ home: s.home, checkout, logLines, patches: self?.patches ?? [], updateFailing: s.update?.state === 'failed', ...(typeof f.text === 'string' ? { note: f.text } : {}), now: Date.now() });
   const draft = saveDraft(s.home, c);
   if (f.json) return printJson({ ...c, draft: draft.text, file: draft.file });
   console.log(draft.text);

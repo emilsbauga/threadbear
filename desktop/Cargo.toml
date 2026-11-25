@@ -77,12 +77,21 @@ gpui-base = { path = "vendor/gpui-base" }
 # kept across draws), on the executor's clock, starts its clock again after a
 # long gap, and shows a 0 ms frame for 100 ms, as browsers do
 # (gpui/tests/gif_frames.rs).
+# And ScrollSource::Wheel, for a mouse wheel that reports pixels as a trackpad
+# does (the review canvas zooms on a wheel and pans on a trackpad).
+# And a tooltip checks the pointer against where its element is now, not where
+# it was when the pointer arrived (elements/div.rs, `tooltip_source_bounds`):
+# a click that opened a row moved its heading as the transcript followed its
+# tail, and the heading's tip came up over the findings under the pointer and
+# stayed (23 Nov). Its delayed show checks that too before it shows.
 gpui-pre = { path = "vendor/gpui-pre" }
 # gpui-pre-macos 0.3.11 as published, except that with a native view inside
 # the window holding the keyboard (a web panel's page), a key without ⌘ or
 # Control isn't GPUI's key equivalent: it goes to that view. Otherwise
 # Backspace and the arrows went to a GPUI text box out of sight (Mike, 19 Nov,
 # the YouTube panel). See another_view_has_the_keyboard in its window.rs.
+# And a scroll with no gesture phase or momentum is ScrollSource::Wheel
+# (events.rs): Mike's Razer wheel reports pixels, so it looked like a trackpad.
 gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 
 # Scripted screenshots run in debug apps, often at background priority. An

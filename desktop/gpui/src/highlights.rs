@@ -928,16 +928,10 @@ impl SidePane {
             }
             return;
         }
-        // A PR opens as its own tab here, with the inlinePrs experiment.
+        // A PR opens as its own tab here.
         if let (Some(_), Some(thread)) = (crate::pr_view::pr_url(url), self.thread(cx)) {
-            if self
-                .app
-                .upgrade()
-                .is_some_and(|app| crate::pr_view::on(app.read(cx)))
-            {
-                self.open_pr(url, &thread, cx);
-                return;
-            }
+            self.open_pr(url, &thread, cx);
+            return;
         }
         if core::is_web_page(url) {
             // Where Default says, as a web link in a reply goes: the browser
@@ -2219,15 +2213,8 @@ impl SidePane {
                 .filter(|w| !w.is_empty())
                 .map(str::to_owned)
         };
-        // A PR's symbol in its state's colour, with the inlinePrs experiment.
-        let pr_tint = match (
-            &item.url,
-            item.kind == HighlightKind::Pr
-                && self
-                    .app
-                    .upgrade()
-                    .is_some_and(|app| crate::pr_view::on(app.read(cx))),
-        ) {
+        // A PR's symbol in its state's colour.
+        let pr_tint = match (&item.url, item.kind == HighlightKind::Pr) {
             (Some(url), true) => self
                 .pr_link_state(url, cx)
                 .map(|s| crate::pr_view::state_colour(s, cx)),
@@ -3023,7 +3010,7 @@ impl SidePane {
     pub(crate) fn dock_showing(&self, panel: &str, cx: &App) -> bool {
         self.app
             .upgrade()
-            .is_some_and(|app| app.read(cx).dock.read(cx).controller.is_showing(panel))
+            .is_some_and(|app| app.read(cx).dock.read(cx).is_showing(panel))
     }
 
     /// The section that draws what's over the whole pane (a menu, the ⓘ

@@ -50,6 +50,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ $# -gt 0 ] || { echo "no command given" >&2; exit 2; }
+# THREADBEAR_REMOTE_FIRST=1: ahead of everything else waiting on the host, as
+# a landing's check is (scripts/perf-lock.pl, THREADBEAR_PERF_LOCK_FIRST).
+# The app's update build asks for it (stage-update.sh). An environment
+# setting on the host, which an older perf-lock.pl just ignores.
+# So does what an older stage-update.sh asks for (BUILD with TRY, 1 for a
+# try and 0 once it queues, by environment, which only it sets): the app runs
+# the one in its bundle, older than THREADBEAR_REMOTE_FIRST, with this
+# remote.sh from main, so its first update after this came in goes first as
+# well (Codex's reviews). Not a plain --try, which the nightly runs use to
+# keep out of everyone's way.
+first_env=""
+if [ "${THREADBEAR_REMOTE_FIRST:-}" = 1 ] || { [ "${THREADBEAR_REMOTE_BUILD:-}" = 1 ] && [ -n "${THREADBEAR_REMOTE_TRY:-}" ]; }; then
+  first_env="THREADBEAR_PERF_LOCK_FIRST=1 "
+fi
 # THREADBEAR_REMOTE_TRACE=1: a timed line on stderr as each step starts, so a
 # run that hangs says how far it got (scripts/nightly-fuzz.sh sets it: a
 # round on 20 Nov printed nothing for 47 minutes, and on 18 Nov one sat in
@@ -186,7 +200,13 @@ phase "making the tools folder on $host"
 # be this account's own and closed to others, or the run stops: a group with
 # write on the cache could otherwise swap one in between (Codex's review of
 # Daybreak 114/116, 13 Nov). A fresh boot folder each run, never one found there.
-"${SSH[@]}" "$host" "umask 077 && mkdir -p $base && for d in .cache ${base%/*} $base; do [ -d \$d ] && [ ! -L \$d ] && [ -O \$d ] && chmod go-w \$d || { echo \"remote.sh: ~/\$d on $host isn't a folder of this account's own\" >&2; exit 1; }; done && rm -rf $boot && mkdir -m 700 $boot"
+# A link is let through only to a folder no other account can change, or
+# swap out from above (scripts/own-folders.sh: cloud's cache is on a volume).
+# Read first: a script that couldn't be read would be bash -c '', a pass.
+own_folders="$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$root/scripts/own-folders.sh")" && [ -n "$own_folders" ] \
+  || { echo "remote.sh: couldn't read scripts/own-folders.sh" >&2; exit 1; }
+own_folders="bash -c $(single_quoted "$own_folders") own-folders"
+"${SSH[@]}" "$host" "umask 077 && mkdir -p $base && $own_folders $(single_quoted "$host") .cache ${base%/*} $base && rm -rf $boot && mkdir -m 700 $boot"
 phase "copying the helpers to $host"
 for helper in perf-lock.pl perf-children.pl hangup-guard.sh; do
   "${SSH[@]}" "$host" "cat > $boot/$helper" <"$root/scripts/$helper"
@@ -210,7 +230,7 @@ cd \"\$HOME/$base\"
 bash \"\$HOME/$boot/trim-remote-cache.sh\" $key ${target##*/}"
 phase "taking the host's lock, then trimming its cache"
 alive_stdin 7
-remote="env THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" THREADBEAR_REMOTE_TOOLS=\"\$HOME/$boot\" perl $boot/perf-lock.pl ${build_flag}${try_flag}- bash -c $(single_quoted "$precopy")"
+remote="env ${first_env}THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" THREADBEAR_REMOTE_TOOLS=\"\$HOME/$boot\" perl $boot/perf-lock.pl ${build_flag}${try_flag}- bash -c $(single_quoted "$precopy")"
 "${SSH[@]}" "$host" "$remote" <&7 &
 ssh_pid=$!
 rc=0
@@ -365,9 +385,9 @@ label="remote.sh from $(basename "$root")$([ "$desk" = 1 ] && printf ' --desk' |
 label="THREADBEAR_PERF_LOCK_LABEL=$(single_quoted "${label:0:200}")"
 if [ "$desk" = 1 ]; then
   pidfile="$base/run-$tag.pid"
-  remote="env $label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl ${try_flag}--desk $pidfile bash $script $pidfile"
+  remote="env ${first_env}$label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl ${try_flag}--desk $pidfile bash $script $pidfile"
 else
-  remote="env $label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl ${build_flag}${try_flag}- bash $script"
+  remote="env ${first_env}$label THREADBEAR_REMOTE_SOURCE=\"\$HOME/$src\" THREADBEAR_REMOTE_TARGET=\"\$HOME/$target\" perl $src/scripts/perf-lock.pl ${build_flag}${try_flag}- bash $script"
 fi
 phase "taking the host's lock and running: $*"
 "${SSH[@]}" "$host" "$remote; rc=\$?; rm -f $script; rm -rf $boot; exit \$rc" <&7 &

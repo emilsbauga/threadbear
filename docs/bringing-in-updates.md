@@ -34,10 +34,12 @@ docs/setup-and-updates.md section 2.3 explains the thinking behind it.
   checked. If `tb updates` no
   longer lists the release, or names a different commit for it, stop and
   say so rather than merging anything.
-- Mike's changes: `git log --no-merges main..<commit>`. His commit
+- Mike's changes: `git --no-replace-objects log --no-show-signature --no-merges main..<commit>`
+  (`--no-replace-objects` on every git command that reads the release, so
+  it's read as its id names it; section 4 says why). His commit
   messages say why, not just what.
 - Their changes since they last brought a release in:
-  `git log --no-merges <commit>..main`. This is what you must keep.
+  `git --no-replace-objects log --no-show-signature --no-merges <commit>..main`. This is what you must keep.
 
 ## 2. Look at the merge without checking anything out
 
@@ -61,24 +63,44 @@ changes with the commands below and leave the clashes to section 4). Read
 Mike's changes against main with no external diff or textconv program:
 
 ```sh
-git diff --no-ext-diff --no-textconv main...<commit>
-git log --no-merges --no-ext-diff --no-textconv main..<commit>
+git --no-replace-objects diff --no-ext-diff --no-textconv main...<commit>
+git --no-replace-objects log --no-show-signature --no-merges --no-ext-diff --no-textconv main..<commit>
 ```
 
 and for each clash, both sides' commits, so you can say how you'd settle
 it (section 4).
 
+Then settle the clashes before you ask, so a go goes straight to the
+checks (Ville Lahdenvuo-Malta, 22 Nov 2026: about 5 minutes of a 35-minute
+bring-in was settling clashes after go). Run the preview again with a new
+folder of this thread's own, outside every checkout (even when it merges
+cleanly: the merge after go uses that folder):
+
+```sh
+scripts/merge-preview.sh --prepare "${TMPDIR:-/tmp}/tb-bring-in-<thread id>" <commit>
+```
+
+It writes each clashing file, with git's conflict markers, under that
+folder's `files/`. Settle each one there with Edit, as section 4 says,
+until none has a marker left. That folder isn't a worktree, so nothing in
+it is loaded or run, and you run nothing on its files: only edit them. A
+file deleted or moved on one side has no copy there; settle it after go.
+A release with a format commit keeps nothing there (its clashes are
+settled after go, by replay-over-format.sh). If one clash needs the owner
+to choose, settle the rest and ask about that one with the go.
+
 ## 3. Tell them, and ask
 
 Tell them in a few lines what Mike's release brings, which of their own
-changes clash with it and how you'd settle each, and anything they'd need
+changes clash with it and how you settled each (in the prepared folder,
+section 2), and anything they'd need
 to do themselves (a change to `runner/launcher/` only takes effect after
 `runner/scripts/install-runner.sh`, which they run from a terminal). If
 the release looks halfway through something (a feature half there, a
 commit that says it's temporary, tests skipped), say so. A release often
 adds checks that read the code (a security fix's source tests), and their
 own changes can fail one even where the merge is clean. Say that if a
-check the release added or changed (it's in `git diff main...<commit>`)
+check the release added or changed (it's in `git --no-replace-objects diff --no-ext-diff --no-textconv main...<commit>`)
 fails on their code, you'll change their code the way it asks, never the
 check, and show them the diff when you land, so one go covers it. Then
 ask whether to go ahead. Nothing from it has run, and nothing has changed
@@ -87,10 +109,33 @@ but git's objects.
 ## 4. Once they say go: merge, settle clashes, check
 
 Threads in this repo get a worktree of their own (docs/thread-worktrees.md),
-so main doesn't move until you land. Merge there:
+so main doesn't move until you land. With the prepared folder (section 2),
+its clashes settled, merge there with:
 
 ```sh
-git merge --no-ff -m "Bring in Mike's release <date>" <commit>
+scripts/merge-prepared.sh "${TMPDIR:-/tmp}/tb-bring-in-<thread id>" -m "Bring in Mike's release <date>"
+```
+
+It catches the branch up to the main the preview used, merges, and puts
+the settled files in. If main has moved on since, or a settled file still
+has markers, it changes nothing and says so: run the preview with
+`--prepare` again and settle only what's new. If git clashes in a file the
+preview didn't settle, it stops with the merge unfinished and names it:
+settle that in the worktree and `git commit --no-edit`.
+
+It merges the commit as its id names it: git's replacement objects and
+grafts (`refs/replace/`, `.git/info/grafts`) can have git read a different,
+unsigned commit in place of the one the signature covers, so the preview,
+this and `replay-over-format.sh --merge` refuse a checkout that has either,
+and read with both off, and with the commit-graph off, a file git reads a
+commit's tree from in place of the commit (Daybreak, 24 Nov 2026). If one refuses, say so and
+ask before removing them (`git replace -d <id>`, or that file). Without a
+prepared folder (git older than 2.40, which the preview needs), check
+`git for-each-ref refs/replace/` prints nothing and `.git/info/grafts`
+isn't there, then merge with both off:
+
+```sh
+GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null git -c core.commitGraph=false merge --no-ff -m "Bring in Mike's release <date>" <commit>
 ```
 
 Always a merge, never a rebase or a cherry-pick: Mike's commits have to
@@ -117,10 +162,12 @@ docs/protocol.md into docs/protocol/ is one too (`# format-tool:`, run by
 node): your edits to the single file land in the file their section went
 to. A copy of the script older than the split doesn't know that kind
 and would leave the split as a conflict, so run the release's own copy. If
-this checkout doesn't have the script yet, the same:
+this checkout doesn't have the script yet, the same, reading it from the
+release's commit as its id names it (stop if `git for-each-ref
+refs/replace/` prints anything or `.git/info/grafts` is there: section 4):
 
 ```sh
-git show <commit>:runner/src/format-replay.ts > "${TMPDIR:-/tmp}/format-replay.ts"
+git --no-replace-objects -c core.commitGraph=false show <commit>:runner/src/format-replay.ts > "${TMPDIR:-/tmp}/format-replay.ts"
 node "${TMPDIR:-/tmp}/format-replay.ts" --merge <commit> -m "Bring in Mike's release <date>"
 ```
 
@@ -137,6 +184,14 @@ messages and diffs, and write code that does both:
   change back onto Mike's new code rather than keeping the old shape.
 - If you can't do both, stop and ask them which they'd rather have, with
   what each does.
+- If both sides used the same backend API numbers (`API_VERSION` in
+  `convex/version.ts`, `BACKEND_API_VERSION` in `runner/src/sync.ts`), keep
+  Mike's: phones from the App Store and every runner on his backend go by
+  them. Move this copy's own after his last, in both files and anything that
+  checks for its old numbers.
+- A lint failure listing many old problems in one file is ESLint's
+  suppressions: one over a file's count in `eslint-suppressions.json` shows
+  every one of that rule there. Fix the new one; don't hand-edit the file.
 
 Their patches (`.threadbear/patches/`, `~/.threadbear/patches/`) and
 settings (`runner.json`) aren't part of the merge. Check they still work
@@ -186,7 +241,8 @@ that failed, a patch you had to fix. Leave out anything about their own
 work (project names, what their changes are for, file paths of theirs). It
 drafts a short report for Mike from facts the code picks: which release
 came in and how far behind main was, how often each of Threadbear's own
-runner errors came up since the last check-up, whether the runner's build
+runner errors came up since the last check-up, how long `tb land`'s checks
+took (how many, typical and slowest, the slowest steps), whether the runner's build
 of main is failing, and which of Mike's patches won't load. It names only
 what's in Mike's code; anything of theirs is just a count, and the draft is
 scrubbed of secrets and their home folder.

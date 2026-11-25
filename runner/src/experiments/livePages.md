@@ -4,7 +4,7 @@ name: Live pages
 title: Live pages: a page an agent shows in its reply runs in the thread, sealed, on the Mac and the phone
 added: 2026-11-19
 on: false
-reminder: 7a0d9e6c
+reminder: 900003ca
 ---
 
 ## What it does
@@ -13,8 +13,8 @@ An agent can show you something that moves or that you can turn around (a 3D mod
 
 ## Lives in
 
-`runner/src/share-images.ts` (`PAGE_TYPE`, `sniffPage`, `replyImagesInEvent`'s `pages`), `livePages()` and the upload in `runner/src/sync.ts`, `REPLY_TYPES` in `convex/sync.ts` and `mediaType` in `convex/share.ts`'s `phoneImage`; the Mac's card in `desktop/gpui/src/live_pages.rs` (with `live_page` in web_panels.rs and `PreviewSite::live` in desktop/web), the iPhone's in `ios/Threadbear/LivePageView.swift`. docs/live-pages-design/README.md has the plan and what's built.
+`runner/src/share-images.ts` (`PAGE_TYPE`, `sniffPage`, `replyImagesInEvent`'s `pages`), `livePages()` and the upload in `runner/src/sync.ts`, `LIVE_PAGES_LINE` in `runner/src/threadbear-mcp.ts` (what agents are told, with `richGuidance` in main.ts), `REPLY_TYPES` in `convex/sync.ts` and `mediaType` in `convex/share.ts`'s `phoneImage`; the Mac's card in `desktop/gpui/src/live_pages.rs` (with `live_page` in web_panels.rs and `PreviewSite::live` in desktop/web), the iPhone's in `ios/Threadbear/LivePageView.swift`. docs/live-pages-design/README.md has the plan and what's built.
 
 ## Taking it out
 
-Delete the file, `PAGE_TYPE`, `sniffPage` and the `pages` argument in share-images.ts, `livePages()` in sync.ts, `text/html` from `REPLY_TYPES` in convex/sync.ts, live_pages.rs and its plugin and `markdown::live_pages` call in rows.rs, `live_page`/`close_live_pages` in web_panels.rs, `PreviewSite::live` and `workers`, LivePageView.swift and its branch in ThreadView.swift.
+Delete the file, `LIVE_PAGES_LINE` and its uses in threadbear-mcp.ts and main.ts (`richGuidance` goes back to `RICH_BLOCKS_LINE`), `PAGE_TYPE`, `sniffPage` and the `pages` argument in share-images.ts, `livePages()` in sync.ts, `text/html` from `REPLY_TYPES` in convex/sync.ts, live_pages.rs and its plugin and `markdown::live_pages` call in rows.rs, `live_page`/`close_live_pages` in web_panels.rs, `PreviewSite::live` and `workers`, LivePageView.swift and its branch in ThreadView.swift.

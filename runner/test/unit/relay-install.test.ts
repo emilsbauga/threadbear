@@ -10,7 +10,7 @@
 // does (relay/convex/relay.ts registerVerified, admit).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { call, load, memoryBackend } from '../helpers/convex-memory.ts';
+import { call, load, memoryBackend, THREAD_BASICS } from '../helpers/convex-memory.ts';
 
 const push = load('push');
 const devices = load('devices');
@@ -301,4 +301,50 @@ test('an install saved before the machine whose key the relay refuses is registe
 test("the Machines page never shows the install's key", () => {
   const { withoutSecrets } = load('viewer') as { withoutSecrets: <T>(x: T) => T };
   assert.deepEqual(withoutSecrets({ doc: { installState: { kind: 'registered', attempt: 'a', installId: 'i', installKey: 'k', at: 1 } } }), { doc: { installState: { kind: 'registered', attempt: 'a', installId: 'i', at: 1 } } });
+});
+
+// Codex review of Daybreak 169 (22 Nov 2026): a clear the relay answers
+// "gone" (a phone uninstalled or a dead token) charges the relay's bad-token
+// allowance, as it should, so the backend drops that phone as a send does,
+// rather than clearing it again with every thread that stops needing Mike.
+test('a phone the relay says is gone after a clear is dropped, so the next clear skips it', async () => {
+  const relay = fakeRelay();
+  const w = await world(2);
+  assert.deepEqual(await w.send(), { sent: 2, failed: 0 });
+  const dead = `${'a'.repeat(63)}0`;
+  const cleared: string[] = [];
+  const send = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+    if (String(input) !== `${RELAY}/clear`) return send(input, init);
+    const { deviceToken } = JSON.parse(String(init?.body)) as { deviceToken: string };
+    cleared.push(deviceToken);
+    return deviceToken === dead ? json({ status: 200, body: { ok: false, status: 410, reason: 'Unregistered', gone: true } }) : json({ status: 200, body: { ok: true, status: 200 } });
+  }) as typeof fetch;
+  assert.deepEqual(await call(w.actionCtx, push.clear, { threadId: 'T' }), { sent: 1, failed: 1 });
+  assert.deepEqual(await call(w.actionCtx, push.clear, { threadId: 'T' }), { sent: 1, failed: 0 });
+  assert.deepEqual(cleared.filter((t) => t === dead).length, 1, 'cleared once, then dropped');
+  assert.equal(w.rows('devices').some((d) => d.apnsToken === dead), false);
+  assert.equal(relay.registers, 1);
+});
+
+// Daybreak 169's reviews: only an alert some phone really got makes the
+// thread's notification one to clear (devices:alerted), not a push that was
+// held for "away" phones while Mike's at the Mac, or one with no phones.
+test('push:notify marks a thread to clear only when an alert reached a phone', async () => {
+  fakeRelay();
+  const w = await world(2);
+  const now = Date.now();
+  await w.ctx.db.insert('threads', { threadId: 'T', runnerId: 'mac1', ...THREAD_BASICS, title: 'T', view: 'inbox', needsYou: true, pushedAt: now });
+  const t = () => w.rows('threads').find((r) => r.threadId === 'T')!;
+  // At the Mac, with only "away" phones (the default): held, nothing sent.
+  await w.ctx.db.insert('runners', { runnerId: 'mac1', name: 'Laptop', version: '1', lastSeenAt: now, startedAt: new Date(now).toISOString(), draining: false, threadCount: 1, atMac: true, atMacAt: now });
+  const atMac = await call(w.actionCtx, push.notify, { threadId: 'T' });
+  assert.equal(atMac.sent, 0);
+  assert.equal(t().alertedAt, undefined, 'held: nothing on any phone to clear');
+  assert.ok(t().pushHeldAt);
+  // He leaves: the held push goes to the away phones.
+  await w.ctx.db.patch(w.rows('runners')[0]._id, { atMac: false, atMacAt: now });
+  const away = await call(w.actionCtx, push.notify, { threadId: 'T', held: true });
+  assert.equal(away.sent, 2);
+  assert.ok(t().alertedAt, 'delivered: one clear may take it down');
 });

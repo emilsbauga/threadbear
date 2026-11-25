@@ -30,7 +30,12 @@ Then('the pane is showing the pinned file', async function (this: ThreadbearWorl
   const file = pinned.get(this);
   assert.ok(file, 'nothing was pinned');
   await this.until(`the pane to show ${path.basename(file)}`, (d) => previewLine(d)?.endsWith(path.basename(file)), 30_000);
-  fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  // Windows won't delete a file the pane still has open: left in the temp folder.
+  try {
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  } catch (e) {
+    if (process.platform !== 'win32') throw e;
+  }
 });
 
 When('the agent continues replying while the pinned file loads', async function (this: ThreadbearWorld) {
@@ -67,7 +72,12 @@ When('I look away until the failed highlights fetch stops', async function (this
 Then('the pane has no file preview', async function (this: ThreadbearWorld) {
   assert.equal(previewLine(await this.app.dump()), undefined);
   const file = pinned.get(this)!;
-  fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  // Windows won't delete a file the pane still has open: left in the temp folder.
+  try {
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  } catch (e) {
+    if (process.platform !== 'win32') throw e;
+  }
 });
 
 When("I'm looking at the app", async function (this: ThreadbearWorld) {
@@ -119,4 +129,11 @@ Then('the runner still has the request waiting', async function (this: Threadbea
   const state = await panelState(this);
   assert.equal(state.request?.id, asked.requestId, 'the request went');
   assert.ok(!state.shown.includes(asked.requestId), 'the app said it showed a panel the thread hasn\'t got');
+});
+
+// The mock's url panel (id mock.page), in the summary after the request.
+When('the thread gets the page panel it asked for', async function (this: ThreadbearWorld) {
+  const asked = requested.get(this);
+  assert.ok(asked, 'no panel was asked for');
+  await this.app.do({ cmd: 'mock', method: 'urlPanel', params: { threadId: asked.threadId, url: 'about:blank', title: 'Page' } });
 });

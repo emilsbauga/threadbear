@@ -37,6 +37,8 @@ pub(crate) const CONNECTORS: &str = "threadbear.connectors";
 pub(crate) const RUNNERS: &str = "threadbear.runners";
 /// Finish setting up (setup_panel.rs), open until Mike closes it.
 pub(crate) const SETUP: &str = "threadbear.setup";
+/// The activity bar's panels, which open under the threads list.
+const UNDER_THREADS: [&str; 5] = [USAGE, UPDATES, SETUP, CONNECTORS, RUNNERS];
 
 /// How often the settings file is written during a burst of changes.
 const SAVE_THROTTLE_MS: i64 = 300;
@@ -51,9 +53,6 @@ pub(crate) enum SidebarMode {
     Librarian,
     /// The `recipes` experiment's view (recipes.rs).
     Recipes,
-    /// The Feed (experiment `feed`, inbox_feed.rs): its page in the main
-    /// panel, the Inbox in the sidebar.
-    Feed,
 }
 
 impl SidebarMode {
@@ -64,7 +63,6 @@ impl SidebarMode {
             SidebarMode::Projects => "projects",
             SidebarMode::Librarian => "librarian",
             SidebarMode::Recipes => "recipes",
-            SidebarMode::Feed => "feed",
         }
     }
 }
@@ -376,24 +374,28 @@ actions!(
         NextInboxThread,
         OpenAnything,
         OpenAnythingAlso,
+        OpenAnythingPalette,
+        FocusMessageBox,
         ShowInbox,
         ShowScheduled,
         ShowProjects,
         ShowLibrarian,
-        ShowFeed,
         ShowHibernating,
         ShowArchived,
-        ShowPreviousTab,
-        ShowNextTab,
         OpenSettings,
         ZoomIn,
         ZoomOut,
         ActualSize,
         ToggleThreads,
+        ToggleThreadsAlso,
         TogglePanels,
         ToggleTerminal,
+        ToggleTerminalAlso,
         ResetPanelLayout,
         CollapseThreads,
+        ToggleSidebarPanels,
+        AttachFiles,
+        FindInThread,
         ToggleFrameRate,
         AboutApp,
         RestartToUpdate,
@@ -487,6 +489,17 @@ commands!(
         OpenAnythingAlso,
         Some(ShortcutCommand::OpenAnythingAlso)
     ),
+    // ⇧⌘P: the same box again, as VS Code's Command Palette, no menu item.
+    (
+        OpenAnythingPalette,
+        OpenAnythingPalette,
+        Some(ShortcutCommand::OpenAnythingPalette)
+    ),
+    (
+        FocusMessageBox,
+        FocusMessageBox,
+        Some(ShortcutCommand::FocusMessageBox)
+    ),
     (ShowInbox, ShowInbox, Some(ShortcutCommand::ShowInbox)),
     (
         ShowScheduled,
@@ -503,7 +516,6 @@ commands!(
         ShowLibrarian,
         Some(ShortcutCommand::ShowLibrarian)
     ),
-    (ShowFeed, ShowFeed, None),
     (
         ShowHibernating,
         ShowHibernating,
@@ -514,12 +526,6 @@ commands!(
         ShowArchived,
         Some(ShortcutCommand::ShowArchived)
     ),
-    (
-        PreviousTab,
-        ShowPreviousTab,
-        Some(ShortcutCommand::PreviousTab)
-    ),
-    (NextTab, ShowNextTab, Some(ShortcutCommand::NextTab)),
     (Settings, OpenSettings, Some(ShortcutCommand::Settings)),
     (ZoomIn, ZoomIn, Some(ShortcutCommand::ZoomIn)),
     (ZoomOut, ZoomOut, Some(ShortcutCommand::ZoomOut)),
@@ -528,6 +534,12 @@ commands!(
         ToggleThreads,
         ToggleThreads,
         Some(ShortcutCommand::ToggleThreads)
+    ),
+    // ⌘B: the Threads list from a second key, VS Code's, no menu item.
+    (
+        ToggleThreadsAlso,
+        ToggleThreadsAlso,
+        Some(ShortcutCommand::ToggleThreadsAlso)
     ),
     (
         TogglePanels,
@@ -539,6 +551,12 @@ commands!(
         ToggleTerminal,
         Some(ShortcutCommand::ToggleTerminal)
     ),
+    // ⌘`: the Terminal from a second key, with no menu item of its own.
+    (
+        ToggleTerminalAlso,
+        ToggleTerminalAlso,
+        Some(ShortcutCommand::ToggleTerminalAlso)
+    ),
     (
         ResetPanelLayout,
         ResetPanelLayout,
@@ -548,6 +566,17 @@ commands!(
         CollapseThreads,
         CollapseThreads,
         Some(ShortcutCommand::CollapseThreads)
+    ),
+    (
+        ToggleSidebarPanels,
+        ToggleSidebarPanels,
+        Some(ShortcutCommand::ToggleSidebarPanels)
+    ),
+    (AttachFiles, AttachFiles, Some(ShortcutCommand::AttachFiles)),
+    (
+        FindInThread,
+        FindInThread,
+        Some(ShortcutCommand::FindInThread)
     ),
     (ToggleFrameRate, ToggleFrameRate, None),
     (About, AboutApp, None),
@@ -648,7 +677,6 @@ impl Threadbear {
             SidebarMode::Librarian => "Librarian".into(),
             SidebarMode::Recipes => "Recipes".into(),
             SidebarMode::Scheduled => "Scheduled".into(),
-            SidebarMode::Feed => "Feed".into(),
             SidebarMode::Inbox => match self.open_thread() {
                 Some(t) if t.title.is_empty() => "Untitled".into(),
                 Some(t) => t.title.clone(),
@@ -716,7 +744,7 @@ impl Threadbear {
     }
 
     fn is_panel_showing(&self, panel: &str, cx: &App) -> bool {
-        self.dock.read(cx).controller.is_showing(panel)
+        self.dock.read(cx).is_showing(panel)
     }
 
     /// The pane sections open in the dock, in layout order (`openPanes`),
@@ -768,6 +796,10 @@ impl Threadbear {
             self.dock.update(cx, |m, cx| m.close(panel, cx));
             return;
         }
+        self.show_under_threads(panel, cx);
+    }
+
+    fn show_under_threads(&mut self, panel: &str, cx: &mut Context<Self>) {
         let under = self
             .dock
             .read(cx)
@@ -775,12 +807,57 @@ impl Threadbear {
             .group_containing(THREADS)
             .map(|g| DockDrop::edge(g.id, DockEdge::Bottom))
             .unwrap_or(DockDrop::window(DockEdge::Left));
-        let near: Vec<&str> = [USAGE, UPDATES, SETUP, CONNECTORS, RUNNERS]
-            .into_iter()
-            .filter(|p| *p != panel)
-            .collect();
+        let near: Vec<&str> = UNDER_THREADS.into_iter().filter(|p| *p != panel).collect();
         self.dock
             .update(cx, |m, cx| m.show(panel, &near, under, cx));
+    }
+
+    /// The activity bar's panels that are open, wherever they are.
+    fn open_sidebar_panels(&self, cx: &App) -> Vec<String> {
+        let layout = self.dock.read(cx).layout();
+        UNDER_THREADS
+            .into_iter()
+            .filter(|p| layout.contains(p))
+            .map(String::from)
+            .collect()
+    }
+
+    /// View > Hide or Show Sidebar Panels, greyed out with none open or to
+    /// bring back.
+    fn sidebar_panels_item(&self, cx: &App) -> MenuEntry {
+        let shown = !self.open_sidebar_panels(cx).is_empty();
+        let title = if shown {
+            "Hide Sidebar Panels"
+        } else {
+            "Show Sidebar Panels"
+        };
+        MenuEntry::item(title, Command::ToggleSidebarPanels)
+            .enabled(shown || !self.hidden_sidebar_panels.is_empty())
+    }
+
+    /// ⇧⌘B (Wayne, 22 Nov): closes the activity bar's panels that are open,
+    /// remembered, and brings the same ones back under the threads list, as
+    /// Hide Panels does for the ones beside the thread. The list stays.
+    fn toggle_sidebar_panels(&mut self, cx: &mut Context<Self>) {
+        let open = self.open_sidebar_panels(cx);
+        if open.is_empty() {
+            for panel in std::mem::take(&mut self.hidden_sidebar_panels) {
+                self.show_under_threads(&panel, cx);
+            }
+            return;
+        }
+        // Those in front of their tab group come back last, so each is in
+        // front again: Runners then Connectors share a group, and bringing
+        // them back in the list's order left Runners on top.
+        let (front, behind): (Vec<String>, Vec<String>) = open
+            .into_iter()
+            .partition(|p| self.activity_panel_showing(p, cx));
+        self.dock.update(cx, |m, cx| {
+            for panel in behind.iter().chain(&front) {
+                m.close(panel, cx);
+            }
+        });
+        self.hidden_sidebar_panels = behind.into_iter().chain(front).collect();
     }
 
     /// Hide or Show Threads (`toggleThreadsPanel`): closed, or opened down
@@ -952,33 +1029,52 @@ impl Threadbear {
     ) {
         match command {
             Command::NewThread => self.new_thread(cx),
-            Command::Archive => self.toggle_archive(window, cx),
+            // These act on the thread being typed in: one in a panel of its
+            // own while its box has the focus, else the main panel's (23 Nov
+            // review: ⌘E in a panel's box archived the main panel's thread).
+            Command::Archive => {
+                if let Some(id) = self.command_thread(window, cx) {
+                    self.toggle_archive_of(id, window, cx);
+                }
+            }
             Command::Hibernate => {
-                if let Some(id) = self.selected.clone() {
+                if let Some(id) = self.command_thread(window, cx) {
                     self.open_pick_time(id, window, cx);
                 }
             }
             Command::WakeWhen => {
-                if let Some(id) = self.selected.clone() {
+                if let Some(id) = self.command_thread(window, cx) {
                     self.open_wake_when(id, window, cx);
                 }
             }
-            Command::Stop => self.stop_open(cx),
+            Command::Stop => match self.focused_panel_pane(window, cx) {
+                Some(pane) => pane.update(cx, |p, cx| p.stop(cx)),
+                None => self.stop_open(cx),
+            },
             Command::CopyTranscript => {
-                if let Some(pane) = &self.pane {
+                if let Some(pane) = self.focused_panel_pane(window, cx).or(self.pane.clone()) {
                     pane.update(cx, |p, cx| p.copy_transcript(cx));
+                }
+            }
+            // Only from outside a thread (a thread's pane and a file in the
+            // pane take ⌘F themselves): the main panel's thread.
+            Command::FindInThread => {
+                if let Some(pane) = self.focused_panel_pane(window, cx).or(self.pane.clone()) {
+                    pane.update(cx, |p, cx| p.open_find(window, cx));
                 }
             }
             Command::Back => self.go_back(window, cx),
             Command::Forward => self.go_forward(window, cx),
             Command::NextInboxThread => self.next_inbox_thread(window, cx),
-            // A project's page tabs; they do nothing anywhere else.
-            Command::PreviousTab => self.step_project_tab(-1, cx),
-            Command::NextTab => self.step_project_tab(1, cx),
-            Command::OpenAnything | Command::OpenAnythingAlso => {
+            Command::FocusMessageBox => {
+                if let Some(composer) = self.composer(cx) {
+                    composer.update(cx, |c, cx| c.focus(window, cx));
+                    crate::web_panels::keyboard_to_app(window);
+                }
+            }
+            Command::OpenAnything | Command::OpenAnythingAlso | Command::OpenAnythingPalette => {
                 self.toggle_open_anything(window, cx)
             }
-            Command::ShowFeed => self.show_feed(cx),
             // Each brings the Threads panel back if ⌘/ folded it away.
             Command::ShowInbox
             | Command::ShowScheduled
@@ -1000,11 +1096,20 @@ impl Threadbear {
             Command::ZoomIn => self.zoom_in(window, cx),
             Command::ZoomOut => self.zoom_out(window, cx),
             Command::ActualSize => self.set_zoom(zoom::DEFAULT_PERCENT, window, cx),
-            Command::ToggleThreads => self.toggle_threads_panel(cx),
+            Command::ToggleThreads | Command::ToggleThreadsAlso => self.toggle_threads_panel(cx),
             Command::TogglePanels => self.toggle_panels(cx),
-            Command::ToggleTerminal => crate::terminal::toggle(self, window, cx),
+            Command::ToggleTerminal | Command::ToggleTerminalAlso => {
+                crate::terminal::toggle(self, window, cx)
+            }
             Command::ResetPanelLayout => self.reset_panel_layout(cx),
             Command::CollapseThreads => self.toggle_threads_collapsed(cx),
+            Command::ToggleSidebarPanels => self.toggle_sidebar_panels(cx),
+            // The open thread's box, or the new-thread page's, as "+" does.
+            Command::AttachFiles => {
+                if let Some(composer) = self.composer(cx) {
+                    composer.update(cx, |c, cx| c.attach_images(window, cx));
+                }
+            }
             Command::ToggleFrameRate => self.toggle_frame_rate(window, cx),
             Command::About => self.show_about(window, cx),
             Command::RestartToUpdate => self.restart_to_update(cx),
@@ -1018,7 +1123,7 @@ impl Threadbear {
             Command::HibernateTomorrow => self.hibernate_open("tomorrow", window, cx),
             Command::HibernateMonday => self.hibernate_open("monday", window, cx),
             Command::HibernateRestart => {
-                if let Some(id) = self.selected.clone() {
+                if let Some(id) = self.command_thread(window, cx) {
                     self.snooze_until_restart(id, window, cx);
                 }
             }
@@ -1040,12 +1145,14 @@ impl Threadbear {
         self.sync_menus(cx);
     }
 
-    /// ⌘E: archives the open thread, or brings it back if it's archived
-    /// (`toggleArchive`).
-    pub(crate) fn toggle_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else {
-            return;
-        };
+    /// ⌘E (`toggleArchive`) and the done card's Archive: archives the
+    /// thread, or takes it out of Archived if it's there.
+    pub(crate) fn toggle_archive_of(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let archived = self.threads.get(&id).is_some_and(|t| t.is_archived());
         if archived {
             self.unarchive_row(&id, cx);
@@ -1060,7 +1167,7 @@ impl Threadbear {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.selected.clone() else {
+        let Some(id) = self.command_thread(window, cx) else {
             return;
         };
         let until =
@@ -1110,23 +1217,14 @@ impl Threadbear {
     /// The Scheduled, Projects and Librarian buttons open their page in the
     /// main panel too (`showSchedules`); picking a thread puts the thread back.
     pub(crate) fn set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        // Any view of the rail's in place of the Canvas page (thread_canvas.rs).
+        self.hide_thread_canvas();
         let home = mode != SidebarMode::Inbox;
         // A page of the activity bar's takes a project's page's place
         // (`showProjects`); the Inbox leaves it where it is.
         let closes_project = home && self.projects.open.is_some();
-        if self.mode == SidebarMode::Feed && mode != SidebarMode::Feed {
-            self.left_feed();
-        }
         if self.mode != mode || self.shows_home != home || closes_project {
-            // The Feed's sidebar is the Inbox's: nothing there to switch.
-            let same_list = matches!(
-                (self.mode, mode),
-                (
-                    SidebarMode::Inbox | SidebarMode::Feed,
-                    SidebarMode::Inbox | SidebarMode::Feed
-                )
-            );
-            if self.mode != mode && !same_list {
+            if self.mode != mode {
                 self.view_switched = Some(std::time::Instant::now());
             }
             self.mode = mode;
@@ -1265,9 +1363,7 @@ impl Threadbear {
                 self.select_none(cx);
             }
         }
-        // After the thread: opening one takes a page away (and the Feed's
-        // mode with it).
-        self.mode = place.mode;
+        // After the thread: opening one takes a page away.
         self.shows_home = place.home;
         self.projects.open = place.project.filter(|id| self.project(id).is_some());
         self.restoring_place = false;
@@ -1297,7 +1393,6 @@ impl Threadbear {
             ) {
                 (Some(SidebarMode::Scheduled), _) => "Scheduled".to_string(),
                 (Some(SidebarMode::Projects), _) => "Projects".to_string(),
-                (Some(SidebarMode::Feed), _) => "Feed".to_string(),
                 (Some(_), _) => "Librarian".to_string(),
                 (None, Some(t)) if t.title.is_empty() => "Untitled".to_string(),
                 (None, Some(t)) => t.title.clone(),
@@ -1726,6 +1821,8 @@ impl Threadbear {
                     edit(E::PasteAndMatchStyle),
                     edit(E::Delete),
                     edit(E::SelectAll),
+                    Separator,
+                    item("Find in Thread…", Command::FindInThread).enabled(has_thread),
                 ]
             }),
             TopMenu::new(
@@ -1761,6 +1858,7 @@ impl Threadbear {
                         },
                         Command::TogglePanels,
                     ),
+                    self.sidebar_panels_item(cx),
                     item(
                         if terminal_shown {
                             "Hide Terminal"
@@ -1782,26 +1880,10 @@ impl Threadbear {
                     item("Forward", Command::Forward).enabled(self.can_go_forward()),
                     Separator,
                     item("Next Inbox Thread", Command::NextInboxThread),
-                    // A project's page tabs (the projectDecisions experiment),
-                    // there always and greyed out away from one, as the Swift
-                    // app's Go menu has them.
-                    Separator,
-                    item("Show Previous Tab", Command::PreviousTab)
-                        .enabled(self.can_step_project_tab(-1, cx)),
-                    item("Show Next Tab", Command::NextTab)
-                        .enabled(self.can_step_project_tab(1, cx)),
                     Separator,
                     item("Open Anything…", Command::OpenAnything),
-                ]
-                .into_iter()
-                // The Feed, with its experiment on (inbox_feed.rs).
-                .chain(
-                    self.feed_on()
-                        .then(|| vec![Separator, item("Show Feed", Command::ShowFeed)])
-                        .into_iter()
-                        .flatten(),
-                )
-                .collect(),
+                    item("Go to Message Box", Command::FocusMessageBox),
+                ],
             ),
             TopMenu::new(
                 "Thread",
@@ -1816,6 +1898,8 @@ impl Threadbear {
                         items: self.hibernate_menu_items(),
                     },
                     item("Stop", Command::Stop).enabled(busy),
+                    item("Attach Images or Markdown…", Command::AttachFiles)
+                        .enabled(self.composer(cx).is_some()),
                     Separator,
                     item("Copy Transcript as Markdown", Command::CopyTranscript)
                         .enabled(has_thread),
@@ -2026,7 +2110,12 @@ impl Threadbear {
         // On a project's page, the panels it borrows from one of its threads.
         // What the tour and the intros watch for (tour.rs).
         self.tour_watch(window, cx);
-        let has_rail = self.pane_thread().is_some();
+        // The Canvas page, in place of the list and the thread (thread_canvas.rs).
+        let canvas = self
+            .thread_canvas
+            .showing
+            .then(|| self.render_thread_canvas(window, cx));
+        let has_rail = canvas.is_none() && self.pane_thread().is_some();
         let rail = has_rail.then(|| self.render_right_rail(cx));
         let root = div()
             .id("threadbear-shell")
@@ -2047,15 +2136,14 @@ impl Threadbear {
             .child(self.page_swipe_watch(cx))
             .child(self.row_press_watch(cx))
             .child(self.render_activity_bar(window, cx))
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(self.dock_view.clone())
-                    .child(crate::tour::dock_origin_mark()),
-            )
+            .child(div().relative().flex_1().min_w_0().h_full().map(|d| {
+                match canvas {
+                    Some(canvas) => d.child(canvas),
+                    None => d
+                        .child(self.dock_view.clone())
+                        .child(crate::tour::dock_origin_mark()),
+                }
+            }))
             .when_some(rail, |s, r| s.child(r))
             // An archived or hibernated thread's page on its way to its
             // heading, over the sidebar and the panel alike (archive_flight.rs).
@@ -2193,7 +2281,7 @@ impl Threadbear {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let view = match self.mode {
-            SidebarMode::Inbox | SidebarMode::Feed => self.render_sidebar(cx).into_any_element(),
+            SidebarMode::Inbox => self.render_sidebar(cx).into_any_element(),
             SidebarMode::Scheduled => self.render_scheduled_list(cx),
             SidebarMode::Librarian => self.render_librarian_list(cx),
             SidebarMode::Recipes => self.render_recipes_list(cx),
@@ -2238,6 +2326,7 @@ impl Threadbear {
             || page.is_some()
             || self.open_project().is_some()
             || self.open_elsewhere(cx).is_some()
+            || self.archive_page_showing()
         {
             self.opening.page_shown = None;
         }
@@ -2257,8 +2346,9 @@ impl Threadbear {
             (_, Some(SidebarMode::Scheduled)) => self.render_scheduled_home(cx),
             (_, Some(SidebarMode::Librarian)) => self.render_librarian_home(cx),
             (_, Some(SidebarMode::Recipes)) => self.render_recipes_home(cx),
-            (_, Some(SidebarMode::Feed)) => self.render_feed(window, cx),
             (_, Some(_)) => self.render_projects_home(window, cx),
+            // An archived session read-only in the thread's place (archive_search.rs).
+            (None, None) if self.archive_page_showing() => self.render_archive_page(cx),
             // Its thread is open in a panel of its own (thread_panels.rs).
             (None, None) if self.open_elsewhere(cx).is_some() => {
                 let id = self.open_elsewhere(cx).unwrap_or_default();

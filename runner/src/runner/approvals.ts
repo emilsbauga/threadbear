@@ -10,7 +10,7 @@ import type { QuestionAnswer, QuestionRequest, ToolApprovalAnswer, ToolApprovalR
 import { approvalTitle, type AgentApprovalRequest } from '../threadbear-mcp.ts';
 import crypto from 'node:crypto';
 import type { PendingApproval, ThreadState } from '../runner.ts';
-import { matchAnswers } from '../runner.ts';
+import { matchAnswers } from './messages.ts';
 import { SECRET_TIMEOUT_DEFAULT_MIN, SECRET_TIMEOUT_MAX_MIN, type SecretFiles } from '../secrets.ts';
 import { START_CARD, type RequestAnswer } from '../cross-runner.ts';
 import { noAppToAllow } from '../app-seen.ts';

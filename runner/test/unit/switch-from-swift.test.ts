@@ -31,9 +31,11 @@ function world(o: { noRust?: boolean; warm?: boolean; cachedMb?: number; stageEx
   const home = path.join(root, 'home');
   const checkout = path.join(root, 'checkout');
   fs.mkdirSync(path.join(home, 'tmp'), { recursive: true });
+  // The pinned Rust an earlier build fetched (pinned-cargo.sh).
   if (!o.noRust) {
-    fs.mkdirSync(path.join(home, '.cargo', 'bin'), { recursive: true });
-    for (const bin of ['cargo', 'rustup']) fs.writeFileSync(path.join(home, '.cargo', 'bin', bin), '#!/bin/sh\n', { mode: 0o755 });
+    const bin = path.join(home, 'Library', 'Caches', 'Threadbear', 'rust', '1.99.1-aarch64-apple-darwin', 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'cargo'), '#!/bin/sh\n', { mode: 0o755 });
   }
   const cache = path.join(home, 'Library', 'Caches', 'Threadbear', 'update-desktop');
   if (o.warm) fs.mkdirSync(path.join(cache, 'target', 'release'), { recursive: true });
@@ -107,21 +109,16 @@ test("with no Rust and another Mac (or none) doing the build, Rust isn't install
   assert.doesNotMatch(r.stdout, /STEP Installing Rust/);
 });
 
-test("a Mac with only Homebrew's cargo gets rustup too, as the build uses rustup's newest stable", mac, () => {
+// Daybreak 173: it never installs Rust itself (no rustup, no download it
+// runs): the build fetches the pinned Rust and checks it (pinned-cargo.sh).
+test('with no Rust at all it installs none, and the build goes ahead', mac, () => {
   const w = world({ noRust: true });
-  const brew = path.join(w.home, 'brew', 'bin');
-  fs.mkdirSync(brew, { recursive: true });
-  fs.writeFileSync(path.join(brew, 'cargo'), '#!/bin/sh\n', { mode: 0o755 });
-  // rustup.rs's script, standing in: it leaves rustup and cargo in ~/.cargo/bin.
-  const init = path.join(w.home, 'rustup-init.sh');
-  fs.writeFileSync(init, 'echo "init $*" >> "$HOME/init.log"\nmkdir -p "$HOME/.cargo/bin"\nfor b in rustup cargo; do printf "#!/bin/sh\\n" > "$HOME/.cargo/bin/$b"; chmod +x "$HOME/.cargo/bin/$b"; done\n');
-  const r = spawnSync('/bin/bash', [SCRIPT, w.checkout, '--no-open'], {
-    encoding: 'utf8',
-    env: { HOME: w.home, TMPDIR: path.join(w.home, 'tmp'), PATH: `/usr/bin:/bin:${brew}`, THREADBEAR_SWITCH_FREE_KB: String(8 * GiB), THREADBEAR_SWITCH_RUSTUP_INIT: init },
-  });
+  const r = run(w, 8 * GiB);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /STEP Installing Rust/);
-  assert.equal(fs.readFileSync(path.join(w.home, 'init.log'), 'utf8'), 'init -y --profile minimal --no-modify-path\n');
+  assert.doesNotMatch(r.stdout, /STEP Installing Rust/);
+  assert.equal(fs.existsSync(path.join(w.home, '.cargo')), false);
+  assert.equal(fs.existsSync(path.join(w.home, '.rustup')), false);
+  assert.doesNotMatch(fs.readFileSync(SCRIPT, 'utf8'), /rustup-init|sh\.rustup\.rs|curl /);
 });
 
 test('free space comes from the disk itself when nothing stands in for it', mac, () => {

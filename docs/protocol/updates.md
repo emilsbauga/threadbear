@@ -47,6 +47,10 @@ type RunnerUpdates = {
   // This release's CEF pin is over 14 days behind stable, or the daily
   // check has failed for 3 days. Also on runner.status as webRuntimeProblem.
   webRuntimeProblem?: string
+  // Over 14 days behind stable, but no cef-rs bindings exist for anything
+  // newer, so nothing can be done yet (from 24 Nov 2026). A quiet line in the
+  // Updates panel: it doesn't show the Updates icon or go in its tooltip.
+  webRuntimeNote?: string
   behindRunners?: { name: string; problem: string }[]
   // Mike's releases, for a fork (below). Left out while off, except on
   // Mike's own runner once it has tagged one.
@@ -75,7 +79,38 @@ folder is deleted when the check ends, however it ends, so a tag that
 didn't verify, or a fetch cut short, leaves nothing in the checkout. Every
 git command has a deadline (two minutes, five for one that talks to a
 remote) and is stopped with whatever it started, and the check fails and
-says so. A runner from before 7 Nov 2026 fetched every tag into
+says so. Every git command it runs, and Mike's runner's publishing below,
+is release git (`upstream.ts`, Daybreak 179 and 180, 24 Nov 2026), as the
+checkout's `.git` may have come with an archive or a shared drive, or be
+the one a thread's worktree shares: none of the runner's `GIT_` variables
+but who commits; no system or global config for a fork's check (Mike's
+publishing keeps his, for his signing setup and the push to GitHub); every
+setting in the checkout's own config that would run something switched off
+on the command line just before each command (`safe-git.ts`
+`repoProofConfig`: hooks, fsmonitor, filters, diff drivers, credential
+helpers, ssh and askpass programs, protocols it allows; and signing
+programs, `log.showSignature`, push signing and submodules; the ssh
+command, signing programs and credential helpers are set to the owner's
+own or git's defaults every time, whatever the checkout's config says, and
+a setting whose name isn't UTF-8, which `-c` can't name, stops git); only `https`
+and `ssh` to a remote, with git's own upload-pack and receive-pack named;
+and the remote given as a URL rebuilt from `remote.<name>.url` as
+configured, an https or ssh address of a plain host and path (anything
+else, a folder, `file://`, `ext::`, or more than one address, and upstream
+counts as off; a user and password in it are left out). A checkout whose
+own config rewrites an address (`url.*.insteadOf`, `pushInsteadOf`),
+configures a remote named by a URL (which git looks a URL up as), or sets
+anything under `http.` (a proxy, certificate checks) isn't used
+for network git at all: the check fails, and Mike's runner holds its
+release, saying which setting. Replacement objects, grafts and the
+commit-graph are off (`GIT_NO_REPLACE_OBJECTS`, `GIT_GRAFT_FILE=/dev/null`,
+`core.commitGraph=false`), and a checkout with a `refs/replace/` ref or an
+`info/grafts` file isn't checked at all: the check fails and says so, and
+Mike's runner holds its release with the reason. A release's
+`scripts/release-signers` and `scripts/release-keys-revoked` are read
+object by object from the signed commit (commit, trees, blob), each one's
+bytes hashed and checked against its id, so a forged object fails the
+check rather than counting, and so does one it names that can't be read. A runner from before 7 Nov 2026 fetched every tag into
 `refs/threadbear/upstream-incoming/*`, unchecked; each check deletes
 anything left there. Verified
 means: the tag object is `object`, `type commit`, `tag <the name it came
@@ -313,13 +348,15 @@ the restart is asked for.
 
 ### App restarts
 
-The GPUI app waits until main's `desktop/` tree has stayed the same for ten
-minutes before requesting an update build. Landings outside that tree do not
+The GPUI app waits until main's `desktop/` tree has stayed the same for
+runner.json's `updateQuietMinutes` (two by default, three on Mike's Mac)
+before requesting an update build. Landings outside that tree do not
 restart the wait. It observes changes during a build too, keeps one build
 at a time, lets a staged version go in before building another, and considers
-only the latest tree afterwards. Automatic remote update builds try both
-host leases without queueing; a busy host or a live
-measurement waiter defers the update until a later look. A build already
+only the latest tree afterwards. Automatic remote update builds go ahead of
+other work waiting on the host (`THREADBEAR_REMOTE_FIRST`): each trusted host
+is tried without queueing, then the first busy one is waited on, the build
+going next. A build already
 running keeps its leases until its work and cleanup finish. Only
 `updateBuildHosts` can supply the binaries, as before.
 
@@ -348,7 +385,10 @@ own restarts.
   checkout (so `HEAD` is a worktree's own, and a thread in another repo
   can name a Threadbear commit). A `commit` found in neither is refused with an error, rather
   than waiting for any new build, and drops the request it had. Asking
-  again replaces its request.
+  again replaces its request. Its `text` is kept with a ceiling, the
+  thread's saved mode as it asked (`runner/src/runner/ceiling.ts`): raised
+  above that by the time the app restarts, the thread gets the note and
+  goes to Needs you, and its agent doesn't get the text.
 - A turn that ends needing nothing (no archive, snooze or waitFor) while
   its thread is on the list hibernates the thread for a day at most
   (`system.note` "Hibernating until the Threadbear app restarts onto the

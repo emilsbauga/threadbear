@@ -72,7 +72,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { checkedUpstream, repoKey } from './checked-upstream.mjs';
 import { isJoining, joinSteps, runnerKeyPlan } from './runner-key-plan.mjs';
-import { ADMIN_URL, backendContainer, DATA_VOLUME, mustSeeTailnetOff, offTailnetStep, oldAddressStep, origins, OWN_ADDRESSES_FILE, ownAddresses, PORTS, reachOf, selfHostedPlan, servedOn, tailnetPendingFiles } from './self-hosted-plan.mjs';
+import { ADMIN_URL, BACKEND_IMAGE, backendContainer, DASHBOARD_IMAGE, DATA_VOLUME, mustSeeTailnetOff, offTailnetStep, oldAddressStep, origins, OWN_ADDRESSES_FILE, ownAddresses, pinnedImage, PORTS, reachOf, selfHostedPlan, servedOn, tailnetPendingFiles } from './self-hosted-plan.mjs';
 import { ConvexAdminError, convexEnv, readConvexAdmin, SELF_HOSTED_ENV_FILE } from '../runner/src/convex-admin.ts';
 
 const repo = path.resolve(import.meta.dirname, '..');
@@ -517,11 +517,8 @@ async function findUrl(name) {
 // the container reaches itself through its own origin differs between them:
 // scripts/self-hosted-plan.mjs, backendContainer.
 
-// Pinned, as an upgrade can need an export and import (Convex's
-// self-hosted/advanced/upgrading.md); move it on deliberately.
-const CONVEX_IMAGE_TAG = 'd1fcbeaf939502a23a0f4b7e9095a12e84866294';
-const BACKEND_IMAGE = `ghcr.io/convex/convex-backend:${CONVEX_IMAGE_TAG}`;
-const DASHBOARD_IMAGE = `ghcr.io/convex/convex-dashboard:${CONVEX_IMAGE_TAG}`;
+// The images are pinned by digest: scripts/self-hosted-plan.mjs,
+// BACKEND_IMAGE, says why and how to move them on.
 const BACKEND_CONTAINER = 'threadbear-convex';
 const DASHBOARD_CONTAINER = 'threadbear-convex-dashboard';
 
@@ -830,9 +827,11 @@ async function selfHostedBackend() {
   const { url, site, dashboard, dashboardBackend } = origins(plan.mode, own ? plan : tailnet?.name);
   if (!dry) {
     for (const image of [BACKEND_IMAGE, DASHBOARD_IMAGE]) {
-      if (docker(['image', 'inspect', image]).status === 0) continue;
-      say(`  · pulling ${image}`);
-      if (docker(['pull', '-q', image], { stdio: ['ignore', 'ignore', 'inherit'] }).status !== 0) throw new Fail(`docker pull ${image} failed.`);
+      try {
+        pinnedImage(docker, image);
+      } catch (e) {
+        throw new Fail(e.message);
+      }
     }
   }
   // A Mac with a backend already (a move, or new addresses) checks your

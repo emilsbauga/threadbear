@@ -108,6 +108,33 @@ export async function hasLiveKey(ctx: QueryCtx | MutationCtx, runnerId: string):
   return false;
 }
 
+// actAs's fence for a row rather than a runner the caller names: the owner
+// key on something of `runnerId`'s that only that runner does (its thread's
+// messages, tool output and pictures, its commands, its schedule runs, its
+// requests). True, so refused, once that runner has a live key of its own:
+// an old copy of the owner key left on that Mac can't go on writing as it
+// through a call that names only a thread or a command (Daybreak 178, 24
+// Nov 2026). A runner key isn't fenced here: its own rules check it.
+export async function ownerFenced(ctx: QueryCtx | MutationCtx, c: Caller, runnerId: string | undefined): Promise<boolean> {
+  return c.owner && runnerId !== undefined && runnerId !== 'any' && (await hasLiveKey(ctx, runnerId));
+}
+
+// Whether a runner's mirrored rows and files count against an allowance of
+// its own (CAP): one with a live runner key, or a virtual runner's box,
+// whose key is a boxes row rather than a runnerKeys one (runnerAccess.ts
+// BoxScope). Only the owner's (the main Mac, and a runner on the main key)
+// count against none. A move's rows going to a runner keep its accounting
+// by this, so a box isn't taken for the owner (Daybreak 181, 24 Nov 2026).
+export async function hasAllowance(ctx: QueryCtx | MutationCtx, runnerId: string): Promise<boolean> {
+  if (await hasLiveKey(ctx, runnerId)) return true;
+  const r = await ctx.db
+    .query('runners')
+    .withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId))
+    .unique();
+  if (r?.box) return true;
+  return (await ctx.db.query('boxes').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).first()) !== null;
+}
+
 // A phone's token (tokens.ts) is checked by its SHA-256 hash; the plain
 // token is never stored.
 export async function checkPhoneToken(ctx: QueryCtx | MutationCtx, token: string): Promise<{ id: Id<'tokens'>; name: string; expiresAt: number }> {

@@ -18,6 +18,11 @@ export type UnsureWhy = { file: string; line?: number; command?: string; problem
 export type CodeScan = { at: number; h: PatchHash; all: boolean; files: Set<string>; why?: UnsureWhy };
 const scans = new Map<string, CodeScan>();
 const SCAN_TTL_MS = 10_000;
+// How old a scan Patches may show (withEditsAsk): only what it says there,
+// never whether an edit asks, which takes the 10 s one above. Each thread's
+// patches are read every 15 to 20 s, so at 10 s every read scanned afresh
+// (23 Nov), and a scan of Threadbear's own checks patch takes a second or more.
+export const SCAN_SHOWN_MS = 120_000;
 // A web address held in a constant (`const PAGE = \`https://x/\${id}\``), so not
 // in the default export where `url` would say so. Run as a command it's one
 // file by that very name, which `files` has: only characters a shell neither
@@ -25,10 +30,12 @@ const SCAN_TTL_MS = 10_000;
 // folder by (Codex's review). Only for a file read the old way (patchCommands
 // couldn't read it), where every string is taken for a command.
 const PLAIN_WEB_ADDRESS = /^https?:\/\/(?!.*\.\.)[\w.~/%:-]*$/i;
-export function codeOfUnhashedPatch(file: string, from: string, now: number): CodeScan {
+// `maxAgeMs`: how old a kept scan may be, when nothing its hash was made from
+// has changed; longer only for what Patches shows (SCAN_SHOWN_MS).
+export function codeOfUnhashedPatch(file: string, from: string, now: number, maxAgeMs: number = SCAN_TTL_MS): CodeScan {
   const key = `${file}\0${from}`;
   const hit = scans.get(key);
-  if (hit && now - hit.at < SCAN_TTL_MS && hit.h.looked.same()) return hit;
+  if (hit && now - hit.at < Math.max(SCAN_TTL_MS, maxAgeMs) && hit.h.looked.same()) return hit;
   const h = patchHash(file);
   const files = new Set<string>();
   const add = (f: string) => files.add(canonicalPath(f).toLowerCase());

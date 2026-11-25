@@ -1,6 +1,6 @@
 // The Recipes view (the `recipes` experiment, docs/protocol/projects.md "Recipes"):
 // techniques worth keeping that an agent sets up for anyone. The sidebar
-// lists the ones added, each with its switch and its latest runs; the main
+// lists the ones added, each with its switch and how it's going; the main
 // panel shows them all as a gallery of cards, or one recipe's page: what it
 // does, an example of a run, what it set up, its last 30 days and its log.
 //
@@ -30,7 +30,6 @@ use crate::style::px;
 use serde_json::{json, Value};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::rc::Rc;
 use threadbear_core::chrono::Local;
 use threadbear_core::recipes::{self as rules, Day, Recipe, RecipeDetail, RecipeState};
@@ -41,6 +40,8 @@ const CARD_MAX: f32 = 420.;
 const CARD_GAP: f32 = 16.;
 const CARD_HEADER: f32 = 92.;
 const TILE: f32 = 52.;
+/// The example's little thread: its box scrolls inside this.
+const EXAMPLE_HEIGHT: f32 = 440.;
 
 thread_local! {
     /// The gallery's width last frame, for this frame's columns.
@@ -53,7 +54,7 @@ pub(crate) struct RecipesState {
     pub(crate) list: Option<Vec<Recipe>>,
     /// The recipe whose page is in the main panel; None for the gallery.
     pub(crate) open: Option<String>,
-    /// `recipes.get` answers, for the pages and the sidebar's runs.
+    /// `recipes.get` answers, for the pages.
     pub(crate) details: HashMap<String, RecipeDetail>,
     /// "add:<id>", "on:<id>", "remove:<id>", "change:<id>", "new" while on
     /// their way.
@@ -61,6 +62,10 @@ pub(crate) struct RecipesState {
     list_scroll: ScrollHandle,
     /// The gallery and the page; a scripted click scrolls it to what it's after.
     pub(crate) home_scroll: ScrollHandle,
+    /// The example each page shows (its dots), by recipe id.
+    example_at: HashMap<String, usize>,
+    /// Inside the example's little thread.
+    example_scroll: ScrollHandle,
 }
 
 impl RecipesState {
@@ -72,6 +77,8 @@ impl RecipesState {
             busy: HashSet::new(),
             list_scroll: ScrollHandle::new(),
             home_scroll: ScrollHandle::new(),
+            example_at: HashMap::new(),
+            example_scroll: ScrollHandle::new(),
         }
     }
 
@@ -103,8 +110,7 @@ impl Threadbear {
     }
 
     /// After hello, on opening the view, and on `recipes.updated`: the list,
-    /// then the pages of the ones added (for the sidebar's runs) and of the
-    /// one open.
+    /// then the page of the one open.
     pub(crate) fn load_recipes(&mut self, cx: &mut Context<Self>) {
         if !self.recipes_on() {
             return;
@@ -115,17 +121,9 @@ impl Threadbear {
                 return;
             };
             this.update(cx, |this, cx| {
-                let list = Recipe::decode_list(&v["recipes"]);
-                let mut wanted: Vec<String> =
-                    rules::added(&list).iter().map(|r| r.id.clone()).collect();
-                if let Some(open) = &this.recipes.open {
-                    if !wanted.contains(open) {
-                        wanted.push(open.clone());
-                    }
-                }
-                this.recipes.list = Some(list);
-                for id in wanted {
-                    this.load_recipe(id, cx);
+                this.recipes.list = Some(Recipe::decode_list(&v["recipes"]));
+                if let Some(open) = this.recipes.open.clone() {
+                    this.load_recipe(open, cx);
                 }
                 cx.notify();
             })
@@ -155,6 +153,11 @@ impl Threadbear {
 
     /// The view, with the gallery or a recipe's page beside it.
     pub(crate) fn show_recipes(&mut self, page: Option<String>, cx: &mut Context<Self>) {
+        // A page or the gallery opens at its top, not where the last was.
+        if self.recipes.open != page {
+            self.recipes.home_scroll.set_offset(Point::default());
+            self.recipes.example_scroll.set_offset(Point::default());
+        }
         self.recipes.open = page.clone();
         self.set_mode(SidebarMode::Recipes, cx);
         // set_mode leaves things be when the view's already up with its page.
@@ -180,9 +183,15 @@ impl Threadbear {
         self.recipes.replace(guess.clone());
         self.recipes.busy.insert(key.clone());
         cx.notify();
+        // On is agreeing to its habit's words: the ones shown here.
+        let mut params = json!({ "id": id, "on": on });
+        if let Some(h) = before.habit.as_ref().filter(|_| on) {
+            params["habit"] = json!(h.text);
+            params["name"] = json!(before.name);
+        }
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let res = call(client, "recipes.setOn", json!({ "id": id, "on": on })).await;
+            let res = call(client, "recipes.setOn", params).await;
             this.update(cx, |this, cx| {
                 this.recipes.busy.remove(&key);
                 match res {
@@ -196,6 +205,8 @@ impl Threadbear {
                             this.recipes.replace(before);
                         }
                         this.show_error(e.message, cx);
+                        // Its wording may have changed under the click.
+                        this.load_recipes(cx);
                     }
                 }
                 cx.notify();
@@ -238,7 +249,7 @@ impl Threadbear {
                             >(v["thread"].clone())
                             {
                                 if thread.id == id {
-                                    t.threads.insert(id.clone(), std::sync::Arc::new(thread));
+                                    t.store_reply_summary(thread);
                                 }
                             }
                             let (me, window) = (cx.entity().downgrade(), t.main_window);
@@ -262,7 +273,19 @@ impl Threadbear {
     }
 
     fn add_recipe(&mut self, id: String, cx: &mut Context<Self>) {
-        self.start_recipe_thread(format!("add:{id}"), "recipes.add", json!({ "id": id }), cx);
+        // Only a habit: nothing to set up, so adding it is switching it on.
+        if self.recipes.recipe(&id).is_some_and(|r| r.instant) {
+            self.set_recipe_on(id, true, cx);
+            return;
+        }
+        let mut params = json!({ "id": id });
+        if let Some(r) = self.recipes.recipe(&id) {
+            if let Some(h) = &r.habit {
+                params["habit"] = json!(h.text);
+                params["name"] = json!(r.name);
+            }
+        }
+        self.start_recipe_thread(format!("add:{id}"), "recipes.add", params, cx);
     }
 
     fn new_recipe(&mut self, cx: &mut Context<Self>) {
@@ -289,7 +312,7 @@ impl Threadbear {
             let (entity, id) = (entity.clone(), id.clone());
             alert
                 .title(title.clone())
-                .description("Its schedules are deleted and it goes back to the gallery, ready to add again. Its files stay where they are.")
+                .description("Its schedules are deleted, agents stop being told its habit if it has one, and it goes back to the gallery, ready to add again. Its files stay where they are.")
                 .button_props(DialogButtonProps::default().ok_text("Remove").show_cancel(true))
                 .on_ok(move |_, _, cx| {
                     let id = id.clone();
@@ -324,7 +347,7 @@ impl Threadbear {
     // ------------------------------------------------------------ sidebar
 
     /// The sidebar's view: New recipe, Browse recipes, then each one added
-    /// with its switch, how it's going and its latest runs.
+    /// with its switch and how it's going.
     pub(crate) fn render_recipes_list(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let list = self.recipes.list.clone().unwrap_or_default();
@@ -409,8 +432,8 @@ impl Threadbear {
             .into_any_element()
     }
 
-    /// One recipe added: its icon and name with the switch, how it's going,
-    /// then its latest two runs, each opening its thread.
+    /// One recipe added: its icon and name with the switch, and how it's
+    /// going (its runs are on its page). One still setting up links its thread.
     fn render_recipe_row(
         &mut self,
         recipe: &Recipe,
@@ -490,32 +513,11 @@ impl Threadbear {
         if let (RecipeState::SettingUp, Some(thread)) =
             (recipe.state, recipe.setup_thread_id.clone())
         {
-            row = row.child(self.recipe_run_line(
+            row = row.child(self.recipe_setup_line(
                 format!("recipe-setup-{id}"),
                 thread,
                 "Its setup thread".to_owned(),
                 "Open the thread setting it up".to_owned(),
-                None,
-                p,
-                cx,
-            ));
-        }
-        let runs: Vec<_> = self
-            .recipes
-            .details
-            .get(&id)
-            .map(|d| d.runs.iter().take(2).cloned().collect())
-            .unwrap_or_default();
-        for run in runs {
-            let when = threadbear_core::sidebar::relative_short(run.at_ms, &Local::now());
-            let line = run.headline.clone().unwrap_or_else(|| run.title.clone());
-            let mark = run.needs_you.then(|| style::needs_you(cx));
-            row = row.child(self.recipe_run_line(
-                format!("recipe-run-{}", run.thread_id),
-                run.thread_id.clone(),
-                line,
-                format!("Open this run ({})", rules::log_time(run.at_ms)),
-                Some((when, mark)),
                 p,
                 cx,
             ));
@@ -523,18 +525,14 @@ impl Threadbear {
         row.into_any_element()
     }
 
-    /// A run under its recipe in the sidebar, behind a guide line.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "baselined when the lint was turned on (20 Nov 2026); take it off when this is next split up"
-    )]
-    fn recipe_run_line(
+    /// A line under its recipe in the sidebar, behind a guide line: the
+    /// thread setting it up.
+    fn recipe_setup_line(
         &mut self,
         key: String,
         thread: String,
         line: String,
         tip: String,
-        when: Option<(String, Option<Hsla>)>,
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -566,15 +564,6 @@ impl Threadbear {
                 .text_color(p.secondary)
                 .child(line),
         )
-        .when_some(when, |s, (when, mark)| {
-            s.child(
-                div()
-                    .flex_none()
-                    .text_size(px(style::size::SIDEBAR_META))
-                    .text_color(mark.unwrap_or(p.faint))
-                    .child(when),
-            )
-        })
         .into_any_element()
     }
 
@@ -591,6 +580,12 @@ impl Threadbear {
         let tip = match (recipe.state, on) {
             (RecipeState::SettingUp, _) => {
                 "Being set up. Turn it off and it stays off once it's ready".to_owned()
+            }
+            (_, true) if recipe.instant => {
+                "On. Turn it off and agents stop being told its habit".to_owned()
+            }
+            (_, false) if recipe.instant => {
+                "Off. Turn it on and every thread's agent is told its habit".to_owned()
             }
             (_, true) => format!(
                 "On. Turn it off to pause {}",
@@ -845,10 +840,17 @@ impl Threadbear {
             RecipeState::Add => {
                 let busy = self.recipes.busy.contains(&format!("add:{id}"));
                 let link = style::link_text(cx);
-                let tip = format!(
-                    "Add {}: an agent sets it up with you in a new thread",
-                    recipe.name
-                );
+                let tip = if recipe.instant {
+                    format!(
+                        "Add {}: every thread's agent is told its habit from now on",
+                        recipe.name
+                    )
+                } else {
+                    format!(
+                        "Add {}: an agent sets it up with you in a new thread",
+                        recipe.name
+                    )
+                };
                 tipped!(
                     h_flex()
                         .flex_none()
@@ -916,7 +918,11 @@ impl Threadbear {
                         .small()
                         .loading(busy)
                         .disabled(busy)
-                        .tooltip("An agent sets it up with you in a new thread")
+                        .tooltip(if recipe.instant {
+                            "Every thread's agent is told its habit from now on"
+                        } else {
+                            "An agent sets it up with you in a new thread"
+                        })
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.add_recipe(add_id.clone(), cx)),
                         ),
@@ -990,27 +996,16 @@ impl Threadbear {
                     d.about.clone()
                 };
                 left = left.child(self.recipe_markdown(format!("recipe-about-{id}"), about, cx));
-                if let Some(example) = d.example.clone() {
-                    left = left.child(section_title("What a run looks like")).child(
-                        v_flex()
-                            .gap(px(8.))
-                            .p(px(16.))
-                            .rounded(px(12.))
-                            .border_1()
-                            .border_color(style::card_border(cx))
-                            .bg(style::code_background(cx))
-                            .child(self.recipe_markdown(
-                                format!("recipe-example-{id}"),
-                                example,
-                                cx,
-                            ))
-                            .child(
-                                div()
-                                    .text_size(px(style::size::DETAIL))
-                                    .text_color(faint)
-                                    .child("An example, not yours"),
-                            ),
-                    );
+                if !d.examples.is_empty() {
+                    // A habit doesn't run: its example is an exchange.
+                    let title = if recipe.instant {
+                        "What it looks like"
+                    } else {
+                        "What a run looks like"
+                    };
+                    left = left
+                        .child(section_title(title))
+                        .child(self.render_recipe_examples(&recipe, d, cx));
                 }
             }
             None => {
@@ -1023,13 +1018,45 @@ impl Threadbear {
                 )
             }
         }
-        left = left
-            .child(section_title("What it set up"))
-            .child(self.render_recipe_setup(&recipe, cx));
+        if recipe.habit.is_some() {
+            left = left
+                .child(section_title("What agents are told"))
+                .child(self.render_recipe_habit(&recipe, cx));
+        }
+        // One that's only a habit sets nothing up and starts no threads.
+        if !recipe.instant {
+            left = left
+                .child(section_title("What it set up"))
+                .child(self.render_recipe_setup(&recipe, cx));
+        }
         left = left.child(self.render_recipe_buttons(&recipe, cx));
-        let right = self.render_recipe_runs(&recipe, detail.as_ref(), cx);
+        let right =
+            (!recipe.instant).then(|| self.render_recipe_runs(&recipe, detail.as_ref(), cx));
+        // Back to the gallery, from Browse or the sidebar alike.
+        let back = h_flex().w_full().pb(px(12.)).child(
+            tipped!(
+                h_flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .px(px(6.))
+                    .py(px(3.))
+                    .ml(px(-6.))
+                    .rounded(px(6.))
+                    .text_size(px(style::size::LABEL))
+                    .text_color(secondary)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(style::hover_fill(cx))),
+                "recipe-back",
+                "Back to every recipe",
+                gpui_kit::Role::Button
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.show_recipes(None, cx)))
+            .child(icon("chevron.left", 11., secondary))
+            .child("All recipes"),
+        );
         v_flex()
             .w_full()
+            .child(back)
             .child(banner)
             .child(
                 h_flex()
@@ -1037,7 +1064,7 @@ impl Threadbear {
                     .items_start()
                     .gap(px(28.))
                     .child(left)
-                    .child(right),
+                    .children(right),
             )
             .into_any_element()
     }
@@ -1053,6 +1080,282 @@ impl Threadbear {
         .selectable(true)
         .style(crate::rows::reading_style(cx))
         .into_any_element()
+    }
+
+    /// Its made-up runs, one at a time, each as its thread would look: the
+    /// thread's title, what the user said, the agent's reply and its card,
+    /// in a box of its own that scrolls. Dots under it flip between them.
+    fn render_recipe_examples(
+        &mut self,
+        recipe: &Recipe,
+        detail: &RecipeDetail,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = recipe.id.clone();
+        let count = detail.examples.len();
+        let at = self
+            .recipes
+            .example_at
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+            .min(count.saturating_sub(1));
+        let example = detail.examples[at].clone();
+        let faint = style::faint_text(cx);
+        let secondary = style::secondary_text(cx);
+        let label = style::label_text(cx);
+        let border = style::card_border(cx);
+        let hairline = style::hairline(cx);
+        // The thread's bar: its title, and what started it.
+        let mut bar = v_flex()
+            .px(px(18.))
+            .py(px(10.))
+            .gap(px(2.))
+            .border_b_1()
+            .border_color(hairline)
+            .child(
+                div()
+                    .truncate()
+                    .text_size(px(style::size::CARD_TITLE))
+                    .font_semibold()
+                    .text_color(label)
+                    .child(example.title_or(recipe).to_owned()),
+            );
+        if !recipe.instant {
+            bar = bar.child(
+                div()
+                    .text_size(px(style::size::DETAIL))
+                    .text_color(faint)
+                    .child("Started by its schedule"),
+            );
+        }
+        let mut body = v_flex().px(px(18.)).pt(px(14.)).pb(px(18.)).gap(px(14.));
+        if let Some(you) = example.you.clone() {
+            body = body.child(
+                h_flex().w_full().justify_end().child(
+                    div()
+                        .max_w(relative(crate::rows::metrics::BUBBLE_SHARE))
+                        .px(px(crate::rows::metrics::BUBBLE_PAD_H))
+                        .py(px(crate::rows::metrics::BUBBLE_PAD_V))
+                        .rounded(px(crate::rows::metrics::BUBBLE_RADIUS))
+                        .bg(style::bubble_background(cx))
+                        .text_size(px(style::size::BODY))
+                        .line_height(px(style::size::BODY_LINE))
+                        .text_color(label)
+                        .child(you),
+                ),
+            );
+        }
+        if !example.reply.is_empty() {
+            body = body.child(
+                crate::open_gate::reading_markdown_view(
+                    SharedString::from(format!("recipe-example-{id}-{at}")),
+                    example.reply.clone(),
+                    crate::open_gate::Origin::ThisMac,
+                    &std::env::var("HOME").unwrap_or_default(),
+                )
+                .selectable(true)
+                .style(crate::rows::reading_style(cx)),
+            );
+        }
+        if let Some(card) = example.card {
+            body = body.child(example_card(card, cx));
+        }
+        let thread = v_flex()
+            .w_full()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(border)
+            .bg(style::code_background(cx))
+            .overflow_hidden()
+            .child(bar)
+            .child(
+                div()
+                    .id(ElementId::Name(
+                        format!("recipe-example-scroll-{id}").into(),
+                    ))
+                    .h(px(EXAMPLE_HEIGHT))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.recipes.example_scroll)
+                    .child(body),
+            );
+        // Under it: the note, and the dots with a chevron each side.
+        let mut nav = h_flex().items_center().gap(px(6.));
+        if count > 1 {
+            let chevron = |key: &'static str,
+                           symbol: &'static str,
+                           tip: &'static str,
+                           by: isize,
+                           enabled: bool,
+                           cx: &mut Context<Self>|
+             -> AnyElement {
+                let id = id.clone();
+                let color = if enabled { secondary } else { hairline };
+                tipped!(
+                    div()
+                        .flex_none()
+                        .p(px(3.))
+                        .rounded(px(4.))
+                        .when(enabled, |s| s.cursor_pointer()),
+                    ElementId::Name(format!("recipe-example-{key}").into()),
+                    tip,
+                    gpui_kit::Role::Button
+                )
+                .on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| this.flip_example(&id, by, cx)),
+                )
+                .child(icon(symbol, 11., color))
+                .into_any_element()
+            };
+            nav = nav.child(chevron(
+                "prev",
+                "chevron.left",
+                "The example before",
+                -1,
+                at > 0,
+                cx,
+            ));
+            for n in 0..count {
+                let id = id.clone();
+                let filled = n == at;
+                nav =
+                    nav.child(
+                        tipped!(
+                            div().flex_none().p(px(3.)).cursor_pointer(),
+                            ElementId::Name(format!("recipe-example-dot-{n}").into()),
+                            rules::example_tip(n, count),
+                            gpui_kit::Role::Button
+                        )
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.show_example(&id, n, cx)
+                        }))
+                        .child(
+                            div()
+                                .size(px(7.))
+                                .rounded_full()
+                                .when(filled, |d| d.bg(label))
+                                .when(!filled, |d| d.border_1().border_color(secondary)),
+                        ),
+                    );
+            }
+            nav = nav.child(chevron(
+                "next",
+                "chevron.right",
+                "The next example",
+                1,
+                at + 1 < count,
+                cx,
+            ));
+        }
+        v_flex()
+            .gap(px(8.))
+            .child(thread)
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(style::size::DETAIL))
+                            .text_color(faint)
+                            .child("An example, not yours"),
+                    )
+                    .child(nav),
+            )
+            .into_any_element()
+    }
+
+    fn show_example(&mut self, id: &str, n: usize, cx: &mut Context<Self>) {
+        self.recipes.example_at.insert(id.to_owned(), n);
+        self.recipes.example_scroll.set_offset(Point::default());
+        cx.notify();
+    }
+
+    fn flip_example(&mut self, id: &str, by: isize, cx: &mut Context<Self>) {
+        let count = self.recipes.details.get(id).map_or(0, |d| d.examples.len());
+        let at = self.recipes.example_at.get(id).copied().unwrap_or(0);
+        self.show_example(id, rules::step_example(at, by, count), cx);
+    }
+
+    /// Its habit, word for word, with whether agents are being told it and
+    /// what it adds to every thread. When its file's wording isn't the one
+    /// switched on, both show, with a button that takes the new one.
+    fn render_recipe_habit(&mut self, recipe: &Recipe, cx: &mut Context<Self>) -> AnyElement {
+        let Some(habit) = recipe.habit.clone() else {
+            return div().into_any_element();
+        };
+        let id = recipe.id.clone();
+        let faint = style::faint_text(cx);
+        let secondary = style::secondary_text(cx);
+        let border = style::card_border(cx);
+        let code_bg = style::code_background(cx);
+        let stale = recipe.habit_stale();
+        let quote = |text: String| {
+            div()
+                .p(px(14.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(border)
+                .bg(code_bg)
+                .text_size(px(style::size::LABEL))
+                .line_height(px(19.))
+                .child(text)
+        };
+        let mut col = v_flex()
+            .id(ElementId::Name(format!("recipe-habit-{id}").into()))
+            .test_support()
+            .gap(px(8.));
+        if let Some(old) = habit.given_text.clone().filter(|_| stale) {
+            col = col
+                .child(
+                    div()
+                        .text_size(px(style::size::DETAIL))
+                        .text_color(faint)
+                        .child("What agents are told now"),
+                )
+                .child(quote(old).text_color(secondary))
+                .child(
+                    div()
+                        .text_size(px(style::size::DETAIL))
+                        .text_color(faint)
+                        .child("The new wording"),
+                );
+        }
+        col = col.child(quote(habit.text));
+        let line = recipe.habit_line().unwrap_or_default();
+        let mut foot = h_flex().items_center().gap(px(10.)).child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(style::size::DETAIL))
+                .line_height(px(16.))
+                .text_color(if stale {
+                    crate::activity_panels::system_orange(cx)
+                } else {
+                    faint
+                })
+                .child(line),
+        );
+        if stale {
+            let busy = self.recipes.busy.contains(&format!("on:{id}"));
+            let take_id = id;
+            foot = foot.child(
+                div().id("recipe-habit-take").test_support().child(
+                    Button::new("recipe-habit-take-button")
+                        .label("Use the new wording")
+                        .small()
+                        .secondary()
+                        .loading(busy)
+                        .disabled(busy)
+                        .tooltip("Tell every thread's agent this wording from now on")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_recipe_on(take_id.clone(), true, cx)
+                        })),
+                ),
+            );
+        }
+        col.child(foot).into_any_element()
     }
 
     /// Its schedules and its experiment, or what adding it will do.
@@ -1179,7 +1482,7 @@ impl Threadbear {
                         .loading(removing)
                         .disabled(removing)
                         .tooltip(
-                            "Delete its schedules and take it back to the gallery. Its files stay",
+                            "Delete its schedules, stop its habit and take it back to the gallery. Its files stay",
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.remove_recipe(remove_id.clone(), window, cx)
@@ -1337,7 +1640,7 @@ impl Threadbear {
     /// page that's open.
     #[cfg(feature = "automation")]
     pub(crate) fn recipes_dump(&self) -> Value {
-        let row = |r: &Recipe| json!({ "id": r.id, "name": r.name, "state": r.state.name(), "status": r.status_line(Local::now()), "tag": r.tag(), "stat": r.stat_line() });
+        let row = |r: &Recipe| json!({ "id": r.id, "name": r.name, "state": r.state.name(), "status": r.status_line(Local::now()), "tag": r.tag(), "stat": r.stat_line(), "habit": r.habit_line() });
         let list = self.recipes.list.clone().unwrap_or_default();
         json!({
             "loaded": self.recipes.list.is_some(),
@@ -1350,7 +1653,9 @@ impl Threadbear {
                 "id": d.recipe.id,
                 "numbers": d.numbers().iter().map(|(n, l)| json!({ "value": n, "label": l })).collect::<Vec<_>>(),
                 "runs": d.runs.len(),
-                "example": d.example.is_some(),
+                "example": !d.examples.is_empty(),
+                "examples": d.examples.len(),
+                "exampleAt": self.recipes.example_at.get(&d.recipe.id).copied().unwrap_or(0),
             })),
         })
     }
@@ -1437,7 +1742,7 @@ fn header_fill(recipe: &Recipe, radius: f32) -> AnyElement {
         Some(path) => fill
             .overflow_hidden()
             .child(
-                img(PathBuf::from(path))
+                img(crate::fit_picture::icon_source(path))
                     .size_full()
                     .object_fit(ObjectFit::Cover),
             )
@@ -1463,4 +1768,64 @@ fn icon_tile(recipe: &Recipe, size: f32, cx: &App) -> Div {
         .justify_center()
         .text_size(px(size * 0.52))
         .child(recipe.icon.clone())
+}
+
+/// An example's end card, as the thread's card draws an ask: its words, then
+/// its answers in a box of rows. Only to look at here.
+fn example_card(card: rules::ExampleCard, cx: &App) -> Div {
+    let label = style::label_text(cx);
+    let secondary = style::secondary_text(cx);
+    let hairline = style::hairline(cx);
+    let mut rows = v_flex()
+        .mt(px(6.))
+        .rounded(px(3.))
+        .overflow_hidden()
+        .bg(style::answer_rows_fill(cx))
+        .border_1()
+        .border_color(style::primary_opacity(cx, 0.05));
+    for (n, option) in card.options.iter().enumerate() {
+        rows = rows.child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(7.))
+                .when(n > 0, |s| {
+                    s.border_t_1()
+                        .border_color(style::primary_opacity(cx, 0.055))
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(13.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(secondary),
+                )
+                .child(
+                    div()
+                        .text_size(px(style::size::BODY))
+                        .text_color(label)
+                        .child(option.clone()),
+                ),
+        );
+    }
+    let mut boxed = v_flex()
+        .mt(px(4.))
+        .pt(px(12.))
+        .border_t_1()
+        .border_color(hairline)
+        .child(
+            div()
+                .text_size(px(style::size::BODY))
+                .line_height(px(style::size::BODY_LINE))
+                .font_semibold()
+                .text_color(label)
+                .child(card.headline),
+        );
+    if !card.options.is_empty() {
+        boxed = boxed.child(rows);
+    }
+    boxed
 }

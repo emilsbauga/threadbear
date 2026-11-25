@@ -71,7 +71,10 @@ export type Deps = { direct: boolean; names: string[]; values?: string[]; forms?
 export type Pending = { where: string; direct: boolean; names: string[]; tpl: Tpl; dirs: string[]; flag?: boolean; into?: boolean; srcs?: string[] };
 // `exported`: variables a shell it starts still has; `cleared`: ones some
 // `env -u` takes away.
-export type Writes = { written: [string, string][]; somewhere?: string; reached: string[]; pending?: Pending[]; deps?: [string, Deps][]; assignsAny?: boolean; exported?: string[]; cleared?: string[] };
+// `programDirs`: for a check followed all the way (FollowOptions.strict),
+// the folders it may run programs from (trustedProgramDirs), none of which
+// it may write in.
+export type Writes = { written: [string, string][]; somewhere?: string; reached: string[]; pending?: Pending[]; deps?: [string, Deps][]; assignsAny?: boolean; exported?: string[]; cleared?: string[]; programDirs?: string[] };
 
 // The most of one file patch trust reads (a patch, a helper, a script, a
 // config file); it reads one bigger than this not at all, and fails closed.
@@ -237,9 +240,13 @@ export type FollowOptions = {
   // From patch-trust.ts, passed in so the two don't import each other.
   // `packages`: its bare imports, followed when the repo commits them
   // (tracked-packages.ts).
-  scanJs: (src: string, file: string) => { specifiers: string[]; packages?: string[]; strings: string[]; problem?: string };
+  // `launches`: where it starts programs itself, which makes it a script
+  // this can't follow (Reach.launches).
+  scanJs: (src: string, file: string) => { specifiers: string[]; packages?: string[]; strings: string[]; launches?: string; problem?: string };
   resolveImport: (dir: string, spec: string) => string;
   namedPaths: (src: string) => string[];
+  // WRITES_READ_BUDGET, smaller in tests.
+  writesBudget?: number;
   // Shared with the caller's hash, so it hashes the bytes followed here.
   reads?: Reads;
   // For a Claude Code hook, which runs by itself (claude-trust.ts): what
@@ -255,6 +262,11 @@ export type FollowOptions = {
   // which are nobody's to change but yours and otherwise aren't looked at:
   // a schedule's check runs them unattended, by a path as often as not.
   outside?: boolean;
+  // A JavaScript file it reaches that starts programs itself (`launches`
+  // from scanJs) makes it one this can't follow, as a `$(cat cmd.txt)`
+  // does: what it runs may come from a file no hash covers (a schedule's
+  // check, Daybreak 165). Patches don't set it yet.
+  launches?: boolean;
 };
 
 // A package manager's own entry script, run by path through node.
@@ -265,20 +277,32 @@ const PACKAGE_MANAGER_ENTRY = /\/node_modules\/(?:npm|pnpm|yarn|corepack|bun|@ya
 // `HOME++`), by the script's text. A `$` or `{` before the name is a read.
 const ARITH_SET = (name: string) => new RegExp(`(?<![$\\w{])${name}\\s*(?:(?:[-+*/%^|&]|<<|>>)?=(?!=)|\\+\\+|--)|(?:\\+\\+|--)\\s*${name}\\b`);
 const HOME_SET = ARITH_SET('HOME');
+const TABLE_NAMES = '(?:PATH|path|BASH_CMDS|BASH_ALIASES|commands|functions|aliases|galiases|saliases|builtins)';
+const PATH_EXPAND_SET = new RegExp(`\\$\\{[^}]*?${TABLE_NAMES}(?:\\[[^\\]]*\\])?:?=`);
+const PATH_ARITH_SET = new RegExp(`(?:[[,?:+\\-*/%^<>=~]|\\blet\\s[^\\n;]*?)\\s*${TABLE_NAMES}\\b\\s*(?:(?:[-+*/%^|&]|<<|>>)?=(?!=)|\\+\\+|--)|(?:\\+\\+|--)\\s*${TABLE_NAMES}\\b|\\(\\s*\\([^\\n]*?\\b${TABLE_NAMES}\\b[^\\n]*?\\)\\s*\\)`);
 const MSYS_SET = ARITH_SET('MSYS2?_(?:ARG_CONV_EXCL|NO_PATHCONV|ENV_CONV_EXCL)');
 
 // Bounds: a script reaching more than this can't be checked.
 export const MAX_SCRIPT_FILES = 300;
 const MAX_DEPTH = 12;
 const MAX_VISITS = 600;
+// How much script text the writes-only reads past a problem may read
+// (Reach.writeReads), each read (a script or a `sh -c`) counted as at least
+// WRITES_READ_MIN_COST: at most 16,384 reads. Big enough for a repo's
+// helpers read again from every script a problem unwinds through (12 levels
+// of 50 helpers of 32 KB is 20 MB: Codex's review), small enough to end.
+const WRITES_READ_BUDGET = 64 * 1024 * 1024;
+const WRITES_READ_MIN_COST = 4096;
 
 const SHELL_EXT = ['.sh', '.bash', '.zsh', '.ksh', '.command'];
 const JS_EXT = ['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'];
 const SHELLS = ['sh', 'bash', 'zsh', 'dash', 'ksh'];
-const JS_RUNNERS = ['node', 'tsx', 'ts-node', 'bun', 'deno'];
+const JS_RUNNERS = ['node', 'nodejs', 'tsx', 'ts-node', 'bun', 'deno'];
+// Packages that run a JavaScript or TypeScript file they're handed.
+const JS_RUNNER_PACKAGES = new Set(['tsx', 'ts-node', 'esno', 'esbuild-runner', 'vite-node', 'jiti', '@babel/node', 'babel-node', 'sucrase-node', '@swc-node/register', 'swc-node', 'esrun', 'tsimp', 'ts-node-dev', 'nodemon', 'node', 'bun', 'deno', 'zx', 'tsm', 'tsup-node']);
 // Languages whose loads this can't follow: running a file or code in one
 // fails closed.
-const OTHER_LANGS = /^(python[0-9.]*|ruby|perl|php|lua|osascript|pwsh|powershell|fish|csh|tcsh|Rscript|expect|tclsh|uv|uvx|poetry|pipenv|rake|bundle|parallel)$/;
+const OTHER_LANGS = /^(python[0-9.]*|ruby|perl|php|lua|osascript|pwsh|powershell|fish|csh|tcsh|Rscript|expect|tclsh|uv|uvx|poetry|pipenv|rake|bundle|parallel)$/i;
 // Windows' own (checked as well there, by the lower-case name with the
 // extension off): the command interpreter, the Python launcher, the script
 // hosts, and wsl and conhost, which run another command line.
@@ -299,6 +323,9 @@ export const RISKY_ENV = new Set([
   'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH', 'PYTHONPATH', 'PYTHONSTARTUP', 'RUBYOPT', 'PERL5OPT',
   'PERL5LIB', 'PROMPT_COMMAND', 'npm_config_script_shell', 'NPM_CONFIG_SCRIPT_SHELL', 'npm_config_node_options',
   'NPM_CONFIG_NODE_OPTIONS', 'BUN_OPTIONS', 'GIT_EXEC_PATH', 'SHELLOPTS', 'BASHOPTS', 'FPATH', 'fpath',
+  // make reads MAKEFILES first and takes flags from MAKEFLAGS; gawk loads
+  // from AWKPATH (Grok's review of Daybreak 165).
+  'MAKEFILES', 'MAKEFLAGS', 'GNUMAKEFLAGS', 'MFLAGS', 'AWKPATH', 'AWKLIBPATH',
 ]);
 
 // Programs a Claude Code hook (and what it runs) may run with nothing more
@@ -310,13 +337,14 @@ const INERT_PROGRAMS = new Set([
   'echo', 'printf', 'true', 'false', 'test', '[', ':', 'cat', 'head', 'tail', 'ls', 'pwd', 'date', 'sleep', 'say', 'afplay',
   'jq', 'grep', 'egrep', 'fgrep', 'tr', 'wc', 'cut', 'uniq', 'tee', 'mkdir', 'touch', 'rm', 'rmdir', 'cp', 'mv', 'ln',
   'chmod', 'basename', 'dirname', 'realpath', 'readlink', 'stat', 'pbcopy', 'pbpaste', 'curl', 'wget', 'which', 'whoami',
-  'hostname', 'uname', 'tput', 'notify-send', 'logger', 'mktemp',
+  'hostname', 'uname', 'tput', 'notify-send', 'logger', 'mktemp', 'id', 'uptime', 'sw_vers', 'df',
   'cd', 'export', 'set', 'unset', 'shift', 'exit', 'return', 'read', 'local', 'declare', 'typeset', 'wait', 'umask',
   'break', 'continue', 'pushd', 'popd', 'type', 'hash', 'let', 'shopt', 'ulimit',
 ]);
 
 // Redirections that write a file.
-const WRITE_REDIRS = new Set(['>', '>>', '>|', '&>', '&>>', '<>', '>&']);
+// zsh's clobbering forms too (`>!`, `>>|`, `&>!`...), which write as `>` does.
+const WRITE_REDIRS = new Set(['>', '>>', '>|', '&>', '&>>', '<>', '>&', '>!', '>>!', '>>|', '>&!', '>&|', '&>!', '&>|', '&>>!', '&>>|']);
 // `$(mktemp)`, `$(mktemp -d)`, `$(mktemp -t name)`: a new file in the temp
 // folder, not the repo (a template without -t is made in the current one).
 const PLAIN_MKTEMP = /^\s*mktemp(\s+(-[dqu]+|-t\s+[\w.-]+|\/tmp\/[\w.-]+))*\s*$/;
@@ -335,12 +363,91 @@ const GIT_WRITES = new Set([
 ]);
 // Programs that write files the data names.
 const UNPACKERS = new Set(['unzip', 'gunzip', 'bunzip2', 'unxz', 'unzstd', 'uncompress', 'unlz4', 'patch', 'gpatch', 'split', 'csplit', 'cpio', '7z', '7za', '7zz', 'unrar', 'unar', 'pax']);
-const LOADING_FLAG = /(^|\s)(-r|-e|-p|--require|--import|--loader|--experimental-loader|--preload|--eval|--print|--preserve-symlinks|--preserve-symlinks-main)(\s|=|$)/;
+const LOADING_FLAG = /(^|\s)-[rep]\S|(^|\s)(-r|-e|-p|--require|--import|--loader|--experimental-loader|--preload|--eval|--print|--preserve-symlinks|--preserve-symlinks-main)(\s|=|$)/;
 const LIFECYCLE = ['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare', 'prepack', 'postpack', 'prepublishOnly', 'publish', 'postpublish', 'dependencies'];
 const PATH_SENTINEL = '\u0000PATH';
 // A package's bin folder on PATH: on Windows written with either slash;
 // elsewhere a backslash is part of a name (Codex's review, 18 Nov 2026).
 const BIN_DIR = IS_WINDOWS ? /[\\/]node_modules[\\/]\.bin[\\/]?$/ : /\/node_modules\/\.bin\/?$/;
+
+// bash's and zsh's tables of what a command name runs (`BASH_CMDS[cat]=
+// /tmp/cat`, zsh's `functions[cat]='sh x'`): setting one is `hash -p`.
+const COMMAND_TABLES = new Set(['BASH_CMDS', 'BASH_ALIASES', 'commands', 'functions', 'aliases', 'galiases', 'saliases', 'builtins', 'reswords', 'dis_functions', 'dis_aliases', 'dis_galiases', 'dis_saliases', 'dis_builtins', 'dis_reswords', 'functions_source', 'dis_functions_source']);
+
+// The folders a check followed all the way (FollowOptions.strict) may run
+// a program from, by name on PATH or by its path: where programs are
+// installed (the system's, Homebrew's, the usual ones in your home folder)
+// and what's on the runner's own PATH, which the check starts with. Never
+// the repo, which the thread can change, or a temp folder, which anyone
+// can write in: with one, `cp /bin/sh /tmp/cat; PATH=/tmp:$PATH; cat
+// data.txt` ran data.txt as code (23 Nov 2026).
+const SYSTEM_PROGRAM_DIRS = ['/usr/bin', '/bin', '/usr/sbin', '/sbin', '/usr/local/bin', '/usr/local/sbin', '/opt/homebrew/bin', '/opt/homebrew/sbin', '/Library/Apple/usr/bin', '/System/Cryptexes/App/usr/bin', '/home/linuxbrew/.linuxbrew/bin', '/home/linuxbrew/.linuxbrew/sbin', '/snap/bin', '/opt/local/bin'];
+const HOME_PROGRAM_DIRS = ['.local/bin', 'bin', '.bun/bin', '.cargo/bin', '.deno/bin', 'go/bin', '.volta/bin', '.npm-global/bin'];
+const TEMP_DIRS = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp', '/var/folders', '/private/var/folders', '/dev/shm'];
+
+// How a folder is compared: resolved, and without case where the disk has none.
+export function dirKey(d: string): string {
+  const r = path.resolve(d);
+  return process.platform === 'darwin' || IS_WINDOWS ? r.toLowerCase() : r;
+}
+
+// Where the programs in those folders, and what they load, are installed,
+// which a check followed all the way may write nothing in: each folder, the
+// one its links lead to, and for a `bin` or `sbin` the folder above
+// (/opt/homebrew, whose Cellar holds what /opt/homebrew/bin/jq links to;
+// /usr/local), but never your home folder or `/`.
+export function programHomes(home: string, top: string, runnerPath: string = process.env.PATH ?? ''): string[] {
+  const out = new Set<string>();
+  const homeKey = dirKey(home);
+  for (const d of trustedProgramDirs(home, top, runnerPath)) {
+    for (const k of [d, dirKey(realOrNearest(d))]) {
+      out.add(k);
+      const up = path.dirname(k);
+      if (/^s?bin$/.test(path.basename(k)) && up !== path.dirname(up) && up !== homeKey) out.add(up);
+    }
+  }
+  return [...out];
+}
+
+export function trustedProgramDirs(home: string, top: string, runnerPath: string = process.env.PATH ?? ''): Set<string> {
+  const temps = [...TEMP_DIRS, os.tmpdir(), realOrNearest(os.tmpdir())].map(dirKey);
+  const inside = (d: string, root: string) => d === root || d.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+  const nvm = path.join(home, '.nvm', 'versions', 'node');
+  const fromPath = runnerPath.split(path.delimiter).filter((e) => path.isAbsolute(e));
+  const all = [...SYSTEM_PROGRAM_DIRS, ...HOME_PROGRAM_DIRS.map((d) => path.join(home, d)), ...fromPath, ...listDir(nvm).map((v) => path.join(nvm, v, 'bin'))];
+  const out = new Set<string>();
+  for (const d of all) {
+    const keys = [dirKey(d), dirKey(realOrNearest(d))];
+    if (keys.some((k) => temps.some((t) => inside(k, t)) || inside(k, dirKey(top)))) continue;
+    out.add(keys[0]!);
+  }
+  return out;
+}
+
+// Whether a path is a symbolic link, or a folder with one in it (a few
+// thousand entries at most; past that, as if it had).
+function holdsLink(p: string, budget = { n: 2000 }): boolean {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(p);
+  } catch {
+    return false;
+  }
+  if (st.isSymbolicLink()) return true;
+  if (!st.isDirectory()) return false;
+  for (const n of listDir(p)) {
+    if (--budget.n < 0 || holdsLink(path.join(p, n), budget)) return true;
+  }
+  return false;
+}
+
+function listDir(d: string): string[] {
+  try {
+    return fs.readdirSync(d);
+  } catch {
+    return [];
+  }
+}
 
 // Extensions of files that run as code: a shell's, Node's, or a language
 // this can't follow (which fails closed when one runs).
@@ -377,9 +484,12 @@ export function looksRunnable(file: string): boolean {
 // found whatever its case and with or without its extension, so `node.exe`,
 // `NODE.EXE` and `npm.cmd` are node and npm (each of which took patch trust
 // past `node -e` and a package.json's scripts: the Windows port's review).
-// Elsewhere the name is the name.
-export function programName(name: string, windows: boolean = IS_WINDOWS): string {
-  return windows ? name.toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '') : name;
+// On a Mac the disk is case-insensitive by default, so `Env` and `Node`
+// run env and node (Grok's review of Daybreak 165). Elsewhere the name is
+// the name.
+export function programName(name: string, windows: boolean = IS_WINDOWS, mac: boolean = process.platform === 'darwin'): string {
+  if (windows) return name.toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
+  return mac ? name.toLowerCase() : name;
 }
 
 // Whether a program is a language or launcher on Windows that runs a script
@@ -424,12 +534,13 @@ export function windowsSpelling(v: string, where: { tmp?: string; host?: string 
 
 // ---- a shell lexer: enough of POSIX sh, bash and zsh to see what runs ----
 
-type Part = { k: 'lit'; s: string; q: boolean } | { k: 'var'; name: string; op: string } | { k: 'sub'; src: string; line: number } | { k: 'arith' };
+// `q` on a var or sub: inside "...", so the shell doesn't split it into words.
+type Part = { k: 'lit'; s: string; q: boolean } | { k: 'var'; name: string; op: string; q?: boolean } | { k: 'sub'; src: string; line: number; q?: boolean } | { k: 'arith' };
 type Word = { parts: Part[]; line: number };
 type Tok = { t: 'word'; w: Word } | { t: 'op'; op: string; line: number } | { t: 'redir'; op: string; target?: Word; line: number };
 
-const OPS = ['<(', '>(', ';;&', ';;', ';&', '&&', '||', '|&', '<<<', '<<-', '<<', '&>>', '&>', '>>', '<>', '>|', '>&', '<&', ';', '&', '|', '(', ')', '<', '>'];
-const REDIRS = new Set(['<<<', '<<-', '<<', '&>>', '&>', '>>', '<>', '>|', '>&', '<&', '<', '>']);
+const OPS = ['<(', '>(', ';;&', ';;', ';&', '&&', '||', '|&', '<<<', '<<-', '<<', '&>>!', '&>>|', '&>>', '&>!', '&>|', '&>', '>>!', '>>|', '>>', '<>', '>&!', '>&|', '>|', '>!', '>&', '<&', ';', '&', '|', '(', ')', '<', '>'];
+const REDIRS = new Set(['<<<', '<<-', '<<', '&>>', '&>', '>>', '<>', '>|', '>&', '<&', '<', '>', '>!', '>>!', '>>|', '>&!', '>&|', '&>!', '&>|', '&>>!', '&>>|']);
 
 class Lexer {
   i = 0;
@@ -475,10 +586,11 @@ class Lexer {
 
   private op(): boolean {
     const s = this.s;
-    const op = OPS.find((o) => s.startsWith(o, this.i));
+    const op = s.startsWith('=(', this.i) ? '=(' : OPS.find((o) => s.startsWith(o, this.i));
     if (!op) return false;
     const line = this.line;
-    if (op === '<(' || op === '>(') {
+    // zsh's `=(...)` at a word's start is a process substitution too.
+    if (op === '<(' || op === '>(' || op === '=(') {
       const src = this.balanced(this.i + 1);
       this.toks.push({ t: 'word', w: { parts: [{ k: 'sub', src, line }], line } });
       return true;
@@ -606,13 +718,14 @@ class Lexer {
         this.i += 2;
       } else if (c === '$') {
         const p = this.dollar();
-        if (p) parts.push(p);
+        if (p) parts.push(p.k === 'var' || p.k === 'sub' ? { ...p, q: true } : p);
         else {
           parts.push({ k: 'lit', s: '$', q: true });
           this.i++;
         }
       } else if (c === '`') {
-        parts.push(this.backtick());
+        const b = this.backtick();
+        parts.push(b.k === 'sub' ? { ...b, q: true } : b);
       } else {
         if (c === '\n') this.line++;
         parts.push({ k: 'lit', s: c, q: true });
@@ -732,9 +845,15 @@ function bareOf(w: Word): string | undefined {
   return w.parts.every((p) => p.k === 'lit' && !p.q) ? w.parts.map((p) => (p as { s: string }).s).join('') : undefined;
 }
 
-type Simple = { words: Word[]; redirs: { op: string; target?: Word }[]; line: number; arrays: Word[] };
+// `notAtStart`: a redirect, or a word the shell doesn't read as its own
+// (`{{`, `}}`), came before its command's name, after which `case` or `[[`
+// is a program's name, not the shell's syntax.
+type Simple = { words: Word[]; redirs: { op: string; target?: Word }[]; line: number; arrays: Word[]; notAtStart?: boolean };
 
 const RESERVED = new Set(['if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', '{', '}', '!', 'time', '}}', '{{']);
+// The reserved words after which the shell still reads `case` and `[[` as
+// its own: `{{ [[ x || sh y.sh` runs a program called {{, then y.sh.
+const OPENERS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!', 'time']);
 
 // Simple commands from tokens, with `case` patterns, `[[ ]]` and `x=(...)`
 // kept from looking like commands of their own.
@@ -757,9 +876,11 @@ function simpleCommands(toks: Tok[]): Simple[] {
   const lead = () => leadAt;
   const push = (w: Word) => {
     cur.words.push(w);
-    if (leadAt < 0 && !RESERVED.has(bareOf(w) ?? '')) {
+    const bare = bareOf(w) ?? '';
+    if (leadAt < 0 && RESERVED.has(bare) && !OPENERS.has(bare)) cur.notAtStart = true;
+    if (leadAt < 0 && !RESERVED.has(bare)) {
       leadAt = cur.words.length - 1;
-      leadIsCase = bareOf(w) === 'case';
+      leadIsCase = bare === 'case' && !cur.notAtStart;
     }
   };
   for (let k = 0; k < toks.length; k++) {
@@ -769,6 +890,8 @@ function simpleCommands(toks: Tok[]): Simple[] {
       else if (t.t === 'op' && t.op === ')') cases[cases.length - 1] = 'body';
       // A pattern is expanded, so what's in it runs: kept as `:`'s words.
       else if (t.t === 'word') out.push({ words: [{ parts: [{ k: 'lit', s: ':', q: false }], line: t.w.line }, t.w], redirs: [], line: t.w.line, arrays: [] });
+      // A shell refuses a redirect there, but what's in one is followed all the same.
+      else if (t.t === 'redir' && t.target) out.push({ words: [{ parts: [{ k: 'lit', s: ':', q: false }], line: t.line }, t.target], redirs: [], line: t.line, arrays: [] });
       continue;
     }
     if (t.t === 'op') {
@@ -791,6 +914,7 @@ function simpleCommands(toks: Tok[]): Simple[] {
         continue;
       }
       cur.redirs.push({ op: t.op, ...(t.target ? { target: t.target } : {}) });
+      if (lead() < 0) cur.notAtStart = true;
       if (!cur.line) cur.line = t.line;
       continue;
     }
@@ -802,7 +926,9 @@ function simpleCommands(toks: Tok[]): Simple[] {
       end();
       continue;
     }
-    if (at < 0 && bare === '[[') inTest = true;
+    // After a redirect or `{{`, `[[` is a program's name, and what follows
+    // is commands of its own (`>f [[ x || sh y.sh`).
+    if (at < 0 && bare === '[[' && !cur.notAtStart) inTest = true;
     if (inTest && bare === ']]') inTest = false;
     push(t.w);
     const first = lead();
@@ -826,13 +952,60 @@ type Ctx = {
   vars: Map<string, string[] | undefined>;
   depth: number;
   inSub?: boolean;
+  // Run by bash, zsh or ksh for sure, which read `[[` as their own: dash
+  // (a Linux sh) runs a program by that name, and what's after its `||`.
+  cond?: boolean;
 };
+
+// The shells that have `[[`, by the name they run as.
+const COND_SHELLS = new Set(['bash', 'zsh', 'ksh']);
+
+// The shell a script's #! runs it with (`#!/bin/bash`, `#!/usr/bin/env
+// zsh`), or undefined.
+function shebangShell(text: string): string | undefined {
+  const m = /^#![ \t]*(\S+)(?:[ \t]+(\S+))?/.exec(text);
+  if (!m) return undefined;
+  const prog = path.basename(m[1]!);
+  return programName(prog === 'env' ? path.basename(m[2] ?? '') : prog);
+}
+
+// The files an import of `want` (no extension, or a folder) could load,
+// when `want` itself isn't a file.
+function importCandidates(want: string): string[] {
+  if (isFile(want)) return [];
+  // `./x.js` that's really x.ts, as TypeScript tooling reads it.
+  const ts = /\.(m|c)?jsx?$/.exec(want);
+  if (ts) {
+    const stem = want.slice(0, -ts[0].length);
+    return [`.${ts[1] ?? ''}ts`, `.${ts[1] ?? ''}tsx`, '.ts', '.tsx'].map((e) => stem + e).filter((f, i, a) => a.indexOf(f) === i && isFile(f));
+  }
+  return [...['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs', '.tsx', '.jsx', '.json', '.node'].map((e) => want + e), ...['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs', '.tsx', '.jsx', '.json', '.node'].map((e) => path.join(want, `index${e}`)), path.join(want, 'package.json')].filter(isFile);
+}
 
 class Reach {
   files = new Set<string>();
   missing = new Set<string>();
   outside = new Map<string, Set<string>>();
   problem?: string;
+  // A script it reached that starts programs itself (FollowOptions.scanJs),
+  // made the problem once the rest is followed (settleWrites).
+  launches?: string;
+  // Something it can't follow that doesn't stop the follow, made the
+  // problem at the end as `launches` is.
+  later?: string;
+  // What finds code to run by its own rules (a test runner, bunfig.toml's
+  // preloads, kept symlinks) can't be followed for a hook, nor for a
+  // schedule's check (Gemini's review of Daybreak 165): it ran files the
+  // digest never read.
+  private get ownRules(): boolean {
+    return Boolean(this.o.strict || this.o.launches);
+  }
+  private programDirSet?: Set<string>;
+  // Whether a program in folder `d` is one a check followed all the way may run (trustedProgramDirs).
+  private programDir(d: string): boolean {
+    this.programDirSet ??= trustedProgramDirs(this.home, this.o.top);
+    return path.isAbsolute(d) && this.programDirSet.has(dirKey(d));
+  }
   // The package folders whose node_modules/.bin a package script has first
   // on PATH, while one is being followed.
   private binDirs: string[] = [];
@@ -857,6 +1030,25 @@ class Reach {
   // Functions any script followed defines, for what they're handed.
   private definedFns = new Set<string>();
   private writesDepth = 0;
+  // Each script read for its writes alone (writesOnly), by where it runs, as
+  // `visits` is for the follow: read again the same way it adds nothing, as
+  // what it's handed goes into `deps` before the read. Without it a script
+  // that runs itself, or two that run each other, were read again at every
+  // level down to writesDepth's limit, doubling each time: Threadbear's own
+  // check.sh and check-remote.sh made one look at its checks patch read
+  // check.sh over 2,500 times and take 40 to 70 s, and as each thread's
+  // patches are read every 15 to 20 s, the trust worker of every runner with
+  // a thread in that repo never stopped (23 Nov: seven old runners finishing
+  // their turns took about 5 cores between them). Kept with the depth it
+  // was read at: a read cut off by the depth limit doesn't stand for one
+  // from higher up, which may reach what that one couldn't (`cp payload.dat
+  // run.sh` one script further down: Codex's review), so a script is read
+  // again only from shallower, at most writesDepth's limit times.
+  private writeReads = new Map<string, number>();
+  // What those reads have cost (WRITES_READ_BUDGET), and set once a
+  // script went unread for it (settleWrites).
+  private writesReadBytes = 0;
+  private writesUnread?: string;
   private exported = new Set<string>();
   private cleared = new Set<string>();
   private deps = new Map<string, Deps>();
@@ -924,7 +1116,8 @@ class Reach {
   // code or config (an import, a package.json a package script runs from),
   // or it's only named (an argument, a string): then it's hashed only if
   // it's code (looksRunnable), and only a script is followed.
-  follow(file: string, how: 'run' | 'source' | 'load' | 'named', ctx: Ctx | undefined, line?: number): void {
+  // `via`: the shell it's handed to (`sh x.sh`), which runs it whatever its #! says.
+  follow(file: string, how: 'run' | 'source' | 'load' | 'named', ctx: Ctx | undefined, line?: number, via?: string): void {
     if (this.problem) return;
     const abs = path.resolve(file);
     if (how !== 'named' || looksRunnable(abs)) this.reached.add(abs);
@@ -979,8 +1172,19 @@ class Reach {
     }
     const startDirs = ctx && !ctx.lost ? new Set(ctx.dirs) : new Set([this.o.folder]);
     if (passive) startDirs.add(path.dirname(real));
+    // Run by its path, its #! names the program that reads it: followed all
+    // the way, one from a folder programs are installed in (`#!/tmp/sh`
+    // after `cp perl /tmp/sh` reads the script as Perl).
+    if (this.o.strict && how === 'run' && !via) {
+      const interp = /^#![ \t]*(\S+)/.exec(text)?.[1];
+      if (interp !== undefined && !(path.isAbsolute(interp) && this.programDir(path.dirname(interp)))) return this.fail(ctx, line, `runs ${label}, whose #! names ${interp}, which isn't in a folder programs are installed in, so patch trust can't tell what reads it.`);
+    }
     if (kind === 'js') {
       const shebang = /^#!(.*)/.exec(text)?.[1] ?? '';
+      // Run by its #!, every flag on it counts, as on a command line: only
+      // ones known to load nothing (`env -S node --env-file=.env` loaded
+      // NODE_OPTIONS from a file nobody read; Gemini's review of 165).
+      if (!passive && shebangFlagsUnsafe(shebang)) return this.fail(undefined, undefined, `${label}'s #! line runs it with flags patch trust doesn't follow (${shebang.trim().slice(0, 80)}).`);
       if (LOADING_FLAG.test(shebang.replace(/^\S+/, ''))) return this.fail(undefined, undefined, `${label}'s #! line loads other code by a flag (${shebang.trim()}), which patch trust doesn't follow.`);
       return this.js(real, text, startDirs, depth);
     }
@@ -994,7 +1198,8 @@ class Reach {
       this.dependsOn(`#args:${abs}`, { direct: false, names: [`#args:${ctx.file}`] });
       return this.shell(text, { ...ctx, label, file: abs, argv0: [...ctx.argv0, abs], depth });
     }
-    this.shell(text, { label, file: abs, argv0: [abs], dirs: startDirs, vars: new Map(), depth });
+    const cond = ctx !== undefined && COND_SHELLS.has(via ?? shebangShell(text) ?? '');
+    this.shell(text, { label, file: abs, argv0: [abs], dirs: startDirs, vars: new Map(), depth, ...(cond ? { cond } : {}) });
   }
 
   // A script outside the repo this reaches (FollowOptions.outside). A
@@ -1194,6 +1399,21 @@ class Reach {
     if (this.o.strict && (/child_process|\bBun\b|\bDeno\b|\bprocess\s*\.\s*(binding|dlopen)\b|\\(u[0-9a-fA-F{]|x[0-9a-fA-F]{2}|[0-7])/.test(text) || scan.strings.some((x) => /child_process|worker_threads|^(node:)?(vm|module|cluster|inspector)$/.test(x)))) {
       return this.fail(undefined, undefined, `${label} runs other commands or native code itself, which a hash can't follow. Run them from a shell script instead.`);
     }
+    // For a schedule's check too (FollowOptions.launches), it's a script
+    // this can't follow, as one that runs `$(cat cmd.txt)` is: what it runs
+    // may come from a file no hash covers (Daybreak 165, 22 Nov 2026). The
+    // rest is still followed, so an owner's check that can't be is bound as
+    // far as it can be (PatchTrust.approveCheck).
+    if (scan.launches) {
+      if (this.o.strict) return this.fail(undefined, undefined, `${label}: ${scan.launches}`);
+      if (this.o.launches) this.launches ??= `${label}: ${scan.launches}`;
+    }
+    // Any JavaScript, for a schedule's check: what it does can turn on
+    // files no hash covers by more routes than a scan can close
+    // (`globalThis.valueOf()['pro' + 'cess']`, three rounds of review of
+    // Daybreak 165), so it's a script this can't follow all the way, as a
+    // Python one is. The owner's check is still bound as far as it can be.
+    if (this.o.launches && !this.o.strict) this.later ??= `${label} is JavaScript, which patch trust can't follow all the way for a schedule's check: what it runs or loads can depend on files no hash covers. Have the check run a shell script instead.`;
     // On Windows a program it starts with an environment of its own loses
     // NoDefaultCurrentDirectoryInExePath, and may be run from wherever it
     // says (Codex's fourth review, 19 Nov 2026).
@@ -1202,7 +1422,25 @@ class Reach {
     }
     for (const d of [...dirs, path.dirname(file)]) this.besideRun(d);
     const ctx: Ctx = { label, file, argv0: [file], dirs, vars: new Map(), depth };
+    // tsconfig's `paths` (tsx, bun) turn a bare name into a file of the
+    // repo's, which this reads as an installed package (Gemini's review of
+    // Daybreak 165).
+    if (this.ownRules && (scan.packages ?? []).some((x) => !isBuiltin(x))) {
+      const mapped = this.tsPaths(path.dirname(file));
+      if (mapped) return this.fail(undefined, undefined, `${label} imports a package by name beside ${this.rel(mapped)}, whose \`paths\` or \`baseUrl\` can make that a file of the repo's, which patch trust doesn't follow.`);
+    }
     for (const spec of scan.specifiers) {
+      // An import without its extension, or of a folder, that more than one
+      // file could answer: Node may load another than the one followed
+      // (helper.js over helper.ts, a folder's package.json main, an addon).
+      if (this.ownRules && /^\.{1,2}(\/|$)|^\//.test(spec)) {
+        const want = path.resolve(path.dirname(file), spec.replace(/[?#].*$/, ''));
+        const could = importCandidates(want);
+        // Nothing there: Bun and tsx load x.ts for an import of x.js, and
+        // what's missing now may be any file later (Gemini's review of 165).
+        if (!isFile(want) && could.length === 0) return this.fail(undefined, undefined, `${label} imports ${spec}, which isn't a file in the repo now, so patch trust can't see what it'll load.`);
+        if (could.length > 1 || could.some((f) => path.basename(f) === 'package.json' || f.endsWith('.node')) || (could.length && /\.(m|c)?jsx?$/.test(want))) return this.fail(undefined, undefined, `${label} imports ${spec}, which ${could.map((f) => this.rel(f)).join(', ')} could answer, so patch trust can't tell which one runs. Import it with its extension.`);
+      }
       const target = this.o.resolveImport(path.dirname(file), spec);
       // require() runs a file it's given by its exact name as CommonJS,
       // whatever it's called, but read as data what it loads isn't followed.
@@ -1232,6 +1470,79 @@ class Reach {
     }
   }
 
+  // The tsconfig.json or jsconfig.json from `dir` up to the repo's top
+  // that sets `paths` or `baseUrl` (through a local `extends` too), or one
+  // that can't be read as JSON with comments, or undefined. Parsed, so a
+  // `"paths"` key counts (Gemini's review of 165).
+  private tsPaths(dir: string): string | undefined {
+    const maps = (f: string, depth: number): boolean => {
+      if (depth > 8) return true;
+      const text = this.reads.read(f)?.toString('utf8');
+      if (text === undefined) return true;
+      let j: { compilerOptions?: Record<string, unknown>; extends?: unknown };
+      try {
+        j = JSON.parse(text.replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (_m: string, str: string | undefined) => str ?? '').replace(/,(\s*[}\]])/g, '$1'));
+      } catch {
+        return true;
+      }
+      if (j?.compilerOptions && ['paths', 'baseUrl', 'rootDirs'].some((k) => Object.hasOwn(j.compilerOptions!, k))) return true;
+      for (const e of Array.isArray(j?.extends) ? j.extends : j?.extends === undefined ? [] : [j.extends]) {
+        if (typeof e !== 'string') return true;
+        // A package's config is installed code, as packages are.
+        if (!/^\.{0,2}\//.test(e)) continue;
+        const next = [path.resolve(path.dirname(f), e), path.resolve(path.dirname(f), e + '.json')].find(isFile);
+        if (!next || maps(next, depth + 1)) return true;
+      }
+      return false;
+    };
+    for (let d = dir; this.inRepo(d); d = path.dirname(d)) {
+      for (const n of ['tsconfig.json', 'jsconfig.json']) {
+        const f = path.join(d, n);
+        if (isFile(f) && maps(f, 0)) return f;
+      }
+      if (d === this.o.top || path.dirname(d) === d) break;
+    }
+    return undefined;
+  }
+
+  // A bunfig.toml in `ctx`'s folders up to the repo's top that has Bun load
+  // or define anything (a preload, a plugin, a loader, a define), or that
+  // this can't read plainly (a multi-line string, an escape).
+  private bunfigLoads(ctx: Ctx): boolean {
+    return [...ctx.dirs].some((d) => {
+      for (let x = d; this.inRepo(x); x = path.dirname(x)) {
+        const f = path.join(x, 'bunfig.toml');
+        if (isFile(f)) {
+          const text = this.reads.read(f)?.toString('utf8');
+          if (text === undefined || /preload|plugin|loader|define|macro|jsx|tsconfig|conditions|env|"{3}|'{3}|\\u/i.test(text)) return true;
+        }
+        if (x === this.o.top || path.dirname(x) === x) break;
+      }
+      return false;
+    });
+  }
+
+  // A .env file Bun would load from `ctx`'s folders that sets what makes
+  // it or Node load other code, or that this can't read.
+  private envFilesLoad(ctx: Ctx): boolean {
+    const names = ['.env', '.env.local', '.env.development', '.env.production', '.env.test', '.env.development.local', '.env.production.local', '.env.test.local'];
+    return [...ctx.dirs].some((d) => names.some((n) => {
+      const f = path.join(d, n);
+      if (!isFile(f)) return false;
+      // Read for names only, never kept or hashed: a .env holds secrets.
+      let text: string;
+      try {
+        text = fs.readFileSync(f, 'utf8');
+      } catch {
+        return true;
+      }
+      return text.split('\n').some((l) => {
+        const m = /^\s*(?:export\s+)?([^=\s#]+)\s*=/.exec(l);
+        return m !== null && (RISKY_ENV.has(m[1]!) || /^(NODE_OPTIONS|BUN_OPTIONS|BUN_CONFIG_\w+|PATH|NODE_PATH)$/.test(m[1]!));
+      });
+    }));
+  }
+
   // `./` and `../` paths anywhere in a file's text, from its folder and the
   // folders it runs in: extra matches only add files to the hash.
   private namedIn(text: string, file: string, ctx: Ctx): void {
@@ -1249,6 +1560,11 @@ class Reach {
     // name worked out as it runs gets past (Codex's fourth review).
     const code = text.replace(/^[ \t]*#.*$/gm, '');
     if (HOME_SET.test(code)) return this.fail(ctx, undefined, "sets HOME (in arithmetic or let), so ~ and $HOME name another folder from then on, which patch trust doesn't follow.");
+    // Followed all the way, PATH and the command tables set any way but a
+    // plain assignment: in an expansion (`${x:-${PATH:=/tmp}}`, zsh's
+    // `${~PATH:=/tmp}`), in arithmetic (`$((PATH=1))`, `a[PATH=1]`) or by let.
+    const joined = code.replace(/\\\n/g, '');
+    if (this.o.strict && (PATH_EXPAND_SET.test(joined) || PATH_ARITH_SET.test(joined))) return this.fail(ctx, undefined, "sets PATH (or a table of what command names run) in an expansion, arithmetic or let, which patch trust doesn't follow.");
     const msys = IS_WINDOWS ? MSYS_SET.exec(code) : null;
     if (msys) return this.fail(ctx, undefined, `sets ${/MSYS2?_\w+/.exec(msys[0])?.[0] ?? 'an MSYS variable'}, which changes how Git Bash hands paths to programs, so patch trust can't tell which file one names.`);
     // CDPATH makes `cd x` go somewhere else than ./x (Codex's sixth review).
@@ -1452,8 +1768,9 @@ class Reach {
     const temp = !append && value?.parts.length === 1 && value.parts[0]!.k === 'sub' && PLAIN_MKTEMP.test(value.parts[0]!.src);
     this.dependsOn(name, temp ? { direct: false, names: [], values: [path.join(os.tmpdir(), 'mktemp')] } : vals ? { direct: false, names: [], values: vals } : this.depsOf(value!, ctx));
     if (RISKY_ENV.has(name)) return this.fail(ctx, line, `sets ${name}, which makes other code load, so patch trust can't follow what runs.`);
-    if (this.unfollowableVar(name, ctx, line)) return;
-    if (name === 'NODE_OPTIONS' && (!vals || vals.some((v) => LOADING_FLAG.test(v)))) return this.fail(ctx, line, 'sets NODE_OPTIONS to load other code, which patch trust can\'t follow.');
+    if (name !== 'PATH' && name !== 'path' && name !== 'NODE_OPTIONS' && this.unfollowableVar(name, ctx, line)) return;
+    // Node strips the quotes round each of its words (`'"--import=x"'`).
+    if (name === 'NODE_OPTIONS' && (append || !vals || vals.some((v) => LOADING_FLAG.test(v.replace(/["\\]/g, '').replace(/(--[^\s=]*)/g, (m) => m.replace(/_/g, '-')))))) return this.fail(ctx, line, 'sets NODE_OPTIONS to load other code, which patch trust can\'t follow.');
     if (name === 'PATH' || name === 'path') {
       // An empty entry is the current folder (a leading or trailing `:`, or
       // `::`), so it's left in to be refused, as `.` is (Codex's review, 7 Nov).
@@ -1466,6 +1783,9 @@ class Reach {
       });
       const ok = entries?.every((e) => e === PATH_SENTINEL || BIN_DIR.test(e) || (path.isAbsolute(e) && !this.inRepo(e)));
       if (!ok || append) return this.fail(ctx, line, "puts a folder on PATH that patch trust can't vouch for, so it can't tell what a command name runs.");
+      // Followed all the way, only folders programs are installed in.
+      const odd = this.o.strict ? entries?.find((e) => e !== PATH_SENTINEL && !this.programDir(e)) : undefined;
+      if (odd !== undefined) return this.fail(ctx, line, `puts ${odd || 'the current folder'} on PATH, which isn't a folder programs are installed in (the system's, Homebrew's, ~/.local/bin and the like), so a program could be slipped in there and patch trust can't tell what a command name runs.`);
       // A package's bin folder, as a package script has first on PATH:
       // a name after this may be a program of the repo's, committed or a
       // workspace's, not an installed one (Codex's review, 7 Nov).
@@ -1482,7 +1802,14 @@ class Reach {
         }
       }
     }
-    ctx.vars.set(name, append ? undefined : vals);
+    if (this.o.strict && name === 'IFS' && !this.ifsForRead && !(vals && vals.every((v) => v === ''))) return this.fail(ctx, line, "sets IFS, which changes how every unquoted word splits, so patch trust can't tell what a command's words are.");
+    // Followed all the way, what a variable may hold is everything it was
+    // ever set to: one set in a subshell, an `if` not taken or a function
+    // never called (`d=/tmp; ( d=/usr/bin ); PATH="$d:$PATH"`) keeps the
+    // value it had as well.
+    const had = ctx.vars.get(name);
+    const keep = this.o.strict && ctx.vars.has(name) && !append;
+    ctx.vars.set(name, append ? undefined : keep ? (had && vals ? [...new Set([...had, ...vals])].slice(0, 32) : undefined) : vals);
   }
 
   // A variable patch trust can't follow being set, in any way a script can
@@ -1492,9 +1819,27 @@ class Reach {
   // Codex's reviews of the Windows port, 18 Nov 2026). And on Windows the
   // ones that turn off Git Bash's rewriting of /c/x to C:\x for a Windows
   // program, after which patch trust reads a path as another file.
+  // A variable set some other way than a plain assignment (`read`, `for`,
+  // `printf -v`, `${X:=...}`, `export 'X=...'`), whose value isn't read:
+  // refused for those that make code load or a name run something else
+  // (Gemini's review of 165), and as unfollowableVar says.
+  private setUnread(full: string, ctx: Ctx, line: number): boolean {
+    const name = full.replace(/\[.*$/s, '');
+    if (RISKY_ENV.has(name) || name === 'NODE_OPTIONS' || name === 'PATH' || name === 'path') {
+      this.fail(ctx, line, `sets ${name} in a way patch trust doesn't read, so it can't tell what runs.`);
+      return true;
+    }
+    return this.unfollowableVar(full, ctx, line);
+  }
+
   private unfollowableVar(full: string, ctx: Ctx, line: number): boolean {
     // HOME[0] is HOME, as $HOME is its first element.
     const name = full.replace(/\[.*$/s, '');
+    // bash's and zsh's table of where each command name runs from, as `hash -p` sets it.
+    if (this.o.strict && COMMAND_TABLES.has(name)) {
+      this.fail(ctx, line, `sets ${name}, which maps a command name to a file, so patch trust can't tell what a command name runs.`);
+      return true;
+    }
     if (name === 'HOME') {
       this.fail(ctx, line, "sets HOME, so ~ and $HOME name another folder from then on, which patch trust doesn't follow.");
       return true;
@@ -1518,15 +1863,27 @@ class Reach {
   // Only the literal start counts, as the value can be anything ("HOME=$PWD").
   private quotedAssignment(w: Word, ctx: Ctx, line: number): boolean {
     let text = '';
-    for (const p of w.parts) {
+    let k = 0;
+    for (; k < w.parts.length; k++) {
+      const p = w.parts[k]!;
       if (p.k !== 'lit') break;
       text += p.s;
     }
     const m = /^([A-Za-z_]\w*(?:\[[^\]]*\])?)\+?=/.exec(text);
     // `export 'dest=run.sh'` sets dest all the same (Codex's review of 153).
     if (m) this.setsUnknown(m[1]!.replace(/\[.*$/s, ''), ctx);
-    else if (w.parts.some((p) => p.k !== 'lit')) this.assignsAny = true;
-    return m ? this.unfollowableVar(m[1]!, ctx, line) : false;
+    else if (w.parts.some((p) => p.k !== 'lit')) {
+      this.assignsAny = true;
+      // `export "${x}NODE_OPTIONS=..."`: a name worked out as it runs, which
+      // could be any of the ones below (Gemini's review of 165).
+      // Noted for the end, so what follows is still followed and hashed.
+      if (!text.includes('=') && w.parts.slice(k).some((p) => p.k === 'lit' && p.s.includes('='))) {
+        this.later ??= `${ctx.label} line ${line} sets a variable whose name is worked out as it runs, which patch trust can't follow.`;
+      }
+    }
+    // And `export 'NODE_OPTIONS=--import=./x.mjs'` loads it all the same
+    // (Gemini's review of 165): unfollowableVar refuses those names.
+    return m ? this.setUnread(m[1]!, ctx, line) : false;
   }
 
   // Splits `NAME=value` off a word, or undefined.
@@ -1574,7 +1931,11 @@ class Reach {
     for (const w of [...cmd.words, ...cmd.arrays]) this.subsOf(w, ctx);
     // `${x:=v}` sets x as it expands (Codex's review of 153).
     for (const w of [...cmd.words, ...cmd.arrays, ...cmd.redirs.flatMap((r) => (r.target ? [r.target] : []))]) {
-      for (const p of w.parts) if (p.k === 'var' && /^:?=/.test(p.op)) this.setsUnknown(p.name.replace(/\[.*$/s, ''), ctx);
+      for (const p of w.parts) {
+        if (p.k !== 'var' || !/^:?=/.test(p.op)) continue;
+        this.setsUnknown(p.name.replace(/\[.*$/s, ''), ctx);
+        if (this.setUnread(p.name, ctx, line)) return;
+      }
     }
     // A file redirected into a shell may be what it runs (a flag that
     // makes it read commands from its input, missed below), so it's hashed
@@ -1592,6 +1953,8 @@ class Reach {
       this.subsOf(r.target, ctx);
       // `>&2` and `2>&-` move a descriptor; `>& file` writes it.
       if (WRITE_REDIRS.has(r.op) && !(r.op === '>&' && /^(\d+-?|-)$/.test(litOf(r.target) ?? ''))) this.wrote(this.values(r.target, ctx), r.target, ctx, line);
+      // To bash `>!x` is `>` to a file called `!x`; to zsh, `>!` to x.
+      if (r.op.endsWith('!')) this.wrote(this.values(r.target, ctx)?.map((v) => `!${v}`), r.target, ctx, line);
       if (r.op === '<' || r.op === '<>') {
         const v = this.values(r.target, ctx);
         if (!v && ctx.inSub) return this.fail(ctx, line, 'reads a file it works out as it runs (`$(< ...)`), which patch trust can\'t follow.');
@@ -1614,22 +1977,56 @@ class Reach {
     // By index: dropping one word at a time copied the rest each time, so
     // a long run of `a=1` was quadratic (Codex's review, 6 Nov).
     let k = 0;
+    // Followed all the way, IFS only empty, or for a `read` it's handed to:
+    // otherwise it changes how every unquoted word splits.
+    const lead = words.findIndex((w) => !this.assignment(w));
+    this.ifsForRead = lead >= 0 && bareOf(words[lead]!) === 'read';
     for (; k < words.length; k++) {
       const a = this.assignment(words[k]!);
       if (!a) break;
       this.assign(a.name, a.value, a.append, ctx, line);
       if (this.problem) return;
     }
+    this.ifsForRead = false;
     words = words.slice(k);
     for (const w of cmd.arrays) this.named(w, ctx);
     if (!words.length) return;
-    this.run(words, ctx, line, false);
+    if (this.o.strict && this.splits(words, ctx, line)) return;
+    this.run(words, ctx, line, false, false, k === 0 && !cmd.notAtStart);
   }
 
   // A command's words, from its name. `extra`: xargs adds arguments this
   // can't see.
   // `wrappedIn`: run by a wrapper whose own run named these words already.
-  private run(words: Word[], ctx: Ctx, line: number, extra: boolean, wrappedIn = false): void {
+  // `atStart`: the simple command's first word, past reserved words only,
+  // where the shell reads `case` and `[[` as its own (after `x=1`, `>f`
+  // or a wrapper they're a program's name).
+  // Followed all the way, an unquoted `$x` whose value has a space, a tab
+  // or a newline is several words to the shell, and one with `*`, `?` or
+  // `[` names whatever files match (`env $a cat` with a='-i PATH=/tmp'):
+  // what each word is can't be told. Not in `[[ ]]`, a case's word, a
+  // for's list, or the assignments a declaration builtin is handed.
+  private ifsForRead = false;
+  private splits(words: Word[], ctx: Ctx, line: number): boolean {
+    const head = bareOf(words[0]!);
+    // A for's list splits into the values its name takes, which are unknown anyway.
+    if (head === '[[' || head === 'case' || head === 'for' || head === 'select') return false;
+    const declares = head !== undefined && ['export', 'local', 'declare', 'typeset', 'readonly', 'integer'].includes(head);
+    for (const w of words) {
+      if (declares && this.assignment(w)) continue;
+      for (const p of w.parts) {
+        if ((p.k !== 'var' && p.k !== 'sub') || p.q) continue;
+        const vals = this.values({ parts: [p], line: w.line }, ctx);
+        if (vals?.some((v) => /[\s*?[]/.test(v))) {
+          this.fail(ctx, line, `runs a command with an unquoted ${p.k === 'var' ? `$${p.name}` : '$(...)'} whose value the shell splits into words (or matches to files), so patch trust can't tell what it runs. Quote it.`);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private run(words: Word[], ctx: Ctx, line: number, extra: boolean, wrappedIn = false, atStart = false): void {
     if (this.problem || !words.length) return;
     const head = words[0]!;
     const headVals = this.values(head, ctx);
@@ -1653,6 +2050,15 @@ class Reach {
     }
     if (!wrappedIn) for (const w of args) this.named(w, ctx);
     if (this.problem) return;
+    // `case` and `[[` are the shell's own syntax, not programs on PATH that
+    // could load code (FollowOptions.strict): what their words substitute
+    // was followed with the command, and a case's patterns as `:`'s words.
+    // Only bare and at the command's start: `"[["`, `Case`, `x=1 [[`,
+    // `>f [[` or `env [[` runs a program by that name.
+    const keyword = this.o.strict && atStart ? bareOf(head) : undefined;
+    if (keyword === 'case') return;
+    if (keyword === '[[' && !ctx.cond) return this.fail(ctx, line, "uses [[ ]], which only bash, zsh and ksh have (to sh it's a program by that name), so patch trust can't follow it. Give the script a #!/bin/bash line, or use [ ].");
+    if (keyword === '[[') return this.condition(args, ctx, line);
     // A path: the repo's file runs (followed), or a program outside it,
     // treated by its name (/bin/sh is sh).
     // On Windows a backslash names a folder too: a quoted 'C:\repo\x.exe'
@@ -1662,6 +2068,8 @@ class Reach {
       if (!targets) return this.fail(ctx, line, `runs ${name} after a cd patch trust couldn't follow (${ctx.lost}), so it can't tell which file that is.`);
       const inRepo = targets.filter((t) => this.inRepo(t));
       for (const t of targets) this.reached.add(t);
+      // After a cd it can't settle, a file of the repo's or one outside it.
+      if (this.o.strict && inRepo.length && inRepo.length < targets.length) return this.fail(ctx, line, `runs ${name}, which after a cd could be a file of the repo's or one outside it, so patch trust can't tell which runs.`);
       if (inRepo.length) {
         const found = inRepo.filter(isFile);
         // A missing one that could turn up as a program: a runnable
@@ -1680,6 +2088,10 @@ class Reach {
       // /dev/fd/3 after `exec 3< ./x.sh` is x.sh.
       if (targets.some(readsInput)) return this.fail(ctx, line, `runs ${name}, which is a file it has open, so patch trust can't tell what runs.`);
       for (const t of targets) this.noteOutside(t, 'run', ctx, line);
+      // Followed all the way, a program by its path (not a script outside
+      // the repo, followed as one) only from a folder programs are installed in.
+      const program = targets.find((t) => !(this.o.outside && isFile(t) && !isBinary(t)) && !this.programDir(path.dirname(t)));
+      if (this.o.strict && program) return this.fail(ctx, line, `runs ${name}, a program in ${path.dirname(program)}, which isn't a folder programs are installed in (the system's, Homebrew's, ~/.local/bin and the like), so patch trust can't tell what it is.`);
       return this.program(path.basename(name), args, ctx, line, extra);
     }
     // In a package script, node_modules/.bin comes first on PATH.
@@ -1689,6 +2101,27 @@ class Reach {
       if (bin) return this.follow(bin, 'run', ctx, line);
     }
     this.program(name, args, ctx, line, extra);
+  }
+
+  // A `[[ ]]` for a hook or a limited thread's check. Bash evaluates a
+  // number compared there (`-eq`, `-lt`...) as arithmetic, and a name
+  // tested with `-v` or `-R` by its subscript, either of which runs the
+  // `$(...)` in `a[$(cmd)]`, so a value from a download or a file would
+  // run as code: those must be plain numbers and names, known now.
+  private condition(args: Word[], ctx: Ctx, line: number): void {
+    const plain = (w: Word | undefined, re: RegExp) => {
+      const v = w && this.values(w, ctx);
+      return Boolean(v?.length && v.every((x) => re.test(x)));
+    };
+    for (let i = 0; i < args.length; i++) {
+      const op = this.str(args[i], ctx);
+      if (op !== undefined && /^-(eq|ne|lt|le|gt|ge)$/.test(op) && !(plain(args[i - 1], /^-?[0-9]+$/) && plain(args[i + 1], /^-?[0-9]+$/))) {
+        return this.fail(ctx, line, `compares numbers in [[ ]] (${op}) that aren't plain numbers known now, and bash works them out as arithmetic, which can run a command named in the data, so a hash can't follow it. Compare them as strings, or check them with grep first.`);
+      }
+      if ((op === '-v' || op === '-R') && !plain(args[i + 1], /^[A-Za-z_]\w*$/)) {
+        return this.fail(ctx, line, `tests a variable in [[ ]] (${op}) whose name isn't a plain one known now, and bash works out its subscript as arithmetic, which can run a command, so a hash can't follow it.`);
+      }
+    }
   }
 
   private str(w: Word | undefined, ctx: Ctx): string | undefined {
@@ -1703,7 +2136,8 @@ class Reach {
     for (const d of ctx.dirs) this.besideRun(d, ctx, line);
     const a = (i: number) => this.str(args[i], ctx);
     if (Object.hasOwn(UNFOLLOWABLE, name)) return this.fail(ctx, line, `${UNFOLLOWABLE[name]}, which patch trust can't follow.`);
-    if (name === 'hash' && args.some((w) => /^-\w*p/.test(this.str(w, ctx) ?? ''))) return this.fail(ctx, line, 'maps a command name to a file (`hash -p`), which patch trust can\'t follow.');
+    // zsh's `hash cat=/tmp/cat` does it too, and a word worked out as it runs could be either.
+    if (name === 'hash' && args.some((w) => { const v = this.str(w, ctx); return v === undefined || /^-\w*p/.test(v) || v.includes('='); })) return this.fail(ctx, line, 'maps a command name to a file (`hash -p`, or zsh\'s `hash name=file`), which patch trust can\'t follow.');
     if (name === 'cd' || name === 'pushd') return this.cd(args, ctx, line);
     if (name === 'source' || name === '.') {
       const target = a(0);
@@ -1720,10 +2154,14 @@ class Reach {
       }
       return;
     }
+    // zsh's and ksh's `set -A name ...` sets an array, `path` among them.
+    if (name === 'set' && this.o.strict && args.some((w) => /^[-+][a-zA-Z]*A/.test(this.str(w, ctx) ?? ''))) return this.fail(ctx, line, "sets an array with set -A, which patch trust doesn't follow.");
     if (name === 'unset') {
       for (const w of args) {
         const v = this.str(w, ctx);
         if (v === undefined) return this.fail(ctx, line, "unsets a variable whose name patch trust can't read.");
+        // With no PATH some shells look in the current folder.
+        if (this.o.strict && /^(PATH|path)$/.test(v)) return this.fail(ctx, line, `unsets ${v}, after which a shell may run a program from the folder it's in.`);
         if (!v.startsWith('-') && this.unfollowableVar(v, ctx, line)) return;
         if (!v.startsWith('-') && /^[A-Za-z_]\w*$/.test(v)) {
           ctx.vars.set(v, ['']);
@@ -1737,16 +2175,36 @@ class Reach {
     if (name === 'printf') {
       // "$option" could be -v (Codex's fourth review).
       if (args[0] && this.str(args[0], ctx) === undefined && args[0].parts.some((p) => p.k !== 'lit')) return this.fail(ctx, line, "runs printf with a first argument worked out as it runs, which could make it set a variable patch trust can't name.");
-      const at = args.findIndex((w) => this.str(w, ctx) === '-v');
-      const v = at >= 0 ? args[at + 1] && this.str(args[at + 1]!, ctx) : undefined;
+      const at = args.findIndex((w) => /^-v/.test(this.str(w, ctx) ?? ''));
+      // bash takes the name joined on too (`-vPATH`).
+      const joined = at >= 0 ? this.str(args[at], ctx)!.slice(2) : '';
+      const v = at >= 0 ? joined || (args[at + 1] && this.str(args[at + 1]!, ctx)) : undefined;
       if (at >= 0 && v === undefined) return this.fail(ctx, line, "sets a variable with printf -v whose name patch trust can't read.");
-      if (v && this.unfollowableVar(v, ctx, line)) return;
+      if (v && this.setUnread(v, ctx, line)) return;
       if (v) this.setsUnknown(v, ctx);
     }
     if (name === 'export' || name === 'local' || name === 'declare' || name === 'typeset' || name === 'readonly' || name === 'integer') {
       // A name reference makes a later assignment to one name write
       // another (declare -n d=HOME; d=x), which isn't followed.
       if (name !== 'export' && args.some((w) => /^[-+][a-zA-Z]*n/.test(litOf(w) ?? ''))) return this.fail(ctx, line, `makes a name reference (${name} -n), which patch trust doesn't follow.`);
+      // zsh's `typeset -T PATH dirs` ties PATH to another array, which then sets it.
+      if (this.o.strict && args.some((w) => /^[-+][a-zA-Z]*T/.test(litOf(w) ?? ''))) return this.fail(ctx, line, `ties a variable to another (${name} -T), which patch trust doesn't follow.`);
+      // `export "$x"` with x='PATH=/tmp' sets PATH all the same: followed
+      // all the way, each value it can have is an assignment like any other.
+      if (this.o.strict) {
+        for (const w of args) {
+          if (!w.parts.some((p) => p.k !== 'lit') || this.assignment(w)) continue;
+          const vals = this.values(w, ctx);
+          if (!vals) return this.fail(ctx, line, `runs ${name} with a word worked out as it runs, which could set a variable patch trust can't name.`);
+          for (const v of vals) {
+            const m = /^([A-Za-z_]\w*)(\[[^\]]*\])?(\+?)=(.*)$/s.exec(v);
+            if (!m) continue;
+            if (this.unfollowableVar(m[1]!, ctx, line)) return;
+            this.assign(m[1]!, { parts: [{ k: 'lit', s: m[4]!, q: true }], line }, m[3] === '+', ctx, line);
+            if (this.problem) return;
+          }
+        }
+      }
       const exports = name === 'export' || args.some((w) => /^-[a-zA-Z]*x/.test(litOf(w) ?? ''));
       for (const w of args) {
         const as = this.assignment(w);
@@ -1768,17 +2226,23 @@ class Reach {
       return;
     }
     if (name === 'for' || name === 'select') {
-      const v = a(0);
-      if (v && this.unfollowableVar(v, ctx, line)) return;
-      if (v) {
+      // zsh takes several names (`for a b in ...`).
+      for (let i = 0; i < args.length; i++) {
+        const v = a(i);
+        if (v === 'in' || (i > 0 && !this.o.strict)) break;
+        if (v === undefined && this.o.strict) return this.fail(ctx, line, `runs ${name} with a name worked out as it runs, which could set a variable patch trust can't name.`);
+        if (!v || !/^[A-Za-z_]\w*$/.test(v)) break;
+        if (this.setUnread(v, ctx, line)) return;
         this.setsUnknown(v, ctx);
       }
       return;
     }
     if (name === 'read' || name === 'getopts' || name === 'mapfile' || name === 'readarray') {
       for (const w of args) {
-        const v = this.str(w, ctx);
-        if (v && /^[A-Za-z_]\w*(?:\[.*\])?$/s.test(v) && this.unfollowableVar(v, ctx, line)) return;
+        // zsh's and ksh's `read 'name?prompt'` sets name.
+        const v = this.str(w, ctx)?.replace(/\?.*$/s, '');
+        if (v === undefined && this.o.strict) return this.fail(ctx, line, `runs ${name} with a word worked out as it runs, which could set a variable patch trust can't name.`);
+        if (v && /^[A-Za-z_]\w*(?:\[.*\])?$/s.test(v) && this.setUnread(v, ctx, line)) return;
         if (v && /^[A-Za-z_]\w*$/.test(v)) {
           this.setsUnknown(v, ctx);
         }
@@ -1947,6 +2411,7 @@ class Reach {
   private writesOnly(cmd: Simple, ctx: Ctx): void {
     for (const r of cmd.redirs) {
       if (r.target && WRITE_REDIRS.has(r.op) && !(r.op === '>&' && /^(\d+-?|-)$/.test(litOf(r.target) ?? ''))) this.wrote(this.values(r.target, ctx), r.target, ctx, cmd.line);
+      if (r.target && r.op.endsWith('!')) this.wrote(this.values(r.target, ctx)?.map((v) => `!${v}`), r.target, ctx, cmd.line);
     }
     // Assignments still set what later writes are made from.
     for (const w of cmd.words) {
@@ -1976,7 +2441,9 @@ class Reach {
         const own = `${ctx.file}\u0000-c${cmd.line}`;
         this.handed(args.slice(c + 2), [own], ctx);
         if (code === undefined) this.writesSomewhere ??= `${ctx.label} line ${cmd.line}`;
-        else this.writesOnlyText(code, { ...ctx, file: own, vars: new Map() });
+        // Counted like a script, so nested ones can't read past the budget
+        // (Gemini's review).
+        else if (this.chargeWrites(code.length, ctx, cmd.line)) this.writesOnlyText(code, { ...ctx, file: own, vars: new Map() });
       } else if (prog === 'find') {
         // Each -exec, as the main follower does.
         for (let at = 0; at < args.length; at++) {
@@ -1993,13 +2460,47 @@ class Reach {
         this.handed(args.slice(name.includes('/') ? 0 : args.findIndex((w) => this.str(w, ctx) === file) + 1), files, ctx);
         for (const f of files) {
           this.reached.add(f);
+          // Past the budget it fails whatever's left, so nothing more is read.
+          if (this.writesUnread) continue;
           const text = isFile(f) && this.inRepo(f) ? this.text(f) : undefined;
-          if (text !== undefined && text.length <= MAX_CONFIG_BYTES) this.writesOnlyText(text, { ...ctx, file: f, label: this.rel(f), vars: new Map() });
+          if (text === undefined || text.length > MAX_CONFIG_BYTES) continue;
+          // Everything on this path the read depends on: its variables start
+          // empty (what it's handed is in `deps`), and the rest is where it
+          // runs, whether a cd was lost, and $0, which it takes from the
+          // caller here. Nothing that isn't read here (a `[[` shell, being in
+          // a `$(...)`), so the same scripts don't count again for it.
+          // The folders in their order: past 16 only the first 16 are $PWD's
+          // values, so a set the same but in another order isn't the same
+          // read (Gemini's review).
+          const key = JSON.stringify([f, [...ctx.dirs], Boolean(ctx.lost), ctx.argv0]);
+          const before = this.writeReads.get(key);
+          if (before !== undefined && before <= this.writesDepth) continue;
+          if (!this.chargeWrites(text.length, ctx, cmd.line)) continue;
+          this.writeReads.set(key, this.writesDepth);
+          this.writesOnlyText(text, { ...ctx, file: f, label: this.rel(f), vars: new Map() });
         }
       }
     } finally {
       this.writesDepth--;
     }
+  }
+
+  // Counts a writes-only read against the budget, or fails what's left past
+  // it. A Mac's disk takes a name in any case, so one script can be run under
+  // as many keys as its name has spellings (Gemini's review). Past the budget,
+  // what's left unread could write what it runs, so it fails as one that
+  // does, which no approval gets past, not as somewhere it can't tell, which
+  // an owner's check is approved with (Codex's and Gemini's reviews). A
+  // budget of text, not a count of contexts: a count of 600 refused real
+  // checks whose helpers were run from many places (Gemini's review).
+  private chargeWrites(length: number, ctx: Ctx, line: number): boolean {
+    const cost = Math.max(length, WRITES_READ_MIN_COST);
+    if (this.writesUnread || this.writesReadBytes + cost > (this.o.writesBudget ?? WRITES_READ_BUDGET)) {
+      this.writesUnread ??= `${ctx.label} line ${line} runs more scripts than patch trust reads for what they write, so it can't tell whether one writes something that's run.`;
+      return false;
+    }
+    this.writesReadBytes += cost;
+    return true;
   }
 
   private writesOnlyText(text: string, ctx: Ctx): void {
@@ -2060,7 +2561,8 @@ class Reach {
         if (v === undefined) continue;
         if (long && v === long) to(args[i + 1]);
         else if (long && v.startsWith(`${long}=`)) after(args[i]!, `${long}=`);
-        else if (short && /^-[A-Za-z]/.test(v) && v.includes(short)) {
+        // Any short cluster, digits too (`curl -4so x`).
+        else if (short && /^-[^-]/.test(v) && v.includes(short)) {
           // In a cluster, what follows the letter is its value (`-sorun.sh`),
           // or the next word when nothing does.
           const rest = v.slice(v.indexOf(short) + 1);
@@ -2073,10 +2575,26 @@ class Reach {
     // another file than the path says (Codex's review of 153).
     if (name === 'ln' || name === 'gln') return somewhere();
     if (COPIERS.has(name)) {
-      const target = args.findIndex((w) => /^(-t|--target-directory)$/.test(lit(w) ?? ''));
+      // GNU's -t in a cluster too (`-ft dir`, `-tdir`); rsync's -t is times.
+      const tFlag = (v: string) => name !== 'rsync' && /^-[A-Za-z]*t/.test(v);
+      const target = args.findIndex((w) => /^--target-directory$/.test(lit(w) ?? '') || (tFlag(lit(w) ?? '') && /t$/.test(lit(w) ?? '')));
       const joined = args.find((w) => /^--target-directory=/.test(lit(w) ?? ''));
+      const glued = args.find((w) => tFlag(lit(w) ?? '') && !/t$/.test(lit(w) ?? ''));
+      // Followed all the way, a link it copies or moves can point a later
+      // write anywhere (`mv staged link; cp x link/cat`).
+      if (this.o.strict) {
+        const all = operands();
+        for (const w of target >= 0 || joined || glued ? all : all.slice(0, -1)) {
+          const v = this.values(w, ctx);
+          if (v?.some((x) => (this.abs(x, ctx) ?? []).some((f) => holdsLink(f)))) return somewhere();
+        }
+      }
       if (target >= 0) return into(args[target + 1]);
       if (joined) return after(joined, '--target-directory=');
+      if (glued) {
+        const v = lit(glued)!;
+        return after(glued, v.slice(0, v.indexOf('t') + 1));
+      }
       if (extra) return somewhere();
       // rsync's options that take the next word, wherever they are.
       const ops = name === 'rsync' ? args.filter((w, i) => !(lit(w) ?? '').startsWith('-') && !RSYNC_VALUED.test(lit(args[i - 1]!) ?? '')) : operands();
@@ -2124,11 +2642,13 @@ class Reach {
     if (name === 'sort' || name === 'base64' || name === 'iconv') return optionValue('o', '--output');
     if (name === 'openssl') return optionValue(undefined, '-out');
     if (name === 'uniq' || (name === 'xxd' && args.some((w) => lit(w) === '-r'))) {
-      const ops = operands();
+      // uniq's -f, -s and -w take the next word (`uniq -s 0 in out`).
+      const valued = name === 'uniq' ? new Set(args.flatMap((w, i) => (/^-[A-Za-z]*[fsw]$/.test(lit(w) ?? '') ? [i + 1] : []))) : new Set<number>();
+      const ops = operands().filter((w) => !valued.has(args.indexOf(w)));
       return ops[1] ? to(ops[1]) : undefined;
     }
     if (name === 'curl') {
-      if (args.some((w) => /^-[A-Za-z]*[OJK]|^--(remote-name|remote-header-name|output-dir|config|remote-name-all)/.test(lit(w) ?? ''))) return somewhere();
+      if (args.some((w) => /^-[^-]*[OJK]|^--(remote-name|remote-header-name|output-dir|config|remote-name-all)/.test(lit(w) ?? ''))) return somewhere();
       return optionValue('o', '--output');
     }
     if (name === 'wget') {
@@ -2195,7 +2715,9 @@ class Reach {
     // as far as it can be: this one mustn't be (PatchTrust.approveCheck).
     const wp = writeProblem(this.writes(), this.o.top);
     if (wp?.definite) this.problem = this.writeFailed = wp.problem;
+    else if (this.writesUnread) this.problem = this.writeFailed = this.writesUnread;
     else if (wp) this.problem ??= wp.problem;
+    this.problem ??= this.launches ?? this.later;
   }
 
   writes(): Writes {
@@ -2208,6 +2730,7 @@ class Reach {
       exported: [...this.exported],
       cleared: [...this.cleared],
       ...(this.assignsAny ? { assignsAny: true } : {}),
+      ...(this.o.strict ? { programDirs: programHomes(this.home, this.o.top) } : {}),
     };
   }
 
@@ -2218,7 +2741,8 @@ class Reach {
       return;
     }
     const v = this.str(words[0], ctx);
-    if (v === undefined || v === '-') {
+    // zsh's and ksh's `cd old new` goes somewhere else again.
+    if (v === undefined || v === '-' || (this.o.strict && words.length > 1)) {
       ctx.lost ??= `line ${line}`;
       return;
     }
@@ -2238,6 +2762,9 @@ class Reach {
         if (s === '--') return i + 1;
         if (!s.startsWith('-') || s === '-') break;
         if (opts.includes(s)) i++;
+        // A cluster ending in one that takes a value (`exec -ca name`)
+        // takes the next word too.
+        else if (/^-[A-Za-z]{2,}$/.test(s) && opts.includes(`-${s.at(-1)}`)) i++;
         else if (!flagsOk) break;
       }
       return i;
@@ -2251,8 +2778,11 @@ class Reach {
         }
         return { words: args.slice(val(['-a'])), extra: false };
       case 'command': {
-        if (args.some((w) => /^-[vV]$/.test(litOf(w) ?? ''))) return { words: [], extra: false };
-        return { words: args.slice(val([])), extra: false };
+        // -v and -V only look a name up, but only as its own options: after
+        // the name they're the command's (`command sh -v x.sh`).
+        const at = val([]);
+        if (args.slice(0, at).some((w) => /^-[a-zA-Z]*[vV]/.test(litOf(w) ?? ''))) return { words: [], extra: false };
+        return { words: args.slice(at), extra: false };
       }
       case 'builtin':
       case 'nohup':
@@ -2305,6 +2835,32 @@ class Reach {
           if (/^(-S|--split-string|-C|--chdir)/.test(s)) {
             this.fail(ctx, line, `runs \`env ${s}\`, which patch trust doesn't follow.`);
             return { words: [], extra: false };
+          }
+          // A cluster of short options (`-iu name`): each letter in turn, and
+          // one that takes a value takes the rest of the word or the next.
+          if (/^-[A-Za-z0-9]{2,}$/.test(s)) {
+            let stop = false;
+            for (let j = 1; j < s.length && !stop; j++) {
+              const c = s[j]!;
+              if ('SCP'.includes(c)) {
+                this.fail(ctx, line, `runs \`env ${s}\`, which patch trust doesn't follow.`);
+                return { words: [], extra: false };
+              }
+              if (c === 'i') this.cleared.add('*');
+              if (c !== 'u' && c !== 'a') continue;
+              stop = true;
+              const rest = s.slice(j + 1);
+              const v = rest || (args[i + 1] && this.str(args[i + 1]!, ctx));
+              if (!rest) i++;
+              if (c === 'a') continue;
+              if (v === undefined) {
+                this.fail(ctx, line, "runs `env -u` with a name worked out as it runs, which patch trust can't follow.");
+                return { words: [], extra: false };
+              }
+              if (v && this.unfollowableVar(v, ctx, line)) return { words: [], extra: false };
+              this.cleared.add(v);
+            }
+            continue;
           }
           if (s === '-u' || s === '--unset') {
             const v = args[i + 1] && this.str(args[i + 1]!, ctx);
@@ -2373,7 +2929,7 @@ class Reach {
       if (s === undefined) return this.fail(ctx, line, `runs ${name} with a script worked out as it runs, which patch trust can't follow.`);
       if (s === '--') {
         const file = this.str(args[i + 1], ctx);
-        return file === undefined ? this.fail(ctx, line, `runs ${name} reading what to run from its input, which patch trust can't follow.`) : this.runFile(file, ctx, line);
+        return file === undefined ? this.fail(ctx, line, `runs ${name} reading what to run from its input, which patch trust can't follow.`) : this.runFile(file, ctx, line, name);
       }
       if (/^[-+][a-zA-Z]*o$/.test(s) || s === '-O' || s === '+O') {
         i++;
@@ -2389,6 +2945,9 @@ class Reach {
         for (const t of rcs) if (isFile(t)) this.follow(t, 'source', ctx, line);
         continue;
       }
+      // An interactive or login shell reads your startup files first
+      // (`bash -ic`, `zsh -l`), which no hash covers (Grok's review of 165).
+      if (this.ownRules && (/^-[a-zA-Z]*[il][a-zA-Z]*$/.test(s) || s === '--login' || s === '--interactive')) return this.fail(ctx, line, `runs ${name} as an interactive or login shell, which reads your startup files first, so patch trust can't follow what runs.`);
       if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(s)) {
         const code = args[i + 1] ? litOf(args[i + 1]!) : undefined;
         if (code === undefined) return this.fail(ctx, line, `runs \`${name} -c\` with code worked out as it runs, which patch trust can't follow.`);
@@ -2396,16 +2955,16 @@ class Reach {
         // the caller's (Grok's review).
         const own = `${ctx.file}\u0000-c${line}`;
         this.handed(args.slice(i + 2), [own], ctx);
-        return this.shell(code, { ...ctx, file: own, argv0: [], vars: new Map(), dirs: new Set(ctx.dirs) }, line);
+        return this.shell(code, { ...ctx, file: own, argv0: [], vars: new Map(), dirs: new Set(ctx.dirs), cond: COND_SHELLS.has(name) }, line);
       }
       if (/^-[a-zA-Z]*s[a-zA-Z]*$/.test(s)) return this.fail(ctx, line, `runs ${name} reading what to run from its input, which patch trust can't follow.`);
       if (s.startsWith('-') || s.startsWith('+')) continue;
-      return this.runFile(s, ctx, line);
+      return this.runFile(s, ctx, line, name);
     }
     this.fail(ctx, line, `runs ${name} reading what to run from its input${extra ? ' (from xargs)' : ' (a pipe or a here-doc)'}, which patch trust can't follow.`);
   }
 
-  private runFile(file: string, ctx: Ctx, line: number): void {
+  private runFile(file: string, ctx: Ctx, line: number, via?: string): void {
     // `-` as the file (`node -- -`, `sh -- -`) is the input, whatever file
     // is called that.
     if (file === '-') return this.fail(ctx, line, `runs \`-\`, which reads what to run from its input, which patch trust can't follow.`);
@@ -2449,45 +3008,82 @@ class Reach {
     const found = inRepo.filter(isFile);
     for (const t of inRepo) if (!isFile(t) && this.missing.size < 500) this.missing.add(t);
     if (!found.length) return this.fail(ctx, line, `runs ${file}, which isn't a file in the repo now, so patch trust can't see what it'll be.`);
-    for (const t of found) this.follow(t, 'run', ctx, line);
+    for (const t of found) this.follow(t, 'run', ctx, line, via);
   }
 
   private jsRun(name: string, args: Word[], ctx: Ctx, line: number, extra: boolean): void {
+    // A JavaScript runtime, whatever it's handed (`node ./check.sh` runs a
+    // file this would read as shell): as for a JavaScript file above.
+    if (this.o.launches && !this.o.strict) this.later ??= `${ctx.label}${line ? ` line ${line}` : ''} runs ${name}, and patch trust can't follow JavaScript all the way for a schedule's check: what it runs or loads can depend on files no hash covers.`;
     let i = 0;
     // bun and deno have subcommands; `bun x`/`bun run x`/`bun x.ts`.
+    // Flags before (or after `run`) that load code, change the folder or
+    // read a config were skipped unread: `bun --preload=./x.ts ./pure.ts`
+    // ran x.ts unhashed (Gemini's review of Daybreak 165).
+    const skipFlags = (): boolean => {
+      while (i < args.length) {
+        const f = this.str(args[i], ctx);
+        if (f === undefined || !f.startsWith('-')) return true;
+        // Only flags known to take no value and load nothing: one that takes
+        // a value would have it read as the script (`bun --user-agent x.ts
+        // check`), and `--define` rewrites the code (Gemini's reviews).
+        if (!BUN_DENO_SAFE_FLAGS.test(f)) {
+          this.fail(ctx, line, `runs ${name} with ${f.replace(/=.*$/s, '')}, which patch trust doesn't follow.`);
+          return false;
+        }
+        i++;
+      }
+      return true;
+    };
     if (name === 'bun' || name === 'deno') {
-      while (i < args.length && (this.str(args[i], ctx) ?? '').startsWith('-')) i++;
+      if (!skipFlags()) return;
+      // Bun loads the folder's .env files into its own environment, so one
+      // setting NODE_OPTIONS or BUN_OPTIONS loads code (Gemini's review of 165).
+      if (name === 'bun' && this.ownRules && this.envFilesLoad(ctx)) return this.fail(ctx, line, "runs bun beside a .env file that sets what makes it load other code, which patch trust can't follow.");
       const sub = this.str(args[i], ctx);
       if (sub === undefined) return args[i] ? this.fail(ctx, line, `runs ${name} with a subcommand worked out as it runs, which patch trust can't follow.`) : this.fail(ctx, line, `runs ${name} reading what to run from its input, which patch trust can't follow.`);
       if (name === 'deno') {
         if (sub === 'task' || sub === 'eval') return this.fail(ctx, line, `runs \`deno ${sub}\`, which patch trust doesn't follow.`);
         if (sub !== 'run') {
           if (this.isScriptPath(sub, ctx)) return this.runFile(sub, ctx, line);
-          return this.o.strict ? this.fail(ctx, line, `runs \`deno ${sub}\`, which finds what to run by its own rules.`) : undefined;
+          return this.ownRules ? this.fail(ctx, line, `runs \`deno ${sub}\`, which finds what to run by its own rules.`) : undefined;
         }
         i++;
+        if (!skipFlags()) return;
+        // deno.json's imports and import map turn names into files of the repo's.
+        if (this.ownRules && [...ctx.dirs].some((d) => { for (let x = d; this.inRepo(x); x = path.dirname(x)) { if (['deno.json', 'deno.jsonc', 'import_map.json'].some((n) => isFile(path.join(x, n)))) return true; if (x === this.o.top) break; } return false; })) return this.fail(ctx, line, 'runs deno beside a deno.json, whose imports map names to files by their own rules.');
       } else {
         if (['install', 'i', 'add', 'a', 'update', 'link', 'pm'].includes(sub)) return this.lifecycle(ctx, line);
         if (sub === 'x') return this.npx(args.slice(i + 1), ctx, line);
+        // `bun exec "cmd"` runs cmd in Bun's own shell, not a package script.
+        if (sub === 'exec') return this.fail(ctx, line, "runs `bun exec`, a shell of Bun's own, which patch trust doesn't follow.");
         if (['test', 'build', 'create', 'init', 'upgrade', 'outdated', 'publish', 'patch', 'remove', 'rm', 'repl', 'help', 'completions', 'audit', 'info', 'why'].includes(sub)) {
-          if (this.o.strict && ['test', 'build', 'create', 'init', 'upgrade', 'publish', 'patch', 'repl'].includes(sub)) return this.fail(ctx, line, `runs \`bun ${sub}\`, which finds what to run by its own rules.`);
+          if (this.ownRules && ['test', 'build', 'create', 'init', 'upgrade', 'publish', 'patch', 'repl'].includes(sub)) return this.fail(ctx, line, `runs \`bun ${sub}\`, which finds what to run by its own rules.`);
           return;
         }
         if (sub === 'run') i++;
-        while (i < args.length && (this.str(args[i], ctx) ?? '').startsWith('-')) i++;
+        if (!skipFlags()) return;
         const target = this.str(args[i], ctx);
         if (target === undefined) return args[i] ? this.fail(ctx, line, `runs bun with a target worked out as it runs, which patch trust can't follow.`) : undefined;
         if (this.isScriptPath(target, ctx)) {
           // Bun loads bunfig.toml (its preloads) before the script.
-          if (this.o.strict && [...ctx.dirs].some((d) => { for (let x = d; this.inRepo(x); x = path.dirname(x)) { if (isFile(path.join(x, 'bunfig.toml'))) return true; if (x === this.o.top) break; } return false; })) return this.fail(ctx, line, 'runs bun beside a bunfig.toml, whose preloads run first by their own rules.');
+          if (this.ownRules && this.bunfigLoads(ctx)) return this.fail(ctx, line, 'runs bun beside a bunfig.toml, whose preloads run first by their own rules.');
           return this.runFile(target, ctx, line);
         }
         return this.packageScript(target, ctx, line);
       }
     }
     for (; i < args.length; i++) {
-      const s = this.str(args[i], ctx);
-      if (s === undefined) return this.fail(ctx, line, `runs ${name} with a file worked out as it runs, which patch trust can't follow.`);
+      const raw = this.str(args[i], ctx);
+      if (raw === undefined) return this.fail(ctx, line, `runs ${name} with a file worked out as it runs, which patch trust can't follow.`);
+      // Node reads `--env_file` as `--env-file` (Gemini's review of 165).
+      const s = raw.replace(/^(--[^=]*)/, (m) => m.replace(/_/g, '-'));
+      // Short flags run together (`-pe code`): one of them may run code.
+      if (/^-[a-zA-Z]{2,}$/.test(s) && /[eprCi]/.test(s)) return this.fail(ctx, line, `runs ${name} with ${s}, flags run together that may load or run code patch trust doesn't follow.`);
+      // The test runner finds its tests by its own rules, and a reporter is a module it loads.
+      if (/^--test(-reporter|-reporter-destination|-only|-name-pattern|-skip-pattern|-concurrency|-timeout|-shard|-global-setup|-isolation|-force-exit|-update-snapshots|-coverage[\w-]*)?(=|$)/.test(s) && (this.ownRules || /^--test-(reporter|global-setup)(=|$)/.test(s))) return this.fail(ctx, line, `runs ${name}'s test runner (${s.replace(/=.*$/s, '')}), which finds code to run by its own rules, so a hash can't cover it.`);
+      if (this.ownRules && /^(--tsconfig|--project|-P)(=|$)/.test(s)) return this.fail(ctx, line, `runs ${name} with a tsconfig of its own, whose paths patch trust doesn't follow.`);
+      if (/^(--import-map|--config|-c|--define|--watch-path|--experimental-config-file|--experimental-default-config-file)(=|$)/.test(s)) return this.fail(ctx, line, `runs ${name} with ${s.replace(/=.*$/s, '')}, which can load code or config patch trust doesn't follow.`);
       if (s === '--') {
         i++;
         break;
@@ -2496,6 +3092,13 @@ class Reach {
       if (/^--env-file(-if-exists)?(=|$)/.test(s)) return this.fail(ctx, line, `runs ${name} with an env file, which can make it load code patch trust can't follow.`);
       // `node -` reads its program from its input, whatever follows.
       if (s === '-') return this.fail(ctx, line, `runs ${name} reading what to run from its input, which patch trust can't follow.`);
+      // `node --run x` runs package.json's script x, not a file named x.
+      const run = /^--run(?:=(.*))?$/.exec(s);
+      if (run) {
+        const v = run[1] ?? this.str(args[++i], ctx);
+        if (v === undefined) return this.fail(ctx, line, `runs \`${name} --run\` with a script worked out as it runs, which patch trust can't follow.`);
+        return this.packageScript(v, ctx, line);
+      }
       if (/^(-e|--eval|-p|--print)$/.test(s) || /^--(eval|print)=/.test(s)) return this.fail(ctx, line, `runs ${name} with code on its command line, which patch trust doesn't follow.`);
       const load = /^(-r|--require|--import|--loader|--experimental-loader|--preload)(?:=(.*))?$/.exec(s);
       if (load) {
@@ -2525,7 +3128,7 @@ class Reach {
         continue;
       }
       // Symlinks kept as named change which files a module's imports are.
-      if (this.o.strict && /^--preserve-symlinks(-main)?$/.test(s)) return this.fail(ctx, line, `runs ${name} keeping symlinked paths, which changes which files it loads.`);
+      if (this.ownRules && /^--preserve-symlinks(-main)?$/.test(s)) return this.fail(ctx, line, `runs ${name} keeping symlinked paths, which changes which files it loads.`);
       // An env file can set NODE_OPTIONS, which loads more code.
       if (this.o.strict && /^--env-file(-if-exists)?(=|$)/.test(s)) return this.fail(ctx, line, `runs ${name} with an env file, which can load code by its own rules.`);
       if (/^(--env-file|--env-file-if-exists|--conditions|-C|--input-type|--title|--test-reporter|--test-name-pattern|--watch-path|--cpu-prof-dir|--heap-prof-dir|--diagnostic-dir|--redirect-warnings|--tsconfig|--project|-P)$/.test(s)) {
@@ -2539,7 +3142,7 @@ class Reach {
     if (file === undefined) {
       if (args.some((w) => litOf(w) === '--test')) {
         // node's test runner finding tests
-        if (this.o.strict) return this.fail(ctx, line, `runs ${name}'s test runner, which finds its own tests to run, so a hash can't cover them.`);
+        if (this.ownRules) return this.fail(ctx, line, `runs ${name}'s test runner, which finds its own tests to run, so a hash can't cover them.`);
         return;
       }
       return this.fail(ctx, line, `runs ${name} reading what to run from its input${extra ? ' (from xargs)' : ''}, which patch trust can't follow.`);
@@ -2667,7 +3270,7 @@ class Reach {
     if (!pkgs) return;
     // One that isn't there runs something by default (npm start runs
     // server.js; pnpm and yarn a package's bin of that name).
-    if (this.o.strict && !pkgs.some(({ pkg }) => typeof pkg?.scripts?.[name] === 'string')) {
+    if (this.ownRules && !pkgs.some(({ pkg }) => typeof pkg?.scripts?.[name] === 'string')) {
       return this.fail(ctx, line, `runs the package script ${name}, which isn't in package.json, so what runs instead is worked out by the package manager.`);
     }
     if (!pkgs.some(({ pkg }) => typeof pkg?.scripts?.[name] === 'string')) {
@@ -2732,6 +3335,9 @@ class Reach {
       const s = this.str(args[i], ctx);
       if (s === undefined) return this.fail(ctx, line, `runs ${tool} with words worked out as it runs, which patch trust can't follow.`);
       if (/^(-w|--workspace|-ws|--workspaces|--filter|-F|-r|--recursive)(=|$)/.test(s)) return this.fail(ctx, line, `runs ${tool} across workspaces (${s}), which patch trust doesn't follow.`);
+      // Config it would read, or code it would load, from what a flag names
+      // (Gemini's review of 165): `--userconfig=rc.txt`, `--node-options`.
+      if (NPM_CONFIG_FLAG.test(s)) return this.fail(ctx, line, `runs ${tool} with ${s.replace(/=.*$/s, '')}, which can make it load code patch trust doesn't follow.`);
       const dirOpt = /^(--prefix|-C|--dir|--cwd)(?:=(.*))?$/.exec(s);
       if (dirOpt) {
         const v = dirOpt[2] ?? this.str(args[++i], ctx);
@@ -2744,6 +3350,12 @@ class Reach {
     }
     const sub = this.str(args[i], ctx);
     const rest = args.slice(i + 1);
+    // npm reads its config flags anywhere before `--` (Gemini's review).
+    for (const w of rest) {
+      const s = this.str(w, local);
+      if (s === '--') break;
+      if (s !== undefined && NPM_CONFIG_FLAG.test(s)) return this.fail(ctx, line, `runs ${tool} with ${s.replace(/=.*$/s, '')}, which can make it load code patch trust doesn't follow.`);
+    }
     const nameAfter = () => {
       for (const w of rest) {
         const s = this.str(w, local);
@@ -2769,7 +3381,14 @@ class Reach {
       return;
     }
     if (['exec', 'x', 'dlx'].includes(sub)) return this.npx(rest, local, line);
-    if (tool === 'npm') return; // npm's own commands
+    // npm's own commands. `version` runs package.json's version scripts, and
+    // `explore` runs a command in a package's folder (Grok's review of 165).
+    if (tool === 'npm' && sub === 'version') {
+      for (const { dir, pkg } of this.packages(local, line) ?? []) this.runScripts(dir, pkg, ['preversion', 'version', 'postversion'], local);
+      return;
+    }
+    if (tool === 'npm' && (sub === 'explore' || this.ownRules && !NPM_INERT.has(sub))) return this.fail(ctx, line, `runs \`npm ${sub}\`, which patch trust doesn't follow for a check.`);
+    if (tool === 'npm') return;
     // pnpm and yarn run a script by its bare name, else a package's bin.
     this.packageScript(sub, local, line);
   }
@@ -2791,17 +3410,28 @@ class Reach {
         const outer = this.binDirs;
         this.binDirs = [...outer, ...ctx.dirs];
         try {
-          return this.shell(code, { ...ctx, argv0: [], vars: new Map(), dirs: new Set(ctx.dirs) }, line);
+          return this.shell(code, { ...ctx, argv0: [], vars: new Map(), dirs: new Set(ctx.dirs), cond: false }, line);
         } finally {
           this.binDirs = outer;
         }
       }
-      if (s === '-p' || s === '--package') {
-        i++;
+      const pkgOpt = /^(?:-p|--package|--pack|--packa|--packag)(?:=(.*))?$/.exec(s) ?? /^-p(.+)$/.exec(s);
+      if (pkgOpt) {
+        // A package from a folder or file of the repo's runs its bin unread.
+        const v = pkgOpt[1] ?? this.str(args[++i], ctx);
+        if (v === undefined || /^(\.{1,2}(\/|$)|\/|file:|~|[a-z]:\\|git[+:]|https?:)/i.test(v) || v.includes('/') && !v.startsWith('@')) return this.fail(ctx, line, `runs npx with a package from ${v === undefined ? 'somewhere worked out as it runs' : v.slice(0, 40)}, which patch trust doesn't follow.`);
         continue;
       }
+      if (NPM_CONFIG_FLAG.test(s)) return this.fail(ctx, line, `runs npx with ${s.replace(/=.*$/s, '')}, which can make it load code patch trust doesn't follow.`);
+      if (s === '--') continue;
       if (s.startsWith('-')) continue;
       if (/^\.{0,2}\//.test(s)) return this.runFile(s, ctx, line);
+      // A JavaScript runtime by name (`npm exec -- node x`, `npx tsx x`,
+      // `bunx tsx x`): what it's handed is JavaScript, read as by jsRun.
+      if (JS_RUNNERS.includes(s) || JS_RUNNER_PACKAGES.has(s.replace(/@[^/@]*$/, ''))) {
+        if (this.o.launches && !this.o.strict) this.later ??= `${ctx.label}${line ? ` line ${line}` : ''} runs ${s}, and patch trust can't follow JavaScript all the way for a schedule's check: what it runs or loads can depend on files no hash covers.`;
+        if (JS_RUNNERS.includes(s)) return this.jsRun(s, args.slice(i + 1), ctx, line, false);
+      }
       if (this.o.strict) return this.fail(ctx, line, `runs the package ${s} by name (npx or the like), which runs whatever that name resolves to then, so a hash can't cover it.`);
       // A package: its version is the package.json's, what the repo commits
       // is hashed (packages), and a bin of the repo's own runs as a script.
@@ -2836,6 +3466,8 @@ class Reach {
     for (let i = 0; i < args.length; i++) {
       const s = this.str(args[i], ctx);
       if (s === undefined) return this.fail(ctx, line, "runs make with words worked out as it runs, which patch trust can't follow.");
+      // `--eval` is make code on the command line; `-E` too in newer makes.
+      if (/^(--eval|-E)(=|$)/.test(s ?? '') || /^[A-Za-z_][\w.-]*\s*[:+?!]?=/.test(s ?? '') && /\$[({]shell\b|\$\(\s*eval\b/.test(s ?? '')) return this.fail(ctx, line, "runs make with code on its command line, which patch trust doesn't follow.");
       const v = opt(s);
       if (v) {
         const given = v.value ?? this.str(args[++i], ctx);
@@ -2933,6 +3565,8 @@ class Reach {
     for (let i = 0; i < args.length; i++) {
       const s = this.str(args[i], ctx);
       if (s?.startsWith('-f') || s?.startsWith('--file')) return this.fail(ctx, line, "runs an awk program from a file, which patch trust doesn't follow.");
+      // gawk's libraries and extensions, from AWKPATH (`.` first) or named.
+      if (s !== undefined && /^(-i|-l|-E|--include|--load|--exec|-e|--source)(=|$|.)/.test(s)) return this.fail(ctx, line, `runs awk with ${s.replace(/=.*$/s, '')}, which loads code patch trust doesn't follow.`);
       if (s === '-F' || s === '-v') {
         i++;
         continue;
@@ -2942,7 +3576,7 @@ class Reach {
       if (raw === undefined) return this.fail(ctx, line, "runs an awk program worked out as it runs, which patch trust can't follow.");
       // A backslash-newline is one line to awk.
       const prog = raw.replace(/\\\n/g, ' ');
-      if (/\bsystem\s*\(|\|\s*getline|\|\s*&/.test(prog) || awkPrintsToCommand(prog)) return this.fail(ctx, line, "runs an awk program that runs commands, which patch trust doesn't follow.");
+      if (/\bsystem\s*\(|\|\s*getline|\|\s*&|@\s*(include|load|namespace)/.test(prog) || awkPrintsToCommand(prog)) return this.fail(ctx, line, "runs an awk program that runs commands, which patch trust doesn't follow.");
       // `print > "run.sh"`: a file named in the program, or worked out in it.
       if (awkWritesFile(prog)) this.writesSomewhere ??= `${ctx.label} line ${line} (awk)`;
       return;
@@ -3167,6 +3801,40 @@ export function readsInput(p: string): boolean {
 
 // Whether a shell script's #! passes the shell a flag that has it read
 // commands from somewhere other than the script.
+// npm's own commands that run nothing of the folder's.
+const NPM_INERT = new Set(['view', 'v', 'info', 'show', 'ls', 'list', 'll', 'la', 'outdated', 'search', 's', 'find', 'whoami', 'ping', 'config', 'get', 'prefix', 'root', 'bin', 'help', 'docs', 'repo', 'bugs', 'owner', 'access', 'audit', 'fund', 'doctor', 'query', 'pkg', 'cache', 'token', 'team', 'org', 'profile', 'star', 'stars', 'unstar', 'dist-tag', 'deprecate', 'unpublish', 'login', 'logout', 'adduser', 'sbom', 'explain', 'why', 'diff', 'completion', 'help-search', 'hook', 'set', '-v', '--version']);
+
+// npm, pnpm and yarn flags that name config to read or code to load; npm
+// takes any unambiguous start of a long flag (`--user=rc.txt`).
+const NPM_CONFIG_FLAG = /^--(u|us|use|user|userc|userco|usercon|userconf|userconfi|userconfig|globalc|globalco|globalcon|globalconf|globalconfi|globalconfig|no|nod|node|node-|node-o|node-op|node-opt|node-opti|node-optio|node-option|node-options|node_options|scr|scri|scrip|script|script-|script-s|script-sh|script-she|script-shel|script-shell|script_shell|shell|config|rcfile|registry-config|require|import|loader|hooks|pnpmfile|global-pnpmfile|onload-script|onload|yarn-path)(=|$)/i;
+
+// Flags bun and deno take that need no value and load nothing more.
+const BUN_DENO_SAFE_FLAGS = /^(--smol|--silent|--bun|--no-install|--prefer-offline|--prefer-latest|--no-clear-screen|--quiet|-q|-A|--allow-all|--allow-(read|write|net|env|run|sys|ffi|hrtime|import)(=[^\s]*)?|--no-prompt|--no-check|--check|--unstable[\w-]*|--no-lock|--no-remote|--cached-only|--no-npm|--no-config|--no-code-cache|--v8-flags=--max-old-space-size=\d+)$/;
+
+// Whether a JavaScript file's #! (without the `#!`) passes its interpreter a
+// flag other than ones that load nothing and change no file it reads.
+const SAFE_JS_FLAGS = /^--(no-warnings|no-deprecation|experimental-strip-types|experimental-transform-types|no-experimental-strip-types|enable-source-maps|disable-warning=[\w-]+|max-old-space-size=\d+|stack-size=\d+|trace-warnings|trace-uncaught|trace-deprecation|unhandled-rejections=[\w-]+|bun|silent|smol)$/;
+function shebangFlagsUnsafe(shebang: string): boolean {
+  const words = shebang.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  if (words[i] && path.basename(words[i]!) === 'env') {
+    i++;
+    while (words[i]?.startsWith('-')) {
+      if (words[i] !== '-S' && words[i] !== '--split-string') return true;
+      i++;
+    }
+  }
+  if (!words[i]) return false;
+  const prog = path.basename(words[i]!);
+  if (!['node', 'nodejs', 'bun', 'tsx', 'deno', 'ts-node'].includes(prog)) return false;
+  for (const w of words.slice(i + 1)) {
+    if (prog === 'deno' && w === 'run') continue;
+    if (!w.startsWith('-')) return true;
+    if (!SAFE_JS_FLAGS.test(w.replace(/^(--[^=]*)/, (m) => m.replace(/_/g, '-')))) return true;
+  }
+  return false;
+}
+
 export function shebangReadsElsewhere(text: string): boolean {
   const m = /^#![ \t]*(\S+)([^\n]*)/.exec(text);
   if (!m) return false;
@@ -3321,7 +3989,14 @@ export function writeProblem(w: Writes, top: string): { problem: string; definit
   // spelled out in turn, or nothing (unset: the runner's own, or empty).
   const valuesOf = (n: string, depth: number): string[] => {
     const d = deps.get(n);
-    if (!d || depth > 6) return [''];
+    // $HOME nothing followed sets is the runner's own home.
+    if (!d || depth > 6) {
+      if (n === 'HOME' && !d) return [os.homedir(), ''];
+      // Followed all the way, one the runner has set may name a folder
+      // programs run from (`$NVM_BIN/cat`), so it's checked as it stands.
+      const own = !d && w.programDirs ? process.env[n] : undefined;
+      return own ? ['', own] : [''];
+    }
     // Empty too: a shell it starts doesn't have a variable it didn't
     // export, `env -u` takes one away, `shift` empties a positional.
     const empty = n.startsWith('#args:') || !exported.has(n) || cleared.has(n) || cleared.has('*') ? [''] : [];
@@ -3360,6 +4035,37 @@ export function writeProblem(w: Writes, top: string): { problem: string; definit
     }
   }
   if (!written.length && !somewhere) return undefined;
+  // Followed all the way, nothing written in a folder programs run from,
+  // nor that folder itself or one above it: `cp /bin/sh ~/.local/bin/cat;
+  // cat data.txt`. Anywhere it can't tell could be one.
+  if (w.programDirs?.length) {
+    const dirs = [...new Set(w.programDirs)];
+    const within = (k: string, d: string) => k === d || k.startsWith(d.endsWith(path.sep) ? d : d + path.sep);
+    for (const [written1, where] of written) {
+      // `~` as the shell writes it (`~/bin/${x}cat`), which the lexer leaves;
+      // another's (`~alice/bin`) can't be told.
+      const parts = written1.split(path.sep);
+      const tilde = parts.findIndex((x) => x.startsWith('~'));
+      if (tilde >= 0 && parts[tilde] !== '~') return { problem: `${where} writes ${written1}, in another user's home folder, which could be a folder programs run from. Patch trust can't follow that.`, definite: false };
+      const file = tilde >= 0 ? path.join(os.homedir(), ...parts.slice(tilde + 1)) : written1;
+      const keys = [dirKey(file), dirKey(realOrNearest(file))];
+      if (keys.some((k) => dirs.some((d) => within(k, d) || within(d, k)))) return { problem: `${where} writes ${file}, where programs (or what they load) are installed, so what a command name runs after it isn't what was checked. Patch trust can't follow that.`, definite: true };
+    }
+    if (somewhere) return { problem: `${somewhere} writes files where it works out as it runs (or where its data says), which could be a folder programs run from, so patch trust can't follow what runs after it.`, definite: false };
+  }
+  // A file of your home folder that a shell or a tool reads as it starts
+  // (`~/.bashrc`, `~/.zshenv`, `~/.gitconfig`, a launch agent): a later
+  // `bash -i`, `zsh -c` or git runs it, and no hash covers it (Grok's review
+  // of Daybreak 165). `~` as the shell writes it, which the lexer leaves.
+  const home = os.homedir();
+  for (const [file, where] of written) {
+    const tilde = file.split(path.sep).indexOf('~');
+    const f = tilde >= 0 ? path.join(home, ...file.split(path.sep).slice(tilde + 1)) : file;
+    const rel = path.relative(home, realOrNearest(f));
+    const inTop = path.relative(top, f);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !(inTop.startsWith('..') || path.isAbsolute(inTop))) continue;
+    if (rel.split(path.sep).some((x) => x.startsWith('.')) || /^Library[\\/](LaunchAgents|Preferences|Application Support)/.test(rel)) return { problem: `${where} writes ${f}, a file in your home folder that shells and tools read as they start, so patch trust can't follow what runs after it.`, definite: false };
+  }
   if (!w.reached.length) return undefined;
   const definite = definiteWrite(written, w.reached, top);
   if (definite) return { problem: definite, definite: true };

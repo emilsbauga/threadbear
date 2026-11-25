@@ -49,6 +49,17 @@ pub struct AwaitingApp {
     pub commit: Option<String>,
 }
 
+/// Archived by the quiet inbox for Mike's own threads (`quietlyArchived`,
+/// experiment quietInboxMine): when, and the model's one line on why he
+/// didn't need to see it.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct QuietlyArchived {
+    #[serde(default)]
+    pub at: String,
+    #[serde(default)]
+    pub why: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSummary {
@@ -95,6 +106,10 @@ pub struct ThreadSummary {
     pub asks: Option<Vec<OpenAsk>>,
     #[serde(default, deserialize_with = "crate::wire::optional_uint")]
     pub asks_seq: Option<u64>,
+    /// The agent said its asks wait until its own shell jobs end (the
+    /// runner's `asksAfterJobs`).
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub asks_after_jobs: Option<bool>,
     #[serde(default, deserialize_with = "crate::wire::optional_uint")]
     pub pending_reviews: Option<u64>,
     #[serde(default, deserialize_with = "crate::wire::field")]
@@ -126,6 +141,10 @@ pub struct ThreadSummary {
     pub starred_at: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub archived_at: Option<String>,
+    /// The quiet inbox archived it (protocol "Inbox guess"): only while
+    /// it's still archived by Threadbear.
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub quietly_archived: Option<QuietlyArchived>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub waiting_for_room: Option<Value>,
     /// Whether a turn that hits its login's limit waits for room and carries
@@ -160,10 +179,13 @@ pub struct ThreadSummary {
     pub moving: Option<Value>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub asked: Option<String>,
-    /// Mike's first message to it, one line (protocol "What Mike first
-    /// asked"): the Feed's card leads with it, else the title.
+    /// What it's waiting on, as its runner worked it out (protocol "Wait
+    /// state", runner/src/wait-state.ts). Read with `wait_state()`. Absent
+    /// from a runner before 23 Nov 2026, and cleared by an optimistic change
+    /// here (`Sidebar::update_thread`), so the app's own rule draws it until
+    /// the runner's next summary.
     #[serde(default, deserialize_with = "crate::wire::field")]
-    pub request: Option<String>,
+    pub wait_state: Option<String>,
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub preview: String,
     /// The librarian's search words, for finding a thread by what it's about
@@ -266,6 +288,37 @@ pub fn roll_back<T: Borrow<ThreadSummary>>(
     true
 }
 
+/// Puts back what a summary from a runner doesn't say but this app knows,
+/// from the row it's stored over (`old`), as the Swift app's `threads`
+/// didSet does for every summary stored:
+///
+/// - which runner the thread is on: no summary says (`runner_id` is never
+///   on the wire), so one from a call's reply (a share's, a project
+///   change's) or a relayed thread.updated over another runner's thread
+///   would quietly make it one of this Mac's, its calls going to this Mac's
+///   runner ("Thread not found") and its own runner's rows skipped as this
+///   Mac's (23 Nov review);
+/// - another runner's thread's share: the other runners' table leaves it
+///   out, so a link made here (the relay's `threads.share` reply) stays
+///   until a summary says otherwise. Once made a share never goes back to
+///   none (off keeps its slug).
+///
+/// A thread moved here from another runner keeps the old runner (and its
+/// share) only until this Mac's own list says it has arrived: thread.updated
+/// asks for that list (app.rs, `arriving`), whose rows don't come through
+/// here, and the other runners' table never takes a row of this Mac's.
+pub fn keep_local_marks(new: &mut ThreadSummary, old: Option<&ThreadSummary>) {
+    let Some(old) = old.filter(|old| old.id == new.id) else {
+        return;
+    };
+    if new.runner_id.is_none() {
+        new.runner_id = old.runner_id.clone();
+    }
+    if new.share.is_none() && new.runner_id.is_some() {
+        new.share = old.share.clone();
+    }
+}
+
 impl OpenAsk {
     /// Where it's to be done, in plain words (`plainWhere`).
     pub fn where_text(&self) -> Option<String> {
@@ -355,6 +408,14 @@ impl ThreadSummary {
         })
     }
 
+    /// The runner's wait state, a value this build knows (an unknown one
+    /// is drawn as done), or None for a summary without one: the app's own
+    /// rule (`section_of_legacy`) decides then.
+    pub fn wait_state(&self) -> Option<&str> {
+        let s = self.wait_state.as_deref()?;
+        Some(if WAIT_STATES.contains(&s) { s } else { "done" })
+    }
+
     /// Newer events than Mike has seen.
     pub fn unread(&self) -> bool {
         self.last_seq > self.last_seen_seq
@@ -391,6 +452,17 @@ impl ThreadSummary {
             )
         })
     }
+    /// The agent said its asks wait for its own shell jobs, and one is still
+    /// going (or just finished, its result still to be read): not Mike's to
+    /// answer yet, as with sub-agents (24 Nov 2026).
+    pub fn asks_wait_for_jobs(&self) -> bool {
+        self.asks_after_jobs == Some(true)
+            && self
+                .background
+                .iter()
+                .flatten()
+                .any(|b| b.get("kind").and_then(Value::as_str) == Some("shell"))
+    }
     /// The first name for `agents_still_working`, kept for the thread pane.
     pub fn working(&self) -> bool {
         self.agents_still_working()
@@ -418,13 +490,20 @@ impl ThreadSummary {
     /// question, ask_secret), which runs out if he doesn't: first in the
     /// Inbox whatever order it's in (`sort_sections`).
     pub fn on_card(&self) -> bool {
-        self.needs_answer() && !self.is_archived()
+        match self.wait_state() {
+            Some(s) => s == "card" && !self.is_archived(),
+            None => self.needs_answer() && !self.is_archived(),
+        }
     }
     /// The last turn ended asking Mike for something and he hasn't done it
     /// all yet (Swift `waitingOnMike`, whose comments say why sub-agents
     /// still working count differently from a shell job).
     pub fn waiting_on_mike(&self) -> bool {
-        if self.needs.as_deref() != Some("you") || self.busy() || self.agents_still_working() {
+        if self.needs.as_deref() != Some("you")
+            || self.busy()
+            || self.agents_still_working()
+            || self.asks_wait_for_jobs()
+        {
             return false;
         }
         let asks = self.asks.as_deref().unwrap_or(&[]);
@@ -438,6 +517,9 @@ impl ThreadSummary {
     /// before landing showed Done, and Mike archived it with nothing landed.
     /// The runner only sends either while the thread is hibernating.
     pub fn waiting_on_work(&self) -> bool {
+        if let Some(s) = self.wait_state() {
+            return !self.is_archived() && matches!(s, "onThreads" | "landing" | "appRestart");
+        }
         if self.is_archived()
             || (self.snoozed_until.is_none() && self.snoozed_until_restart != Some(true))
         {
@@ -456,6 +538,9 @@ impl ThreadSummary {
     /// land, so still working. One Mike hibernated himself isn't. Gives the
     /// loose end's words ("1 commit on … isn't on main").
     pub fn waiting_to_land(&self) -> Option<String> {
+        if self.wait_state().is_some_and(|s| s != "landing") {
+            return None;
+        }
         let wake = self.wake_when.as_ref()?;
         // Watching for something to happen, not just a time in its words.
         if wake.get("agent").and_then(Value::as_bool) != Some(true)
@@ -481,6 +566,17 @@ impl ThreadSummary {
     /// cases are shared with the phone and the website (and tested below).
     pub fn urgency(&self) -> u8 {
         let broken = self.status == "error" || self.status == "stopped";
+        if let Some(s) = self.wait_state() {
+            // The runner's `urgencyOf`, from the state alone: a read thread
+            // still asking counts as much as an unread one (Mike, 23 Nov).
+            return match s {
+                "card" | "review" => 0,
+                "needsYou" if broken => 1,
+                "needsYou" | "limit" => 2,
+                "done" if broken => 3,
+                _ => 4,
+            };
+        }
         if self.review_waiting() || self.needs_answer() {
             0
         } else if self.needs_you {
@@ -708,6 +804,9 @@ pub fn needs_you_count<'a>(
             if t.is_starred() {
                 return t.snoozed_until_ms().is_none();
             }
+            if let Some(state) = t.wait_state() {
+                return wait_section(state) == "inbox";
+            }
             if t.snoozed(now_ms) {
                 return false;
             }
@@ -889,7 +988,50 @@ pub fn section_of(t: &ThreadSummary, now_ms: i64, wakes: &HashMap<String, Wake>)
         "backlog"
     } else if t.is_starred() {
         "starred"
-    } else if t.snoozed(now_ms) && t.waiting_on_work() {
+    } else if let Some(state) = t.wait_state() {
+        wait_section(state)
+    } else {
+        section_of_legacy(t, now_ms, wakes)
+    }
+}
+
+/// The states a runner sends (runner/src/wait-state.ts `WAIT_STATES`).
+pub const WAIT_STATES: [&str; 14] = [
+    "working",
+    "job",
+    "onThreads",
+    "landing",
+    "appRestart",
+    "sending",
+    "card",
+    "review",
+    "needsYou",
+    "limit",
+    "done",
+    "scheduled",
+    "hibernating",
+    "archived",
+];
+
+/// The section a wait state is drawn under (the runner's `WAIT_STATES`).
+pub fn wait_section(state: &str) -> &'static str {
+    match state {
+        "working" | "job" | "onThreads" | "landing" | "appRestart" | "sending" => "running",
+        "scheduled" | "hibernating" => "hibernating",
+        "archived" => "archived",
+        _ => "inbox",
+    }
+}
+
+/// The app's own rule, for a summary with no wait state: a runner from
+/// before 23 Nov 2026, or a row this app has just changed itself. Goes once
+/// every runner sends one and optimistic changes set the state they guess.
+fn section_of_legacy(
+    t: &ThreadSummary,
+    now_ms: i64,
+    wakes: &HashMap<String, Wake>,
+) -> &'static str {
+    if t.snoozed(now_ms) && t.waiting_on_work() {
         "running"
     } else if t.snoozed(now_ms) {
         "hibernating"
@@ -927,6 +1069,7 @@ pub fn as_sending(t: &ThreadSummary) -> ThreadSummary {
     }
     t.needs_you = false;
     t.needs = None;
+    t.wait_state = Some("sending".into());
     t
 }
 
@@ -1311,6 +1454,49 @@ mod tests {
         parse_ms("2026-11-06T12:00:00Z").unwrap()
     }
 
+    /// The runner's wait states (`shared/cases/wait-states.json`): drawn
+    /// from the state, every case goes in its section with its urgency and
+    /// badge; and with no state (an older runner), the app's own rule puts
+    /// it in the same section.
+    #[test]
+    fn sections_match_the_shared_wait_states() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../shared/cases/wait-states.json"
+        );
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let now = parse_ms(file["now"].as_str().unwrap()).unwrap();
+        for case in file["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let t = thread(1, case["thread"].clone());
+            let mut wakes = HashMap::new();
+            if case["scheduled"].as_bool() == Some(true) {
+                wakes.insert(
+                    t.id.clone(),
+                    Wake {
+                        at_ms: now + 60_000,
+                        when_text: "soon".into(),
+                    },
+                );
+            }
+            let section = case["section"].as_str().unwrap();
+            assert_eq!(section_of(&t, now, &wakes), section, "legacy: {name}");
+            let mut drawn = t.clone();
+            drawn.wait_state = case["state"].as_str().map(str::to_owned);
+            assert_eq!(section_of(&drawn, now, &HashMap::new()), section, "{name}");
+            assert_eq!(
+                u64::from(drawn.urgency()),
+                case["urgency"].as_u64().unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                needs_you_count([&drawn], now) == 1,
+                case["counted"].as_bool().unwrap(),
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn a_thread_with_a_message_on_its_way_is_running_not_in_the_inbox() {
         let waiting = thread(
@@ -1658,5 +1844,71 @@ mod tests {
         threads.insert("t".into(), newer.clone());
         assert!(!roll_back(&mut threads, Some(before), Some(&guess)));
         assert_eq!(threads["t"], newer, "the newer row stands");
+    }
+
+    // Share on another Mac's thread: the relay's reply names no runner, and
+    // storing it as it came made the thread one of this Mac's ("Thread not
+    // found" on every send), and the other runners' next table, which has
+    // no share, put the share icon back to Only you (23 Nov review).
+    #[test]
+    fn a_reply_over_another_runners_thread_keeps_its_runner_and_share() {
+        let link = json!({ "access": "link", "slug": "abc" });
+        let old = ThreadSummary {
+            id: "t".into(),
+            runner_id: Some("mini".into()),
+            share: Some(link),
+            ..Default::default()
+        };
+        // The share's reply: no runner (never on the wire), a new link.
+        let mut reply: ThreadSummary =
+            serde_json::from_value(json!({ "id": "t", "runnerId": "ignored", "share": { "access": "link", "slug": "new" } }))
+                .unwrap();
+        assert_eq!(reply.runner_id, None, "runnerId is never read off the wire");
+        keep_local_marks(&mut reply, Some(&old));
+        assert_eq!(reply.runner_id.as_deref(), Some("mini"));
+        assert_eq!(
+            reply.share,
+            Some(json!({ "access": "link", "slug": "new" })),
+            "the reply's own share wins"
+        );
+
+        // That runner's next table row: its runner, no share.
+        let mut row = ThreadSummary {
+            id: "t".into(),
+            runner_id: Some("mini".into()),
+            ..Default::default()
+        };
+        keep_local_marks(&mut row, Some(&reply));
+        assert_eq!(row.share, Some(json!({ "access": "link", "slug": "new" })));
+    }
+
+    #[test]
+    fn a_reply_over_this_macs_thread_stays_this_macs() {
+        let old = ThreadSummary {
+            id: "t".into(),
+            share: Some(json!({ "access": "link", "slug": "abc" })),
+            ..Default::default()
+        };
+        let mut reply = ThreadSummary {
+            id: "t".into(),
+            ..Default::default()
+        };
+        keep_local_marks(&mut reply, Some(&old));
+        assert_eq!(reply.runner_id, None);
+        // This Mac's runner says its own share, so none is none.
+        assert_eq!(reply.share, None);
+        // A new thread has nothing to keep.
+        let mut fresh = ThreadSummary {
+            id: "n".into(),
+            ..Default::default()
+        };
+        keep_local_marks(&mut fresh, None);
+        assert_eq!(
+            fresh,
+            ThreadSummary {
+                id: "n".into(),
+                ..Default::default()
+            }
+        );
     }
 }

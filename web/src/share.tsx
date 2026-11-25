@@ -13,7 +13,7 @@ import { EditedDrafts, MessageText, Pictures, PlanCard, picturesByRow, ToolRun, 
 import { editedLabel, splitEdited } from './draft';
 import { CommandNote, useCommand } from './command-state';
 import { empty, hasMore, nextBefore, pictures, rows, takeLive, takeOlder, type History } from './share-history';
-import { fold, splitTurns, duration, roughly, type Item, type Turn } from './turns';
+import { fold, gapLabel, splitTurns, duration, roughly, type Item, type Turn } from './turns';
 import { day, modelLabel, plain, sender, sentences } from './format';
 import * as Icon from './icons';
 
@@ -206,7 +206,7 @@ function TurnSection({ id, turn, busy, after, inText, rows }: { id: string; turn
   const items = fold(turn.messages, busy);
   const fromWork: Picture[] = [];
   const seqsOf = (item: Item<PageMessage>): number[] =>
-    item.kind === 'message' || item.kind === 'note' ? [item.m.seq] : item.kind === 'tools' ? item.items.map((m) => m.seq) : item.items.flatMap(seqsOf);
+    item.kind === 'message' || item.kind === 'note' ? [item.m.seq] : item.kind === 'tools' ? item.items.map((m) => m.seq) : item.kind === 'gap' ? [] : item.items.flatMap(seqsOf);
   for (const item of items) if (item.kind === 'worked') fromWork.push(...seqsOf(item).flatMap((s) => after.get(s) ?? []));
 
   const text = (m: PageMessage) => {
@@ -236,6 +236,13 @@ function TurnSection({ id, turn, busy, after, inText, rows }: { id: string; turn
                 ) : null,
               )}
             </Worked>
+          );
+        }
+        if (item.kind === 'gap') {
+          return (
+            <div key={`g${item.gap.seq}`} className="turn-gap">
+              <span>{gapLabel(item.gap)}</span>
+            </div>
           );
         }
         if (item.kind === 'tools') {

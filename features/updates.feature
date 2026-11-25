@@ -145,7 +145,7 @@ Feature: The Updates panel
   Scenario: A new version waits for nearby changes to settle before building
     When the app's next version is waiting for main to settle
     And I open the Updates panel
-    Then the Updates panel lists "The app has a new version on main, waiting for ten quiet minutes before building."
+    Then the Updates panel lists "The app has a new version on main, waiting for two quiet minutes before building."
 
   # Check hosts only run tests: what an update's build host sends back runs
   # here, so it's only one named in updateBuildHosts (Daybreak 108). With
@@ -269,3 +269,9 @@ Feature: The Updates panel
     When the web runtime needs a security update
     And I open the Updates panel
     Then the Updates panel lists "Web runtime: CEF is over two weeks behind stable. Chromium's sandbox is off."
+
+  @updates.panel @swift-pending
+  Scenario: A web runtime waiting on cef-rs is a quiet line in Updates
+    When the web runtime is behind but waiting on cef-rs
+    And I open the Updates panel
+    Then the Updates panel lists "Web runtime: CEF is over two weeks behind stable. Waiting on cef-rs to support it. Chromium's sandbox is off."

@@ -73,7 +73,7 @@ pub(crate) fn patch_icon(
     match icon_file.filter(|p| !p.is_empty() && drawable(p)) {
         Some(path) => {
             let symbol = symbol.to_owned();
-            img(PathBuf::from(path))
+            img(crate::fit_picture::icon_source(path))
                 .size(px(size + 1.))
                 .object_fit(ObjectFit::Contain)
                 .with_fallback(move || glyph(&symbol, size, color))
@@ -137,7 +137,7 @@ pub(crate) fn origin_badge(
                     ..
                 }) => {
                     let letter = mark.letter.clone();
-                    img(PathBuf::from(path))
+                    img(crate::fit_picture::icon_source(&path))
                         .size(px(inner_side))
                         .rounded_full()
                         .object_fit(ObjectFit::Contain)

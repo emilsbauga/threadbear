@@ -78,7 +78,7 @@
 // movedIn, unvouched).
 import fs from 'node:fs';
 import path from 'node:path';
-import { BORROW_FILE, BORROW_PREFIX, parseBorrower, type Borrower } from './borrows.ts';
+import { BORROW_FILE, BORROW_PREFIX, parseBorrower, type Borrower } from './borrow-marks.ts';
 import { listCheckouts, readPlainFile, realpath, SPARE, type Checkout, type WorktreeRecord } from './worktrees.ts';
 
 export const SLOT_FIELDS = ['removedAt', 'cleanupOwed', 'spare', 'tornDownAt'] as const;

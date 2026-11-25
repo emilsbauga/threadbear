@@ -97,3 +97,19 @@ test('in a run of plans each but the newest was sent back', () => {
   const waiting = relayEvents(T, [start, ...plans], idle, [], false, 'mac-mini').filter((e) => e.type === 'plan.resolved');
   assert.equal(waiting.some((e) => e.itemId === `relay-${plans.at(-1)!.seq}`), false);
 });
+
+// A runner's message says why it sent it (API 98), so another Mac's note
+// and the divider before its turn read "Codex answered" as that runner's
+// own Mac does, not a bare "Moments later" (nightly parity run, 23 Nov).
+test("a runner's message keeps its wake reason; one without, or anyone else's, has none", () => {
+  const rows: RelayRow[] = [start, { seq: 6, role: 'user', text: 'For everyone: Codex answered.', origin: 'runner', wakeReason: 'Codex answered', turn: 'bbbb2222', at: at(5) }, { seq: 8, role: 'user', text: 'Carry on.', origin: 'runner', turn: 'cccc3333', at: at(9) }];
+  const ev = relayEvents(T, rows, idle, [], false, 'mac-mini');
+  const msgs = ev.filter((e) => e.type === 'user.message');
+  assert.deepEqual(msgs.map((e) => [e.origin, e.wakeReason]), [[undefined, undefined], ['runner', 'Codex answered'], ['runner', undefined]]);
+  // Its turn still starts first, in the row's own slot, so paging and a
+  // hole's guard see the marker where they always did (Gemini's review):
+  // the Mac puts the reason on the divider it already drew.
+  assert.deepEqual(ev.filter((e) => e.turnId === 'bbbb2222').map((e) => e.type).slice(0, 2), ['turn.started', 'user.message']);
+  const phone = relayEvents(T, [{ ...start, origin: 'phone', wakeReason: 'nope' }], idle, [], false, 'mac-mini').find((e) => e.type === 'user.message')!;
+  assert.equal(phone.wakeReason, undefined);
+});

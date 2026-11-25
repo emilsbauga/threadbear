@@ -78,7 +78,16 @@ function fitProblem(fields: unknown, doc: Record<string, unknown>): string | nul
 
 const fakes: Record<string, Record<string, unknown>> = {
   'convex/values': { v, ConvexError },
-  'convex/server': { defineSchema: (t: Record<string, Def>) => realServer.defineSchema(t), defineTable },
+  // An http.ts's router keeps its routes, so a test can call one's handler
+  // (relay-clear.test.ts plays the relay's /clear).
+  'convex/server': {
+    defineSchema: (t: Record<string, Def>) => realServer.defineSchema(t),
+    defineTable,
+    httpRouter: () => {
+      const routes: { path: string; method: string; handler: unknown }[] = [];
+      return { routes, route: (r: { path: string; method: string; handler: unknown }) => void routes.push(r) };
+    },
+  },
   './_generated/server': { env: process.env, mutation: (x: unknown) => x, query: (x: unknown) => x, internalMutation: (x: unknown) => x, internalQuery: (x: unknown) => x, action: (x: unknown) => x, internalAction: (x: unknown) => x, httpAction: (x: unknown) => x },
   './_generated/api': { internal: fnRef(['internal']), api: fnRef(['api']), components: fnRef(['components']) },
   '@convex-dev/state-machines': stateMachines,

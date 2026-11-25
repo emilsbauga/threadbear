@@ -4,20 +4,24 @@
 // is the Runner; runner.ts puts them on its prototype.
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import type { ReviewFinding, ThreadSummary } from '../protocol.ts';
+import type { PermissionMode, ReviewFinding, ThreadSummary } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
-import { SAID_MAX, WAKE_SYSTEM, awayFor, hibernateNote, localWhen, readWakeAnswer, wakePrompt } from '../wake-when.ts';
+import { LATE_CHECKS_MAX, LATE_CHECK_LOST, SAID_MAX, WAKE_SYSTEM, awayFor, hibernateNote, lateCheckPrompt, lateChecksOf, lateNews, lateSleepMs, lateWait, lateWhy, localWhen, readWakeAnswer, topicCheckNews, wakePrompt, type LateWait } from '../wake-when.ts';
 import type { ThreadState } from '../runner.ts';
-import { NO_WAKE_TIME } from '../runner.ts';
+import { NO_WAKE_TIME } from './timings.ts';
 import { parseWhen } from '../when.ts';
 import { parkRecord, placeOf, wakesOnStart, type PlaceEvent } from '../place.ts';
 import type { WaitFor } from '../needs.ts';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { providerName } from '../providers.ts';
 import { LAB_REVIEW_REPLY_CHARS, addVerdict, addVerdicts, answerEach, findingLine, panelWake } from './lab-review.ts';
 import { cutSafely, safeEnd } from '../safe-cut.ts';
 import { above, LEAST, raises, type Authority } from '../threadbear-mcp.ts';
+import { ceilingMode } from './ceiling.ts';
 
+
+const withCeiling = (ceiling: PermissionMode | undefined): { ceiling?: PermissionMode } => (ceiling ? { ceiling } : {});
 
 // The less of two: the lower mode, or LEAST if either is.
 export function leastAuthority(a: Authority | undefined, b: Authority): Authority {
@@ -40,7 +44,7 @@ export const hibernationPart = {
   // the thread comes back and the call fails with why.
   // `by: 'agent'`: its own agent asked (snoozeAfterTurn), waiting for
   // something to happen (WakeWhen.by).
-  async hibernateWhen(this: Runner, params: { threadId: string; said: string; by?: 'agent' }): Promise<{ thread: ThreadSummary; until?: string; topic?: string; why: string }> {
+  async hibernateWhen(this: Runner, params: { threadId: string; said: string; by?: 'agent'; askedBy?: Authority }): Promise<{ thread: ThreadSummary; until?: string; topic?: string; why: string }> {
     const st = this.mustGet(params.threadId);
     const said = params.said.trim();
     if (!said) throw new RpcError(ErrorCode.badParams, 'Say when it should wake.');
@@ -50,8 +54,14 @@ export const hibernationPart = {
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const gist = this.threadGist(st.rec.id, { recent: 0 });
     const by = params.by === 'agent' ? ('agent' as const) : undefined;
+    // Its agent's own words wake it later (wakeForTopic): kept to the access
+    // it had as it wrote them (runner/ceiling.ts).
+    if (by) {
+      st.rec.wakeCeiling = { said, ceiling: ceilingMode(leastAuthority(params.askedBy, this.authoritySaved(st.rec.id)).mode) };
+      this.markDirty(st);
+    }
     const input = { said, now: this.clock.now(), timeZone, title: st.rec.title, first: gist.first, brief: st.rec.brief?.text, ...(by ? { by } : {}) };
-    this.update({ threadId: st.rec.id, snoozedUntil: NO_WAKE_TIME });
+    this.update({ threadId: st.rec.id, snoozedUntil: NO_WAKE_TIME, noted: true });
     this.park(st, { kind: 'wordsAsked', said, ...(by ? { by } : {}) });
     this.markDirty(st);
     const ask = (withThread: boolean) =>
@@ -79,6 +89,22 @@ export const hibernationPart = {
       if (this.bucket(st.rec) === 'inbox') this.kickQueue(st);
       if (by) this.recheckStarter(st);
       throw new RpcError(ErrorCode.other, `Couldn't work out when to wake it: ${answer.error}`);
+    }
+    // Back to sleep after a check at its latest time (wakeAtTime). While
+    // its checks are counted the wait has a latest time even if the model
+    // gives none, so they end with Mike rather than a sleep with no end
+    // (also for a check finished by a carry-on after a lost network or a
+    // full login, which is another turn: Codex's second review). Straight
+    // after the check it is at least twice as far off as the last sleep
+    // was meant to be (wake-when.ts, "The latest time passing").
+    const late = by && answer.topic ? lateChecksOf(st.rec) : undefined;
+    if (late) {
+      const least = this.clock.now() + lateSleepMs(late.waitedMs);
+      if (!answer.until || (late.backOff && Date.parse(answer.until) < least)) answer.until = new Date(least).toISOString();
+      if (late.backOff) {
+        st.rec.lateChecks = { n: late.n, waitedMs: late.waitedMs, since: late.since };
+        this.markDirty(st);
+      }
     }
     // What it already checked counts only for the same words, from its agent.
     this.park(st, { kind: 'wordsAnswered', said, ...(answer.until ? { until: answer.until } : {}), ...(answer.topic ? { topic: answer.topic } : {}), ...(by ? { by } : {}) });
@@ -130,21 +156,88 @@ export const hibernationPart = {
     const checked = st.rec.wakeChecked?.said === wakeWhen.said ? st.rec.wakeChecked : undefined;
     if (checked && (checked.from[inThreadId] ?? -1) >= seq) return false;
     this.park(st, { kind: 'checked', threadId: inThreadId, seq });
-    this.wake(st, { why: `to check whether ${topic}${where ? `, from "${where}"` : ''}` });
-    this.armSnoozeTimer();
     // Which thread, only where send_message would let it say so without a
     // card: its id is the way in to its words (read_thread).
     const tell = this.mayTellOf(this.authorityNow(st.rec.id), inThreadId);
     const seen = tell ? `another thread (${inThreadId.slice(0, 8)}) looks to show it has` : 'another thread looks to show it has';
     const said = wakeWhen.said.replace(/\s+/g, ' ').trim();
-    this.sendTo(
-      st,
-      `You hibernated this thread until: ${said}\n\nThreadbear woke it because ${seen} (${topic}), but that's a guess from reading one thread. Check for yourself that it really has${tell ? ' (read_thread on that thread, and the work itself)' : ''}. If it has, carry on with what you meant to do. If it hasn't, call end_turn with needs "nothing" and snooze "${said.replace(/"/g, "'")}" to go back to sleep, and say in a line what's still missing.`,
-      [],
-      { origin: 'runner', queue: true },
-    );
-    this.log.info('woke to check what it waited for', { threadId, inThreadId, topic });
+    const news = topicCheckNews({ said, topic }, Intl.DateTimeFormat().resolvedOptions().timeZone, this.clock.now());
+    // Not marked unread while it checks, as a check at its latest time
+    // isn't (wakeToCheck): a guess that was wrong is nothing for Mike. On
+    // 20 Nov 2026 one woke a thread for 26 seconds and pinged his phone.
+    const how = this.wakeToCheck(st, {
+      id: crypto.randomUUID(),
+      why: `to check whether ${topic}${where ? `, from "${where}"` : ''}`,
+      prompt: `You hibernated this thread until: ${said}\n\nThreadbear woke it because ${seen} (${topic}), but that's a guess from reading one thread. Check for yourself that it really has${tell ? ' (read_thread on that thread, and the work itself)' : ''}. If it has, carry on with what you meant to do. If it hasn't, call end_turn with needs "nothing" and snooze "${said.replace(/"/g, "'")}" to go back to sleep, and say in a line what's still missing.`,
+      news,
+      unsent: `${news} ${LATE_CHECK_LOST}`,
+      ceiling: this.snoozeCeiling(st, wakeWhen) ?? 'ask',
+    });
+    this.armSnoozeTimer();
+    this.log.info('woke to check what it waited for', { threadId, inThreadId, topic, how });
     return true;
+  },
+
+  // Wakes a sleeping thread for its agent to check for itself whether what
+  // it waits for has happened: at its wait's latest time (wakeAtTime), or
+  // because the librarian thinks another thread shows it has (wakeForTopic).
+  // The wake isn't marked unread: needing Mike notifies him and his phone,
+  // and a check that goes back to sleep is nothing for him. How its turn
+  // ends says whether he's needed (Runner.completeTurn, wakeCheck).
+  // `news`: why it woke, for any other message until the check's turn
+  // completes (Runner.takeWakeNews): the check can be lost on the way (a
+  // folder that's gone, a restart while it was queued, Stop), and nothing
+  // else tells the agent. Set before the send, which may start a message
+  // it had queued first: that one is told the check comes after it.
+  // `unsent`: the news if the check can't be sent at all. `ceiling`: of
+  // its own snooze words, which come back with it (runner/ceiling.ts).
+  // 'started': its turn is going. 'waiting': behind a queued message or a
+  // move, or held for Mike as the thread has more access than when it
+  // slept. 'unsent': the send threw. Either of those leaves it unread, as
+  // any wake is, so a check that never runs isn't left unnoticed. Throws,
+  // with the thread still asleep, if it can't be woken.
+  wakeToCheck(this: Runner, st: ThreadState, c: { id: string; why: string; prompt: string; news: string; unsent: string; wakeReason?: string; ceiling?: PermissionMode }): 'started' | 'waiting' | 'unsent' {
+    const { rec } = st;
+    const had = rec.wakeNews;
+    const unread = rec.forceUnread;
+    const at = this.isoNow();
+    rec.wakeNews = { text: c.news, at, check: c.id, ...withCeiling(c.ceiling) };
+    // A mark left from before it slept (an earlier wake Mike never opened)
+    // would make this one loud: nothing clears it as a thread goes to
+    // sleep (Gemini's review, 23 Nov 2026).
+    if (unread) rec.forceUnread = false;
+    try {
+      this.wake(st, { why: c.why }, true);
+    } catch (e) {
+      // Not woken (its log can't be written): still asleep.
+      if (had) rec.wakeNews = had;
+      else delete rec.wakeNews;
+      if (unread) rec.forceUnread = unread;
+      throw e;
+    }
+    let how: 'started' | 'waiting' | 'unsent' = 'waiting';
+    try {
+      this.sendTo(st, c.prompt, [], { origin: 'runner', queue: true, messageId: c.id, ...(c.wakeReason ? { wakeReason: c.wakeReason } : {}), ...withCeiling(c.ceiling) });
+      // (Read afresh: sendTo may have started the turn.)
+      const { rt } = st;
+      if (rt.turn?.inputs?.has(c.id)) how = 'started';
+    } catch (e) {
+      // A full disk, say. The next message says why it woke.
+      how = 'unsent';
+      rec.wakeNews = { text: c.unsent, at, ...withCeiling(c.ceiling) };
+      this.log.error('could not send a woken thread its check', { threadId: rec.id, error: String(e) });
+    }
+    if (how !== 'started') {
+      rec.forceUnread = true;
+      // The wake left what it had queued for the check's send to start.
+      try {
+        this.kickQueue(st);
+      } catch (e) {
+        this.log.error('could not start what a woken thread had queued', { threadId: rec.id, error: String(e) });
+      }
+    }
+    this.markDirty(st);
+    return how;
   },
 
   // end_turn's waitFor, once the turn is over: hibernates until every
@@ -188,7 +281,7 @@ export const hibernationPart = {
       }
     }
     if (!until || Date.parse(until) <= now) until = new Date(now + WAIT_FOR_DEFAULT_MS).toISOString();
-    this.update({ threadId: rec.id, snoozedUntil: until });
+    this.update({ threadId: rec.id, snoozedUntil: until, noted: true });
     const by = leastAuthority(askedBy, this.authorityNow(rec.id));
     // Refused only if it has woken already (its time passed meanwhile).
     if (!this.park(st, { kind: 'waitOn', waits: list.map((x) => ({ ...x, by })) })) return;
@@ -301,7 +394,7 @@ export const hibernationPart = {
       // away now, as a single review is once it's back, rather than sitting
       // in the inbox (Gemini's review of the panel, 19 Nov 2026). Its wait
       // is already done, with its reply and verdict.
-      for (const id of putAway) this.update({ threadId: id, archived: true, archivedBy: 'threadbear' });
+      for (const id of putAway) this.update({ threadId: id, archived: true, archivedBy: 'threadbear', why: 'its review went back to the thread that asked for it' });
     }
   },
 
@@ -338,9 +431,9 @@ export const hibernationPart = {
   // been raised since. A wait the agent never asked for (`by` missing) counts
   // only the first (Daybreak, 12 Nov 2026: an Ask helper's closing reply
   // started a turn in its Full-access starter).
+  // The same rule as every other word held for later (runner/ceiling.ts).
   mayHear(this: Runner, me: Authority, w: NonNullable<ThreadState['rec']['waitingOn']>[number]): boolean {
-    if (this.mayTellOf(me, w.threadId)) return true;
-    return w.by !== undefined && !above(me, w.by);
+    return this.mayPassOn(me, w.by === undefined ? undefined : w.by === LEAST ? undefined : w.by.mode, w.threadId);
   },
 
   deliverWaits(this: Runner, st: ThreadState, waits: NonNullable<ThreadState['rec']['waitingOn']>): void {
@@ -375,7 +468,9 @@ export const hibernationPart = {
     const reports = this.takeHeld(st);
     this.wake(st, { why });
     this.armSnoozeTimer();
-    this.sendTo(st, reports ? `${text}\n\n${reports}` : text, [], { origin: 'runner', queue: true });
+    // Checked against its access now: raised again while this waits in the
+    // queue, it's held back as it leaves (runner/ceiling.ts).
+    this.sendTo(st, reports ? `${text}\n\n${reports}` : text, [], { origin: 'runner', queue: true, ceiling: ceilingMode(me.mode) });
     this.log.info('woke after waiting on threads', { threadId: st.rec.id, on: waits.map((x) => x.threadId) });
   },
 
@@ -411,10 +506,12 @@ export const hibernationPart = {
     }
     this.wake(st, { why: `${who} reviewed the change` });
     this.armSnoozeTimer();
-    this.sendTo(st, text, [], { origin: 'runner', queue: true });
+    // Checked against its access now (deliverWaits): raised again while it
+    // waits in the queue, it's held back as it leaves (runner/ceiling.ts).
+    this.sendTo(st, text, [], { origin: 'runner', queue: true, ceiling: ceilingMode(this.authorityNow(st.rec.id).mode) });
     this.log.info('woke after a lab review', { threadId: st.rec.id, reviewer: w.threadId });
     if (reviewer && !reviewer.rt.deleted && !reviewer.rec.archivedAt && !reviewer.rt.turn) {
-      this.update({ threadId: w.threadId, archived: true, archivedBy: 'threadbear' });
+      this.update({ threadId: w.threadId, archived: true, archivedBy: 'threadbear', why: 'its review went back to the thread that asked for it' });
     }
   },
 
@@ -452,11 +549,13 @@ export const hibernationPart = {
     );
     this.wake(st, { why: 'the review panel reviewed the change' });
     this.armSnoozeTimer();
-    this.sendTo(st, text, [], { origin: 'runner', queue: true });
+    // Checked against its access now (deliverWaits): raised again while it
+    // waits in the queue, it's held back as it leaves (runner/ceiling.ts).
+    this.sendTo(st, text, [], { origin: 'runner', queue: true, ceiling: ceilingMode(this.authorityNow(st.rec.id).mode) });
     this.log.info('woke after a review panel', { threadId: st.rec.id, reviewers: waits.map((w) => w.threadId) });
     for (const { w, reviewer } of parts) {
       if (reviewer && !reviewer.rt.deleted && !reviewer.rec.archivedAt && !reviewer.rt.turn) {
-        this.update({ threadId: w.threadId, archived: true, archivedBy: 'threadbear' });
+        this.update({ threadId: w.threadId, archived: true, archivedBy: 'threadbear', why: 'its review went back to the thread that asked for it' });
       }
     }
   },
@@ -507,22 +606,123 @@ export const hibernationPart = {
     if (this.stopping) return;
     const now = this.clock.now();
     let next = Infinity;
+    // A check turn starts a CLI: not while main.ts is still starting (its
+    // tools aren't ready, holdWaits), nor on a runner that's handing its
+    // threads over or waiting to restart (the turn belongs to the next
+    // one). The thread sleeps on, its time passed, and is looked at again.
+    const noTurns = this.holdWaits || Boolean(this.draining) || Boolean(this.refusing);
     for (const st of this.threads.values()) {
       if (!st.rec.snoozedUntil) continue;
       const t = Date.parse(st.rec.snoozedUntil);
-      if (t <= now) this.wake(st, 'time');
-      else next = Math.min(next, t);
+      if (t > now) next = Math.min(next, t);
+      else if (noTurns && this.checksAtLatest(st)) next = Math.min(next, now + 60_000);
+      else {
+        // One thread that can't be woken (its log can't be written) doesn't
+        // stop the others' wakes or the timer: it's tried again in an hour.
+        try {
+          this.wakeAtTime(st);
+        } catch (e) {
+          this.log.error("couldn't wake a thread at its time", { threadId: st.rec.id, error: String(e) });
+          next = Math.min(next, now + 3_600_000);
+        }
+      }
     }
     if (next === Infinity) return;
     // Re-check at least hourly so long snoozes survive clock changes.
     this.snoozeTimer = this.clock.setTimeout(() => this.armSnoozeTimer(), Math.min(next - now, 3_600_000));
   },
 
+  // A sleeping thread's wait in words with a time as well (wake-when.ts,
+  // lateWait). Only a sleep that is in words and nothing else: fields an
+  // older runner left together (place.ts, odd) wake as a plain snooze.
+  lateWaitOf(this: Runner, rec: ThreadState['rec']): LateWait | undefined {
+    const place = placeOf(rec);
+    const sleep = place.kind === 'inbox' ? undefined : place.sleep;
+    return sleep?.for.kind === 'words' ? lateWait(rec) : undefined;
+  },
+
+  // Whether a thread whose time has come gets a turn to check for itself:
+  // its own agent's wait for something to happen, with checks left. Not
+  // one archived since (its sleep ends quietly), nor one already in a turn
+  // (a message queued for it started first: it's awake).
+  checksAtLatest(this: Runner, st: ThreadState): boolean {
+    const { rec } = st;
+    if (rec.archivedAt || st.rt.turn || this.lateWaitOf(rec)?.by !== 'agent') return false;
+    return (lateChecksOf(rec)?.n ?? 0) < LATE_CHECKS_MAX;
+  },
+
+  // A sleep's time has come. A plain snooze wakes as it always has. A wait
+  // in words with a time as well (wake-when.ts, "The latest time passing")
+  // says the time ran out with nothing seen, in the thread and to its agent
+  // with the next message. One its own agent set gets a turn to check for
+  // itself instead of sitting in the inbox, LATE_CHECKS_MAX times in a row.
+  wakeAtTime(this: Runner, st: ThreadState): void {
+    const { rec } = st;
+    const wait = this.lateWaitOf(rec);
+    // Archived since it went to sleep: its sleep just ends, quietly (wake).
+    if (!wait || rec.archivedAt || st.rt.turn) return this.wake(st, 'time');
+    const now = this.clock.now();
+    const at = this.isoNow();
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const before = lateChecksOf(rec);
+    if (!this.checksAtLatest(st)) {
+      // Mike's own, or its agent's with its checks used up: his to look at.
+      const stopped = wait.by === 'agent' ? before : undefined;
+      const had = rec.wakeNews;
+      // Before the wake, which may start a message it had queued.
+      rec.wakeNews = { text: lateNews(wait, timeZone, now, stopped ? { stopped } : undefined), at, ...withCeiling(this.snoozeCeiling(st, wait)) };
+      try {
+        this.wake(st, { why: lateWhy(wait, timeZone, stopped ? { stopped, now } : undefined) });
+      } catch (e) {
+        // Not woken (its log can't be written): still asleep, tried again.
+        if (had) rec.wakeNews = had;
+        else delete rec.wakeNews;
+        throw e;
+      }
+      this.log.info('woke at the latest time of a wait in words', { threadId: rec.id, topic: wait.topic, checks: stopped?.n });
+      return;
+    }
+    const slept = rec.snoozedAt && Date.parse(rec.snoozedAt) <= now ? rec.snoozedAt : undefined;
+    // How long it meant to sleep, not how long the Mac was shut past it.
+    const planned = slept ? Math.min(now, wait.latest) - Date.parse(slept) : 0;
+    const check = (before?.n ?? 0) + 1;
+    const had = rec.lateChecks;
+    const putBack = () => {
+      if (had) rec.lateChecks = had;
+      else delete rec.lateChecks;
+    };
+    const id = crypto.randomUUID();
+    // Counted, with the sleep after it to back off (hibernateWhen).
+    rec.lateChecks = { n: check, waitedMs: planned > 0 ? planned : 86_400_000, since: before?.since ?? slept ?? at, backOff: id };
+    let how: ReturnType<Runner['wakeToCheck']>;
+    try {
+      how = this.wakeToCheck(st, {
+        id,
+        why: lateWhy(wait, timeZone, 'checking'),
+        prompt: lateCheckPrompt(wait, timeZone, check),
+        news: lateNews(wait, timeZone, now, 'checking'),
+        unsent: lateNews(wait, timeZone, now),
+        wakeReason: 'The latest it would wait passed',
+        ceiling: this.snoozeCeiling(st, wait),
+      });
+    } catch (e) {
+      // Not woken: still asleep, not counted, tried again.
+      putBack();
+      throw e;
+    }
+    // A check that couldn't be sent isn't counted. The timer goes on.
+    if (how === 'unsent') putBack();
+    this.markDirty(st);
+    this.log.info('woke to check at the latest time of its wait', { threadId: rec.id, topic: wait.topic, check, how });
+  },
+
   // A thread coming back by itself (its time, a restart, a topic) says so
   // in its conversation, with how long it was away, and its row says
   // "Woke up" until Mike looks (`woke`): otherwise it just turns up in the
   // inbox with nothing to say why (30 Oct).
-  wake(this: Runner, st: ThreadState, cause: 'time' | 'restart' | { why: string }): void {
+  // `check`: wakeToCheck's, for a turn to check: not marked unread (how the
+  // turn ends says), and what it had queued starts with the check's send.
+  wake(this: Runner, st: ThreadState, cause: 'time' | 'restart' | { why: string }, check = false): void {
     const { rec } = st;
     // Archived since it went to sleep: its hibernation just ends, quietly.
     // Waking it there gave it a "Woke up" and an unread mark in the
@@ -549,10 +749,10 @@ export const hibernationPart = {
     this.emit(st, { type: 'system.note', text });
     // Its "Woke up" mark, until Mike looks (place.ts, wake).
     this.park(st, { kind: 'wake' });
-    st.rec.forceUnread = true;
+    if (!check) st.rec.forceUnread = true;
     st.rec.updatedAt = this.isoNow();
     this.markDirty(st);
-    this.kickQueue(st);
+    if (!check) this.kickQueue(st);
   },
 
   // Moves where a thread is parked (place.ts): the only way its record's
@@ -561,6 +761,8 @@ export const hibernationPart = {
   park(this: Runner, st: ThreadState, e: PlaceEvent): boolean {
     const res = parkRecord(st.rec, e, this.clock.now());
     if (!res.ok) this.log.warn('a thread move refused', { threadId: st.rec.id, event: e.kind, why: res.reason });
+    // A new sleep: why it last woke by itself is old news (wakeAtTime).
+    else if (e.kind === 'snooze') delete st.rec.wakeNews;
     return res.ok;
   },
 };

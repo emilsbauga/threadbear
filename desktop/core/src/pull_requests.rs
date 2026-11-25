@@ -1,5 +1,5 @@
-// A GitHub pull request opened as a tab in the side pane (the inlinePrs
-// experiment; docs/protocol/panels.md, "Pull requests"). Mike picked this, option A
+// A GitHub pull request opened as a tab in the side pane
+// (docs/protocol/panels.md, "Pull requests"). Mike picked this, option A
 // of three mockups (18 Nov 2026), after Capy opened PRs beside the chat:
 // "rather than having to farm out to a browser, it's all in line, with
 // everything you need and buttons."

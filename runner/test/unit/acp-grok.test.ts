@@ -13,7 +13,7 @@ import { AcpAdapter, AcpSession, modelChoices, withoutHookNote } from '../../src
 import { ACP_AGENTS, acpAccounts, isCursorBinary, isGrokBinary, type AcpAgent } from '../../src/adapters/acp/agents.ts';
 import { grokGuardDir, grokTrustedFolders, grokTrusts, guardPluginName } from '../../src/adapters/acp/grok-guard.ts';
 import { acpAsker } from '../../src/models/acp-oneshot.ts';
-import { acpVersion } from '../../src/updates/manager.ts';
+import { acpVersion, versionFromFolder } from '../../src/updates/manager.ts';
 import type { AdapterOutput, SessionSink, StartSessionOptions, ToolApprovalRequest } from '../../src/adapters/types.ts';
 import type { Account, PermissionMode } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
@@ -434,6 +434,25 @@ test('it is known by what initialize says, and its version comes from there', as
   assert.ok(r.outputs.some((o) => o.kind === 'cliVersion' && o.version === '1.0.77'));
   assert.equal(acpVersion('grok 1.0.77 (50ca579fa996) [stable]\n'), '1.0.77');
   assert.equal(acpVersion('1.18.23\n'), '1.18.23');
+  // Antigravity's says when it was built, not what it is.
+  assert.equal(acpVersion('Built on Fri Oct 30 01:09:22 2026 (1793293762)\nBuilt by someone@google.com\n'), undefined);
+  assert.equal(acpVersion('dev\n'), 'dev');
+});
+
+test('an install in a folder named for its version is that version, through a link to it too', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-agy-'));
+  try {
+    const dir = path.join(root, 'agy-acp', '1.4.5');
+    fs.mkdirSync(dir, { recursive: true });
+    const bin = path.join(dir, 'agy_acp_server.par');
+    fs.writeFileSync(bin, '');
+    assert.equal(versionFromFolder(bin), '1.4.5');
+    fs.symlinkSync(bin, path.join(root, 'agy'));
+    assert.equal(versionFromFolder(path.join(root, 'agy')), '1.4.5');
+    assert.equal(versionFromFolder(path.join(root, 'agy-acp', 'other')), undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("withoutHookNote leaves a title alone unless it ends in that hook's note", () => {

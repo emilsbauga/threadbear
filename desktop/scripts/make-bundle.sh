@@ -78,9 +78,9 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-# The Swift app's bear, green, half machine, with GPUI across its front, so
-# the two apps can be told apart in the Dock and the app switcher while both
-# are installed (Mike picked it, 12 Nov). Drawn from shared/icons/threadbear.png.
+# The Swift app's bear, green and half machine (Mike picked it, 12 Nov).
+# Since 23 Nov it has no lettering and no tile or border of its own: the
+# picture fills the whole square and macOS rounds the corners.
 icon="$root/desktop/gpui/icons/threadbear-gpui.png"
 iconset="$(mktemp -d "${TMPDIR:-/tmp}/threadbear-icon-XXXX")/threadbear.iconset"
 mkdir -p "$iconset"
@@ -125,8 +125,9 @@ chmod +x "$bundle/Contents/Resources/stage-update.sh"
 # the app keeps the same identity from one build to the next and macOS's
 # privacy permissions stick. Ad hoc otherwise, with the designated
 # requirement pinned to the bundle id, as an ad hoc one is the binary's hash
-# and changes on every build.
-identity="${THREADBEAR_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development:/ { print $2; exit }' || true)}"
+# and changes on every build. A revoked certificate is still listed, marked
+# CSSMERR_TP_CERT_REVOKED, and codesign fails with it, so it's passed over.
+identity="${THREADBEAR_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development:/ && !/CSSMERR_/ { print $2; exit }' || true)}"
 requirements=()
 if [ -z "$identity" ]; then
   identity="-"

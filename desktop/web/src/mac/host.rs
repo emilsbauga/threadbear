@@ -10,12 +10,13 @@
 // thread: its callbacks arrive inside its loop, outside any GPUI update, so
 // they only ever touch their own state and send on channels.
 use super::sealed;
+use super::status::set_status;
+pub use super::status::{status, Status};
 use cef::{args::Args, *};
 use std::cell::RefCell;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 unsafe extern "C" {
     fn tb_cef_install_app_hooks();
@@ -186,30 +187,6 @@ pub unsafe fn send_click(view: *mut c_void, x: f32, y: f32) -> String {
         free(said.cast());
         text
     }
-}
-
-/// Where Chromium has got to in this process.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Status {
-    NotStarted,
-    Starting,
-    Ready,
-    Failed(String),
-}
-
-static STATUS: Mutex<Status> = Mutex::new(Status::NotStarted);
-
-pub(crate) fn set_status(status: Status) {
-    if let Ok(mut now) = STATUS.lock() {
-        *now = status;
-    }
-}
-
-pub fn status() -> Status {
-    STATUS
-        .lock()
-        .map(|s| s.clone())
-        .unwrap_or(Status::Failed("the web runtime's state was lost".into()))
 }
 
 /// cef::initialize has been called in this process. After that a failed

@@ -23,6 +23,11 @@ public final class FakeBackend: Backend, @unchecked Sendable {
     /// How long a new thread takes to start (AppModel's -ThreadbearSlowStart
     /// makes it long, so the inbox's Starting row stays for a screenshot).
     public var startDelay: Duration = .seconds(1.5)
+    /// What a new thread's first turn says, and how long it takes (nil: the
+    /// usual turn). AppModel's -ThreadbearNewReply and -ThreadbearNewTurn set
+    /// them, so a filmed new thread gets a believable answer.
+    public var newThreadReply = "On it. Here's what I found."
+    public var newThreadTurn: Duration?
     /// How long an answer to a card waits for the "runner" to take it, to see
     /// the card waiting. Nothing changes until then, as on a real one.
     public var answerDelay: Duration = .zero
@@ -48,7 +53,7 @@ public final class FakeBackend: Backend, @unchecked Sendable {
     /// for the new thread sheet's runner picker. Left out of the usual samples.
     /// `queued`: with the runner offline, a3 already has two messages
     /// waiting for it, for the screenshots.
-    public init(now: Date = .now, turnDelay: Duration = .seconds(2), runnerOnline: Bool = true, listDelay: Duration = .zero, pictures: Bool = false, long: Bool = false, secret: Bool = false, diagrams: Bool = false, runners: Bool = false, queued: Bool = false, many: Bool = false, loginMoved: Bool = false) {
+    public init(now: Date = .now, turnDelay: Duration = .seconds(2), runnerOnline: Bool = true, listDelay: Duration = .zero, pictures: Bool = false, long: Bool = false, secret: Bool = false, diagrams: Bool = false, code: Bool = false, runners: Bool = false, queued: Bool = false, many: Bool = false, loginMoved: Bool = false) {
         let sample = Self.sample(now: now)
         threadsById = Dictionary(uniqueKeysWithValues: sample.threads.map { ($0.threadId, $0) })
         messagesById = sample.messages
@@ -72,6 +77,11 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         }
         if diagrams {
             let thread = Self.diagramThread(now: now)
+            threadsById[thread.thread.threadId] = thread.thread
+            messagesById[thread.thread.threadId] = thread.messages
+        }
+        if code {
+            let thread = Self.codeThread(now: now)
             threadsById[thread.thread.threadId] = thread.thread
             messagesById[thread.thread.threadId] = thread.messages
         }
@@ -201,6 +211,81 @@ public final class FakeBackend: Backend, @unchecked Sendable {
               <div style="margin-top:8px">After</div>
               <div style="height:14px;background:#e5e5e5;border-radius:4px"><div style="width:34%;height:100%;background:#22c55e;border-radius:4px"></div></div>
             </div>
+            ```
+            """, at: ago(1)),
+        ]
+        return (thread, messages)
+    }
+
+    // MARK: A thread with code blocks
+
+    /// `-ThreadbearCode`: a reply with a ```sql, a ```ts and an untagged
+    /// block, each under its header strip (CodeBlockView), then one with
+    /// ```bash, ```diff, ```python and ```yaml, coloured by language.
+    private static func codeThread(now: Date) -> (thread: PhoneThread, messages: [PhoneMessage]) {
+        let ago = { (minutes: Double) in now.addingTimeInterval(-minutes * 60) }
+        let thread = PhoneThread(threadId: "code", title: "Find the slow orders query", cwd: "~/code/api",
+                                 preview: "Deployed.", lastActivityAt: ago(1))
+        let messages = [
+            PhoneMessage(seq: 1, role: .user, text: "Why is the orders page so slow?", at: ago(5)),
+            PhoneMessage(seq: 2, role: .assistant, text: """
+            Found it: the orders query scans the whole table. This index fixes it:
+
+            ```sql
+            CREATE INDEX orders_customer_created
+              ON orders (customer_id, created_at DESC);
+            ```
+
+            And the query now asks for one page at a time:
+
+            ```ts
+            const orders = await db.query("orders")
+              .withIndex("by_customer", (q) => q.eq("customerId", id))
+              .order("desc")
+              .take(50);
+            ```
+
+            Before and after, from the test run:
+
+            ```
+            before  1,840 ms
+            after      12 ms
+            ```
+            """, at: ago(3)),
+            PhoneMessage(seq: 3, role: .user, text: "Ship it, and check the nightly report still adds up.", at: ago(2)),
+            PhoneMessage(seq: 4, role: .assistant, text: """
+            Deployed:
+
+            ```bash
+            # push the index first, then the code
+            npx convex deploy --yes 2>&1 | tail -3
+            echo "done at $(date)"
+            ```
+
+            The report's total was off by one:
+
+            ```diff
+            @@ -12,3 +12,3 @@ def nightly_total(rows):
+            -    return sum(r.amount for r in rows[1:])
+            +    return sum(r.amount for r in rows)
+            ```
+
+            ```python
+            def nightly_total(rows: list[Order]) -> float:
+                \"\"\"Every order from the last day.\"\"\"
+                return sum(r.amount for r in rows if r.paid is not None)  # cents
+            ```
+
+            And it runs at 2 am:
+
+            ```yaml
+            on:
+              schedule:
+                - cron: "0 2 * * *"
+            jobs:
+              report:
+                runs-on: ubuntu-latest
+                timeout-minutes: 10
             ```
             """, at: ago(1)),
         ]
@@ -386,6 +471,12 @@ public final class FakeBackend: Backend, @unchecked Sendable {
 
     /// The running sample thread's turn ends by itself after a while, to watch
     /// its row move to the inbox.
+    /// Every runner online, the MacBook Pro too (-ThreadbearRunners has it
+    /// asleep), so the new thread sheet picks it, for filming.
+    public func wakeRunners() {
+        mutate { s in for i in s.runnerList.indices { s.runnerList[i].lastSeenAt = .now } }
+    }
+
     public func finishRunningThread(after delay: Duration) {
         Task { [weak self] in
             try? await Task.sleep(for: delay)
@@ -401,7 +492,7 @@ public final class FakeBackend: Backend, @unchecked Sendable {
     public func me() async throws -> PhoneIdentity {
         // Always a current backend, so the demo never says the Mac needs updating.
         PhoneIdentity(name: "iphone", expiresAt: Date.now.addingTimeInterval(90 * 86_400),
-                      apiVersion: BackendCompatibility.currentAPIVersion)
+                      apiVersion: BackendCompatibility.currentAPIVersion, site: "https://example.convex.site")
     }
 
     public func runners() -> AsyncThrowingStream<[PhoneRunner], Error> {
@@ -567,8 +658,8 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         messagesById[threadId] = list
     }
 
-    private func runTurn(_ threadId: String, reply: String) {
-        let delay = turnDelay
+    private func runTurn(_ threadId: String, reply: String, after: Duration? = nil) {
+        let delay = after ?? turnDelay
         Task { [weak self] in
             try? await Task.sleep(for: delay)
             self?.mutate { s in
@@ -800,6 +891,25 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         return runnerDoes { fake in fake.apply(threadId, change) }
     }
 
+    /// As the runner shares: a slug the first time, kept when it stops, and
+    /// a fresh one for a new link.
+    public func share(threadId: String, request: ShareRequest) async throws -> String {
+        lock.withLock { updates += 1 }
+        return runnerDoes { fake in
+            fake.mutate { s in
+                guard var thread = s.threadsById[threadId] else { return }
+                let slug = request == .newLink ? nil : thread.share?.slug
+                thread.share = ThreadShare(access: request.access, slug: slug ?? Self.newSlug())
+                s.threadsById[threadId] = thread
+            }
+        }
+    }
+
+    private static func newSlug() -> String {
+        Data((0..<16).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
     private func apply(_ threadId: String, _ change: ThreadChange) {
         mutate { s in
             switch change {
@@ -853,7 +963,7 @@ public final class FakeBackend: Backend, @unchecked Sendable {
                 s.append(id, role: .user, text: text, origin: "phone")
                 s.commands[commandId] = CommandStatus(state: .done, threadId: id)
             }
-            runTurn(id, reply: "On it. Here's what I found.")
+            runTurn(id, reply: newThreadReply, after: newThreadTurn)
         }
         return String(commandId)
     }

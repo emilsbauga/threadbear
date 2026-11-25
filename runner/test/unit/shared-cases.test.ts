@@ -20,6 +20,9 @@ const PLATFORMS: Record<string, { roots: string[]; isTest: (file: string) => boo
   android: { roots: ['android-native/kit/src/test'], isTest: (f) => f.endsWith('.kt') },
   web: { roots: ['web/src'], isTest: (f) => f.endsWith('.test.ts') },
   mac: { roots: ['app/Tests'], isTest: (f) => f.endsWith('.swift') },
+  // The runner works some states out for the apps (wait-states.json). Its
+  // tests about check hosts and CI paths name case files only as paths.
+  runner: { roots: ['runner/test'], isTest: (f) => f.endsWith('.test.ts') && !/(check-cache|desktop-ci-paths|shared-cases)\.test\.ts$/.test(f) },
 };
 
 type CaseFile = { about: unknown; platforms: unknown; cases: unknown };

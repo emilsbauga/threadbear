@@ -224,7 +224,10 @@ impl PanelPage {
                 };
                 let client = PreviewClient::new(
                     super::preview::PreviewRequests::new(preview.clone()),
-                    super::preview::PreviewLife::new(shared.clone()),
+                    super::preview::PreviewLife::new({
+                        let shared = shared.clone();
+                        std::sync::Arc::new(move |why: &str| shared.fail_calls(why))
+                    }),
                     PanelLoads::new(shared.clone()),
                     PanelDisplay::new(shared.clone()),
                     super::sealed::NoMenu::new(),

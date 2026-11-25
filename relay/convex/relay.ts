@@ -301,15 +301,18 @@ export const admit = internalMutation({
   },
 });
 
+// installId and hour (admit's answer) are required, so every route that
+// admits gives the charge back: /clear once left them out, and its clears
+// that went through all stayed charged (Daybreak 169).
 export const counted = internalMutation({
-  args: { ok: v.boolean(), status: v.optional(v.number()), reason: v.optional(v.string()), installId: v.optional(v.string()), hour: v.optional(v.string()) },
+  args: { ok: v.boolean(), status: v.optional(v.number()), reason: v.optional(v.string()), installId: v.string(), hour: v.string() },
   returns: v.null(),
   handler: async (ctx, { ok, status, reason, installId, hour }) => {
     const today = day();
     // admit charged this send to the install's bad-token allowance; give
     // it back unless the token was to blame, and only in the hour it was
     // charged (a later hour started from nothing).
-    if (installId !== undefined && hour !== undefined && (ok || !tokenFault(status, reason))) {
+    if (ok || !tokenFault(status, reason)) {
       const row = await ctx.db
         .query('installs')
         .withIndex('by_installId', (q) => q.eq('installId', installId))

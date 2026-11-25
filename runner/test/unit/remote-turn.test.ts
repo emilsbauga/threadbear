@@ -57,8 +57,10 @@ for (const tryOnly of [false, true]) test(tryOnly ? 'an updater skips a busy che
   // start, so this is a TERM during the wait.
   await new Promise((r) => setTimeout(r, 500));
   run.kill('SIGTERM');
-  const code = await Promise.race([closed, new Promise<'late'>((r) => setTimeout(() => r('late'), 5000))]);
-  assert.notEqual(code, 'late', 'still going 5 s after TERM');
+  // 20 s, not 5: a run left waiting on the lock never ends, so this still
+  // catches that, and a busy Mac (load 25) took over 5 s to reap a quick one.
+  const code = await Promise.race([closed, new Promise<'late'>((r) => setTimeout(() => r('late'), 20_000))]);
+  assert.notEqual(code, 'late', 'still going 20 s after TERM');
   assert.equal(code, 143, stderr);
   assert.ok(!fs.existsSync(called), `reached the host: ${fs.existsSync(called) ? fs.readFileSync(called, 'utf8') : ''}`);
 });

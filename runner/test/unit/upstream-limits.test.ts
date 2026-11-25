@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpDir } from '../helpers/fakes.ts';
 import { FakeClock } from '../../src/clock.ts';
-import { type GitOptions, MAC_SK_PROVIDER, TOUCH_SIGN_TIMEOUT_MS, touchKey, gitAsync, SETTLE_MS, signersPath } from '../../src/upstream.ts';
+import { type GitOptions, MAC_SK_PROVIDER, TOUCH_SIGN_TIMEOUT_MS, touchKey, gitAsync, gitBytes, SETTLE_MS, signersPath } from '../../src/upstream.ts';
 import { ADD_DELAY_MS, keyStatePath, revokedPath } from '../../src/release-keys.ts';
 import { alive, commit, git, hangAlias, key, keyLine, LATER, objectsIn, pinnedKeys, pubOf, release, signedTag, startedPid, upstreamFor, world } from '../helpers/upstream-harness.ts';
 
@@ -261,15 +261,16 @@ test('a key another runner revokes during a check stops that check offering its 
   const offered: (string | undefined)[] = [];
   const up = upstreamFor(w.theirs, w.home, new FakeClock(LATER), {
     onChecked: (st: { release?: { tag: string } }) => offered.push(st.release?.tag),
-    git: async (cwd: string, args: string[], opts?: GitOptions) => {
-      // As this check reads the release's key files, the other runner
-      // revokes `next` (it holds a newer release that does).
-      if (!done && args[0] === 'show' && String(args[1]).endsWith(':scripts/release-signers')) {
+    gitBytes: async (cwd: string, args: string[]) => {
+      // As this check reads the release's key files (object by object, from
+      // its commit), the other runner revokes `next` (it holds a newer
+      // release that does).
+      if (!done && args[0] === 'cat-file' && args[1] === 'commit') {
         done = true;
         fs.writeFileSync(signersPath(w.home), `${keyLine(w.mikeKey)}\n`);
         fs.writeFileSync(path.join(w.home, 'upstream-revoked'), `${pubOf(next)}\n`);
       }
-      return gitAsync(cwd, args, opts);
+      return gitBytes(cwd, args);
     },
   });
   const s = await up.check();

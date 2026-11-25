@@ -98,6 +98,30 @@ export function releaseExists(home: string, id: string): boolean {
   return fs.existsSync(path.join(home, 'runner', 'releases', id, 'src', 'main.ts'));
 }
 
+// The data dir a release's code sits in (<home>/runner/releases/<id>), or
+// undefined for code run from a checkout.
+export function releaseHome(root = CODE_ROOT): string | undefined {
+  const releases = path.dirname(root);
+  if (path.basename(releases) !== 'releases' || path.basename(path.dirname(releases)) !== 'runner' || !readRelease(root)) return undefined;
+  return path.dirname(path.dirname(releases));
+}
+
+// When this code is a release's but <home>/runner/current names another
+// one: a CLI keeps the PATH it started with, so before 24 Nov a thread
+// started yesterday ran yesterday's tb, and its `tb land` refused with a
+// hold main had already taken out. threadBinDir (restart.ts) fixes that
+// on macOS and Linux; this is for tb to say so where it still happens (on
+// Windows, or a release's tb run by its full path). `tb` is the one to run.
+export function staleRelease(root = CODE_ROOT, platform: NodeJS.Platform = process.platform): { mine: string; current: string; tb: string } | undefined {
+  const home = releaseHome(root);
+  if (!home) return undefined;
+  const mine = path.basename(root);
+  const current = currentLink(home, platform);
+  if (!current || current === mine || !releaseExists(home, current)) return undefined;
+  const tb = platform === 'win32' ? path.join(home, 'runner', 'releases', current, 'bin', 'tb.cmd') : path.join(home, 'runner', 'current', 'bin', 'tb');
+  return { mine, current, tb };
+}
+
 // Points current at a release the way launch.mjs and deploy-runner.sh do
 // (a new link renamed over the old one, so it always names a whole
 // release), and records it in state.json. A cancelled deploy restart uses

@@ -353,6 +353,9 @@ export function parkRecord(rec: ThreadRecord, e: PlaceEvent, now: number): Place
       if (k in out) delete out[k];
     } else if (out[k] !== v) out[k] = v;
   }
+  // The quiet inbox's mark (runner/inbox-guess.ts) means "archived by
+  // Threadbear for this reason": anything else, and it's gone.
+  if (rec.quietlyArchived && (res.place.kind !== 'archived' || res.place.by !== 'threadbear')) delete rec.quietlyArchived;
   return res;
 }
 

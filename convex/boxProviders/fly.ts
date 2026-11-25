@@ -27,7 +27,7 @@
 // - The image's own entrypoint runs (the runner in box mode); nothing is
 //   injected (no files, no init.cmd), and `restart: no`, so a crashed
 //   runner shows as a stopped machine, not a new process passing for the old.
-import { call, IDEMPOTENCY_TAG, notFound, ProviderError } from './types';
+import { call, IDEMPOTENCY_TAG, isPinnedImage, notFound, ProviderError } from './types';
 import type { BoxProvider, CreateSpec, Fetch, ListedBox, ProviderBoxState } from './types';
 
 export const FLY_API = 'https://api.machines.dev/v1';
@@ -106,6 +106,8 @@ export function flyProvider(opts: FlyOptions): BoxProvider {
     machineIdEnv: 'FLY_MACHINE_ID',
 
     async create(spec: CreateSpec) {
+      // Only an image pinned by digest gets a box and its boot token (boxImage.ts).
+      if (!isPinnedImage(spec.image)) throw new ProviderError('POST', `/apps/${app}/machines`, 400, `not made: the image ${spec.image.slice(0, 120)} isn't pinned by digest (name@sha256:...)`);
       const idem = { [IDEMPOTENCY_TAG]: spec.idempotencyKey };
       const existing = await machines(idem, true);
       if (existing[0]) return { providerBoxId: existing[0].id };

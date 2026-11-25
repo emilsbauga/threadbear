@@ -25,7 +25,10 @@ pub(crate) fn project_icon(project: &ProjectInfo, cx: &App) -> AnyElement {
         .and_then(Value::as_str)
         .map(PathBuf::from);
     if let Some(path) = picture {
-        return img(path).size(px(14.)).rounded(px(3.)).into_any_element();
+        return img(crate::fit_picture::icon_source(&path.to_string_lossy()))
+            .size(px(14.))
+            .rounded(px(3.))
+            .into_any_element();
     }
     if let Some(name) = project
         .icon

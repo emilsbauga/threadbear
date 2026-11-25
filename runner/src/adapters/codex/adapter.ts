@@ -27,6 +27,7 @@ import {
   type OversizedLine,
 } from './appserver.ts';
 import { runsAsCodeByName } from '../../code-writes.ts';
+import { hookTrust, sameHome, shareCodexHome, type MainHook } from '../../codex-home-share.ts';
 import { CodexApprovals } from './approvals.ts';
 import { CodexTools, dynamicToolSpecs, toolGuidance, type ToolDefinition } from './tools.ts';
 import { CodexNormalizer, limitsFromAccount, limitsFromRateLimits } from './normalize.ts';
@@ -85,6 +86,13 @@ export type CodexAdapterDeps = {
   log: Logger;
   // The threadbear tools for a thread, given to new threads as dynamic tools.
   toolsFor?: (threadId: string) => ToolDefinition[];
+  // MCP servers a thread gets besides config.toml's, read at each start or
+  // resume (Agent Archive's, with its experiment on).
+  mcpServers?: () => Record<string, { command: string; args: string[] }>;
+  // ~/.codex: a session on any other login first has it share that
+  // home's instructions, hooks, skills and config.toml, and gets the trust
+  // its hooks have there (codex-home-share.ts, readyHome). Unset in tests.
+  codexMainDir?: string;
   // Section B's CodexNormalizer unless a test passes its own.
   normalizer?: NormalizerFactory;
   // A runner.notice warning (configWarning: a broken config.toml).
@@ -97,6 +105,9 @@ export type CodexAdapterDeps = {
   maxLineBytes?: number;
   now?: () => number;
 };
+
+// What Codex said about ~/.codex; a part it couldn't say is left out.
+export type MainHomeFacts = { credentialsStore?: string; hooks?: MainHook[]; partial?: true };
 
 export class CodexAdapter implements AgentAdapter {
   readonly provider = 'codex';
@@ -127,6 +138,7 @@ export class CodexAdapter implements AgentAdapter {
         this.noticed.add(text);
         this.deps.onNotice?.(text);
       },
+      readyHome: (account) => this.readyHome(account),
     });
     s.start();
     return s;
@@ -158,9 +170,90 @@ export class CodexAdapter implements AgentAdapter {
     };
   }
 
+  // What ~/.codex is, from Codex itself: where it keeps its sign-in
+  // (config/read) and its hooks with their trust (hooks/list), each kept
+  // apart so one failing doesn't lose the other. Asked again when its
+  // config.toml, hooks.json or the Codex binary changes, and 5 minutes
+  // after an answer that wasn't whole.
+  private mainProbe?: { key: string; at: number; whole: boolean; facts: Promise<MainHomeFacts> };
+
+  mainHome(mainDir: string): Promise<MainHomeFacts> {
+    const stat = (p: string) => {
+      try {
+        const st = fs.statSync(p);
+        return [fs.realpathSync(p), st.size, st.mtimeMs, st.ino];
+      } catch {
+        return null;
+      }
+    };
+    const binary = this.deps.codexBinary();
+    const key = JSON.stringify([mainDir, stat(binary) ?? binary, stat(path.join(mainDir, 'config.toml')), stat(path.join(mainDir, 'hooks.json'))]);
+    const cached = this.mainProbe;
+    if (cached && cached.key === key && (cached.whole || cached.at > this.nowMs() - 5 * 60_000)) return cached.facts;
+    const entry: { key: string; at: number; whole: boolean; facts: Promise<MainHomeFacts> } = { key, at: this.nowMs(), whole: false, facts: Promise.resolve({}) };
+    entry.facts = withShortLivedProcess(
+      this.shortLived({ id: 'codex-main', provider: 'codex', title: 'codex-main', configDir: mainDir }, 'home:codex-main'),
+      async (p) => {
+        const out: MainHomeFacts = {};
+        try {
+          const conf = await p.request<{ config?: Record<string, unknown> }>('config/read', {});
+          const store = conf?.config?.cli_auth_credentials_store;
+          out.credentialsStore = typeof store === 'string' && store ? store : 'file';
+        } catch (e) {
+          this.deps.log.warn('could not ask Codex where ~/.codex keeps its sign-in', { error: errText(e) });
+        }
+        try {
+          const list = await p.request<{ data?: { hooks?: MainHook[]; errors?: unknown[] }[] }>('hooks/list', { cwds: [os.tmpdir()] });
+          const data = list?.data ?? [];
+          out.hooks = data.flatMap((e) => e.hooks ?? []).filter((h) => typeof h?.key === 'string' && typeof h.currentHash === 'string');
+          // Hooks it couldn't load: what it did list counts, but ask again.
+          if (data.some((e) => Array.isArray(e.errors) && e.errors.length)) out.partial = true;
+        } catch (e) {
+          this.deps.log.warn("could not ask Codex about ~/.codex's hooks", { error: errText(e) });
+        }
+        return out;
+      },
+      (p, live) => this.track(p, live),
+    )
+      .catch((e: unknown): MainHomeFacts => {
+        this.deps.log.warn('could not ask Codex about ~/.codex', { error: errText(e) });
+        return {};
+      })
+      .then((facts) => {
+        entry.whole = facts.credentialsStore !== undefined && facts.hooks !== undefined && !facts.partial;
+        return facts;
+      });
+    this.mainProbe = entry;
+    return entry.facts;
+  }
+
+  // Before a process on an extra login starts: links what it shares with
+  // ~/.codex and returns the config overrides that trust its hooks. Never
+  // stops a session; what went wrong is logged.
+  private async readyHome(account: Account): Promise<Record<string, unknown>> {
+    const main = this.deps.codexMainDir;
+    try {
+      if (!main || !fs.existsSync(main) || sameHome(main, account.configDir)) return {};
+      const facts = await this.mainHome(main);
+      const report = shareCodexHome(main, account.configDir, facts.credentialsStore);
+      if (report.changes.length) this.deps.log.info('codex login shared with ~/.codex', { account: account.id, changes: report.changes });
+      if (report.skipped.length) this.deps.log.debug('codex login: left as it was', { account: account.id, skipped: report.skipped });
+      return hookTrust(facts.hooks ?? [], main, account.configDir);
+    } catch (e) {
+      this.deps.log.warn('codex login setup failed', { account: account.id, error: errText(e) });
+      return {};
+    }
+  }
+
+  private nowMs(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
   // The folder's skills, as the picker's commands (Codex's own commands
   // are slash-commands.ts's list).
   async commands(account: Account, cwd: string): Promise<SlashCommand[]> {
+    // A login not yet shared would list only Codex's own skills.
+    await this.readyHome(account);
     return withShortLivedProcess(
       { ...this.shortLived(account, `commands:${account.id}`), cwd },
       async (p) => codexSkillCommands(await p.request<SkillsListResponse>('skills/list', { cwds: [cwd] })),
@@ -171,6 +264,8 @@ export class CodexAdapter implements AgentAdapter {
   // model/list without hidden models, in Codex's order. With no thread
   // loaded the process starts no MCP servers.
   async models(account: Account): Promise<ModelChoice[]> {
+    // Every process on a login runs with its home as shared (readyHome).
+    await this.readyHome(account);
     return withShortLivedProcess(
       this.shortLived(account, `models:${account.id}`),
       async (p) => {
@@ -209,6 +304,7 @@ export class CodexAdapter implements AgentAdapter {
   // One idempotency key per click, so Codex's retry of the same call can't
   // spend a second one.
   async useReset(account: Account): Promise<UseResetResult> {
+    await this.readyHome(account);
     return withShortLivedProcess(
       this.shortLived(account, `reset:${account.id}`),
       async (p) => {
@@ -226,6 +322,7 @@ export class CodexAdapter implements AgentAdapter {
   // Reads the login's limits in a short-lived app-server, without a turn
   // (limit-recheck.ts): free, and how a reset done in Codex itself is seen.
   async readLimits(account: Account): Promise<Extract<AdapterOutput, { kind: 'limits' }> | null> {
+    await this.readyHome(account);
     return withShortLivedProcess(
       this.shortLived(account, `limits:${account.id}`),
       async (p) => {
@@ -249,6 +346,7 @@ export class CodexAdapter implements AgentAdapter {
   // then), and any subagent threads this runner saw it start. Resume
   // unarchives. Best effort: the runner logs a failure.
   async archive(account: Account, nativeSessionId: string): Promise<void> {
+    await this.readyHome(account);
     const kids = [...(this.children.get(nativeSessionId) ?? [])];
     await withShortLivedProcess(
       this.shortLived(account, `archive:${account.id}`),
@@ -268,6 +366,7 @@ export class CodexAdapter implements AgentAdapter {
   // carries its message id as clientUserMessageId, which is how the turn is
   // found.
   async rewind(req: RewindRequest): Promise<RewindResult> {
+    await this.readyHome(req.account);
     return withShortLivedProcess(
       { ...this.shortLived(req.account, `rewind:${req.threadId}`), cwd: req.cwd },
       async (p) => {
@@ -368,6 +467,11 @@ export function threadConfig(threadId: string, key?: string): Record<string, unk
   };
 }
 
+// Servers as config overrides, beside config.toml's own [mcp_servers].
+export function mcpServerConfig(servers: Record<string, { command: string; args: string[] }> = {}): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(servers).flatMap(([name, s]) => [[`mcp_servers.${name}.command`, s.command], [`mcp_servers.${name}.args`, s.args]]));
+}
+
 function enabledSkills(r: SkillsListResponse | undefined) {
   return (r?.data ?? []).flatMap((e) => e.skills ?? []).filter((s) => s.enabled !== false && typeof s.name === 'string' && s.name && typeof s.path === 'string');
 }
@@ -423,6 +527,8 @@ type SessionHooks = {
   track(p: AppServerProcess, live: boolean): void;
   child(parentThreadId: string, childThreadId: string): void;
   notice(text: string): void;
+  // The adapter's readyHome: an extra login's links and hook trust.
+  readyHome(account: Account): Promise<Record<string, unknown>>;
 };
 
 // A Codex turn the session is in. ids are the runner messages it answers:
@@ -568,6 +674,7 @@ export class CodexSession implements AgentSession {
 
   private async boot(): Promise<void> {
     const { opts } = this;
+    const home = await this.hooks.readyHome(opts.account);
     await this.proc.start();
     if (this.state !== 'starting') {
       // Ended while the process started: finish() may have found nothing to
@@ -581,7 +688,7 @@ export class CodexSession implements AgentSession {
       ...threadPolicy(this.mode),
       // The thread's projects, as developer instructions: config.toml's
       // own key, set per thread like the rest of threadConfig.
-      config: { ...threadConfig(opts.threadId, opts.env?.THREADBEAR_THREAD_KEY), ...(opts.instructions ? { developer_instructions: opts.instructions } : {}) },
+      config: { ...home, ...threadConfig(opts.threadId, opts.env?.THREADBEAR_THREAD_KEY), ...mcpServerConfig(this.deps.mcpServers?.()), ...(opts.instructions ? { developer_instructions: opts.instructions } : {}) },
     };
     let res: ThreadStartResponse;
     if (opts.resume) {

@@ -6,8 +6,38 @@ Then('an approval card asks to run {string}', async function (this: ThreadbearWo
   await this.until(`an approval for "${command}"`, (d) => d.transcript.rows.some((r) => r.kind === 'approval' && r.text.includes(command)));
 });
 
+// A button on a transcript card may be scrolled out of view, as the review's
+// Open review was at the narrow width (bug hunt, 21 Nov), under its card's
+// wrapped pictures: when it isn't found, each row is scrolled through, newest
+// first, until it is.
 When('I press {string}', async function (this: ThreadbearWorld, title: string) {
-  await this.app.do({ cmd: 'click', title });
+  const missing = (e: unknown) => e instanceof Error && e.message.includes('no button called');
+  const deadline = Date.now() + 10_000;
+  let missingText = '';
+  for (;;) {
+    try {
+      await this.app.do({ cmd: 'click', title });
+      return;
+    } catch (e) {
+      if (!missing(e)) throw e;
+      missingText = (e as Error).message;
+    }
+    const d = await this.app.dump();
+    if (Date.now() > deadline) throw new Error(missingText);
+    for (const r of [...d.transcript.rows].reverse()) {
+      // Down a tall row in steps: the button may be below the top's view.
+      for (let offset = 0; offset === 0 || offset < (r.height ?? 0); offset += 150) {
+        await this.app.do({ cmd: 'scroll', row: r.id, offset: -offset }); // negative: into the row (rows/list.rs)
+        try {
+          await this.app.do({ cmd: 'click', title });
+          return;
+        } catch (e) {
+          if (!missing(e)) throw e;
+        }
+      }
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
 });
 
 Then('the approval card has gone', async function (this: ThreadbearWorld) {

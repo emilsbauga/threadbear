@@ -96,6 +96,9 @@ public protocol Backend: Sendable {
     /// the sealed form.
     func secret(threadId: String, approvalId: String, answer: SecretAnswer) async throws -> String
     func update(threadId: String, change: ThreadChange) async throws -> String
+    /// Shares the thread by link, stops sharing it, or gives it a new link
+    /// (backend API 8, phone:share), through a `share` command its runner applies.
+    func share(threadId: String, request: ShareRequest) async throws -> String
     /// `settings` (backend API 20 for an effort): the model and effort it starts on.
     func create(text: String, runnerId: String?, cwd: String?, images: [String], settings: NewThreadSettings) async throws -> String
     /// Every runner's logins with the models they offer (backend API 20), for the new thread pickers.
@@ -417,6 +420,12 @@ public final class ConvexBackend: Backend, @unchecked Sendable {
 
     public func update(threadId: String, change: ThreadChange) async throws -> String {
         try await command("phone:update", ["threadId": .string(threadId), "change": change.json])
+    }
+
+    public func share(threadId: String, request: ShareRequest) async throws -> String {
+        var extra: [String: JSONValue] = ["threadId": .string(threadId), "access": .string(request.access)]
+        if request == .newLink { extra["newLink"] = .bool(true) }
+        return try await command("phone:share", extra)
     }
 
     public func accounts() -> AsyncThrowingStream<[PhoneAccount], Error> {

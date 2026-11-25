@@ -8,7 +8,7 @@ import { ErrorCode, RpcError } from '../protocol.ts';
 import { EXPLAIN_SYSTEM, RECENT_CHARS, RECENT_MESSAGES, explainPrompt } from '../explain.ts';
 import type { ExplainTurn } from '../explain.ts';
 import type { ThreadState } from '../runner.ts';
-import { TITLE_PROMPT, cleanTitle, RECAP_BRIEF_CHARS, RECAP_PURPOSE_CHARS } from '../runner.ts';
+import { TITLE_PROMPT, cleanTitle, RECAP_BRIEF_CHARS, RECAP_PURPOSE_CHARS } from './messages.ts';
 import { cutSafely } from '../safe-cut.ts';
 import { cleanKeywords } from '../keywords.ts';
 

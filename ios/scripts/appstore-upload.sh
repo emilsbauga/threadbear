@@ -12,7 +12,7 @@
 # Each run gets a new build number, the UTC time as YYMMDDHHMM (always increasing), unless
 # BUILD_NUMBER is set, like Walkies' and Quick Ask's (this script is theirs, copied). The version
 # (MARKETING_VERSION, 1.0.0) comes from the project, or MARKETING_VERSION in the environment
-# (the nightly TestFlight build, nightly-testflight.sh, when the project's train is closed). Everything lands in OUT (default
+# (when the project's train is closed). Everything lands in OUT (default
 # ~/Library/Caches/Threadbear/ios-builds/appstore/<build>).
 #
 # OUT and the derived data (DD) must be this account's alone, mode 700 with no ACL letting anyone

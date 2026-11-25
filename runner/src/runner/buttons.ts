@@ -19,6 +19,10 @@ export const MAX_BUTTON_TEXT = 20_000;
 // Kept per thread, newest. A daily brief makes about six a day.
 export const MAX_BUTTONS = 200;
 
+// Each thread's newest panel button press, counted: only its panel is shown,
+// so a slow earlier one can't open over it.
+const lastPress = new WeakMap<ThreadState, number>();
+
 // Ranked like threadbear-mcp.ts's ACCESS: plan only changes what Mike approves.
 const RANK: Record<PermissionMode, number> = { ask: 0, plan: 0, auto: 1, full: 2 };
 const MODE_NAMES: Record<PermissionMode, string> = { full: 'Full access', auto: 'Auto', ask: 'Ask before edits', plan: 'Plan first' };
@@ -187,21 +191,50 @@ export const buttonsPart = {
     return { button: structuredClone(next) };
   },
 
-  // Once the thread's patches have been read with the panel among them.
-  // A panel that isn't there then (its patch broke or went, or hid it) is
-  // saved as a failed press, for Mike to see on the pill.
+  // Shows the panel as soon as it's found: from its own folder, once its
+  // badge and summary have run there (what starts a patch's server, and
+  // what a `when` hiding it is read with), never after the rest of the
+  // thread's patches: waiting for the thread's whole read left the Daily
+  // brief's Go through comments doing nothing for 13 minutes on a busy
+  // runner (23 Nov 2026). The thread reads its patches again behind it,
+  // which keeps the panel from then on. A panel that isn't there (its patch
+  // broke or went, or hid it) is saved as a failed press, for Mike to see
+  // on the pill.
   async showPanelButton(this: Runner, st: ThreadState, button: ReplyButton): Promise<void> {
     const p = button.panel!;
-    const id = p.cwd === st.rec.cwd ? p.panelId : borrowedPanelId(p.cwd, p.panelId);
-    try {
-      this.patchSet(st);
-      this.rereadPatches(st);
-      await this.patchesIdle();
-    } catch (e) {
-      this.log.warn('could not read patches for a panel button', { threadId: st.rec.id, error: String(e) });
+    const cwd = st.rec.cwd;
+    const own = p.cwd === cwd;
+    const id = own ? p.panelId : borrowedPanelId(p.cwd, p.panelId);
+    // Alongside, before patchSet could start a read of its own: one read,
+    // which brings the panel for good. The badge's command is shared
+    // between it and the look below (runLiveCommand).
+    this.rereadPatches(st);
+    let panel = this.patchSet(st).panels.find((x) => x.id === id);
+    const press = (lastPress.get(st) ?? 0) + 1;
+    lastPress.set(st, press);
+    if (!own) {
+      // Every press: its badge again (a server that has stopped starts),
+      // and its `when` and trust looked at again.
+      panel = await this.borrowedPanel(st, p.cwd, p.panelId);
+      if (panel && !st.rt.deleted && st.rec.cwd === cwd) this.addBorrowedPanel(st, panel);
+    } else {
+      // The thread's own folder: its badge and `when` the same way, and the
+      // panel as the thread has it, or, missing, as its next read says.
+      const live = await this.folderPanelLive(st, p.cwd, p.panelId);
+      panel = live && this.patchSet(st).panels.find((x) => x.id === id);
+      if (live && !panel) {
+        try {
+          await this.threadPatchesIdle(st);
+        } catch (e) {
+          this.log.warn('could not read patches for a panel button', { threadId: st.rec.id, error: String(e) });
+        }
+        panel = this.patchSet(st).panels.find((x) => x.id === id);
+      }
     }
-    if (st.rt.deleted) return;
-    const panel = this.patchSet(st).panels.find((x) => x.id === id);
+    // A later press (of this button or another) shows its own panel.
+    if (lastPress.get(st) !== press) return;
+    // Moved to another folder meanwhile: what was looked up was for the old one.
+    if (st.rt.deleted || st.rec.cwd !== cwd) return;
     if (!panel) {
       const now = st.rec.buttons?.find((b) => b.id === button.id) ?? button;
       this.persistButton(st, { ...now, failed: { at: this.isoNow(), error: `${p.title} isn't a panel in ${path.basename(p.cwd)} just now.` } });

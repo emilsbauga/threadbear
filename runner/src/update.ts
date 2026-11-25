@@ -26,7 +26,7 @@ import type { UpdateFailure } from './fix-update.ts';
 import { machineTrouble } from './machine-trouble.ts';
 import { cleanGitError, followOrigin as fetchAndFollowOrigin, oldestMissingAt, type OriginResult } from './follow-origin.ts';
 import { LAND_TIMES_FILE } from './land-queue.ts';
-import { FETCH_TIMEOUT_MS, gitAsync as gitWithin, repoKey } from './upstream.ts';
+import { FETCH_TIMEOUT_MS, fetchableUrl, gitAsync as gitWithin, repoKey, UPLOAD_PACK } from './upstream.ts';
 
 export const CHECK_INTERVAL_MS = 5 * 60_000;
 // After main's ref changes in the checkout (a commit or merge landing), the
@@ -460,7 +460,9 @@ export function passedLandCheck(file: string, commit: string): { at?: string; ho
 // nobody changed a file after the landing found the worktree clean and put
 // it back before the check ended, with the copy to the host made in
 // between: check-remote.sh copies the files, not the commit.
-export async function landChecked(checkout: string, prefix: string, commit: string): Promise<string | undefined> {
+// files: Mike's repo may be reached over git's file protocol (tests only:
+// their stand-in for it is a folder).
+export async function landChecked(checkout: string, prefix: string, commit: string, opts: { files?: boolean } = {}): Promise<string | undefined> {
   if (prefix !== 'runner/' || !/^[0-9a-f]{40,64}$/.test(commit)) return undefined;
   let common: string;
   try {
@@ -470,7 +472,7 @@ export async function landChecked(checkout: string, prefix: string, commit: stri
   }
   const line = passedLandCheck(path.join(common, LAND_TIMES_FILE), commit);
   if (line) return `tb land's check passed them at this commit on ${line.host}${line.at ? ` at ${line.at}` : ''}`;
-  return onMikesMain(checkout, commit);
+  return onMikesMain(checkout, commit, opts);
 }
 
 const MIKES_REPO = 'github.com/mikecann/threadbear';
@@ -486,7 +488,7 @@ const MIKES_REPO = 'github.com/mikecann/threadbear';
 // behind when the remote was pointed at his. A fetch that fails checks.
 // It's the person's own checkout, so the fetch leaves FETCH_HEAD alone: a
 // `git merge FETCH_HEAD` of theirs would take Mike's main (Codex's review).
-export async function onMikesMain(checkout: string, commit: string): Promise<string | undefined> {
+export async function onMikesMain(checkout: string, commit: string, opts: { files?: boolean } = {}): Promise<string | undefined> {
   let remotes: string[];
   try {
     remotes = (await gitWithin(checkout, ['remote'])).split('\n').filter(Boolean);
@@ -502,8 +504,13 @@ export async function onMikesMain(checkout: string, commit: string): Promise<str
     }
     if (repoKey(url) !== MIKES_REPO) continue;
     const main = `refs/remotes/${remote}/main`;
+    // By its URL, as the release check fetches (upstream.ts, release git):
+    // nothing this checkout's config names runs, and one that redirects a
+    // remote isn't fetched with.
+    const from = fetchableUrl(url);
+    if (!from) continue;
     try {
-      await gitWithin(checkout, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', remote, `+refs/heads/main:${main}`], { timeoutMs: FETCH_TIMEOUT_MS });
+      await gitWithin(checkout, ['fetch', '--quiet', '--no-tags', '--no-prune', '--no-prune-tags', '--no-write-fetch-head', '--no-recurse-submodules', UPLOAD_PACK, from, `+refs/heads/main:${main}`], { timeoutMs: FETCH_TIMEOUT_MS, network: 'remote', ...(opts.files ? { files: true } : {}) });
       await gitWithin(checkout, ['merge-base', '--is-ancestor', commit, main]);
       return `${remote}/main has this commit, and a landing's check passed them there`;
     } catch {

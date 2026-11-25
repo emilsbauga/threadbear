@@ -1,0 +1,45 @@
+# The box image's Debian packages (runner/box/lock-debs.sh writes this; box/debs.ts installs it).
+# snapshot: 20261124T000000Z
+# packages: ca-certificates git procps
+# base: node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0
+# name version arch size sha256 archive pool-path
+ca-certificates 20250419+deb13u1 all 160720 c10585ac22c7f617a73d394eea29ba71d0356f350ae973b19043d1b017f80f54 debian pool/main/c/ca-certificates/ca-certificates_20250419%2bdeb13u1_all.deb
+git 1:2.47.3-0+deb13u1 amd64 8861572 3e35662fd5c46add561703e54031a1d8ad9df45811927689f0a51122b13be722 debian pool/main/g/git/git_2.47.3-0%2bdeb13u1_amd64.deb
+git-man 1:2.47.3-0+deb13u1 all 2204692 b58306b60e1dff920e1e18bc7e1e499f2ef75184190ab3d98657b165969bf7c9 debian pool/main/g/git/git-man_2.47.3-0%2bdeb13u1_all.deb
+libbrotli1 1.1.0-2+deb13u1 amd64 303640 db46824c60fee46aff3cc0be3e5f736bc606cae669b1fb17516a41e8073251a9 debian pool/main/b/brotli/libbrotli1_1.1.0-2%2bdeb13u1_amd64.deb
+libcom-err2 1.47.2-3+b12 amd64 25036 bd43e020b8fed399db3eebf098111f10fba4c436fff99ccad72cc7e27c9764ec debian pool/main/e/e2fsprogs/libcom-err2_1.47.2-3%2bb12_amd64.deb
+libcurl3t64-gnutls 8.14.1-2+deb13u7 amd64 384636 9475c591b338b81859ee6d06bf2a9fbb01b52f184c235afa7f6e7f1652136e55 debian pool/main/c/curl/libcurl3t64-gnutls_8.14.1-2%2bdeb13u7_amd64.deb
+liberror-perl 0.17030-1 all 26872 06110a972bdc52f6c6d6615dddbe97f836c61d0e36c685ef4107c2eaa81f871f debian pool/main/libe/liberror-perl/liberror-perl_0.17030-1_all.deb
+libexpat1 2.9.0-1~deb13u1 amd64 125744 feff874772cae904ae4d24e917b35664952bec4b4ae9100a4edda5a7fa746832 debian pool/main/e/expat/libexpat1_2.9.0-1%7edeb13u1_amd64.deb
+libffi8 3.4.8-2 amd64 24144 0ebdc340de33333639c3c63874cd4b15ac2e83dfa1ef3053b7eefaf4919f4f68 debian pool/main/libf/libffi/libffi8_3.4.8-2_amd64.deb
+libgdbm6t64 1.24-2 amd64 75176 e7b42c68c391e278733adb3c1efdacd24d660862bd7bac0efbc10a91e5696dfc debian pool/main/g/gdbm/libgdbm6t64_1.24-2_amd64.deb
+libgdbm-compat4t64 1.24-2 amd64 50280 2cbd43cf2dfbf57ff48188b5d79d29cf7ea8f0dedaa61ab0bcc02eceff50ea01 debian pool/main/g/gdbm/libgdbm-compat4t64_1.24-2_amd64.deb
+libgnutls30t64 3.8.9-3+deb13u4 amd64 1469024 18a8bdfd91c7e3bcb01719d55a2b56849c7160b34f1f52b1c4fdfdd41bf1352b debian pool/main/g/gnutls28/libgnutls30t64_3.8.9-3%2bdeb13u4_amd64.deb
+libgssapi-krb5-2 1.21.3-5+deb13u2 amd64 139256 92e4d11b61d702ae5bcb4293c9af69625ea1cd62aac0d87db9b0344217d749be debian-security pool/updates/main/k/krb5/libgssapi-krb5-2_1.21.3-5%2bdeb13u2_amd64.deb
+libidn2-0 2.3.8-2 amd64 109096 90b039bcdc4578f8e1c4935adf8dbb525e36a164deefdbbb8c45bac347d48278 debian pool/main/libi/libidn2/libidn2-0_2.3.8-2_amd64.deb
+libk5crypto3 1.21.3-5+deb13u2 amd64 82028 782e113c8186a413b422ff2bf989874f9a5496002fd6f0ca05bd136eaca4b8b3 debian-security pool/updates/main/k/krb5/libk5crypto3_1.21.3-5%2bdeb13u2_amd64.deb
+libkeyutils1 1.6.3-6 amd64 9456 0b11ad17be0300b63ad4eeb4c6450fed24d34b7b740f23e5363dcb29ee6d5eba debian pool/main/k/keyutils/libkeyutils1_1.6.3-6_amd64.deb
+libkrb5-3 1.21.3-5+deb13u2 amd64 328056 cf58784dc2160fbab7968edbfa8a789c7149b5c81ae2e8300286f98763c4d92d debian-security pool/updates/main/k/krb5/libkrb5-3_1.21.3-5%2bdeb13u2_amd64.deb
+libkrb5support0 1.21.3-5+deb13u2 amd64 33960 b4e2515f3d5ebda994498cee895d7ba3942ac9182570087acbd1638df2b8acf4 debian-security pool/updates/main/k/krb5/libkrb5support0_1.21.3-5%2bdeb13u2_amd64.deb
+libldap2 2.6.10+dfsg-1 amd64 193576 60069e4a550ca890113fa89d3001417781b18e146ec5d637d31e368dec9909bd debian pool/main/o/openldap/libldap2_2.6.10%2bdfsg-1_amd64.deb
+libncursesw6 6.5+20250216-2 amd64 135484 47baa2e11579583654583a066b69bd5a5d2f22423081f707ed6c0c3ba6d538b7 debian pool/main/n/ncurses/libncursesw6_6.5%2b20250216-2_amd64.deb
+libnghttp2-14 1.64.0-1.1+deb13u2 amd64 75412 a5c10b427f9dc625754a9f323b07f2a76932a10161888e6e040c8f9448c13f05 debian pool/main/n/nghttp2/libnghttp2-14_1.64.0-1.1%2bdeb13u2_amd64.deb
+libnghttp3-9 1.8.0-1 amd64 67656 388e4c33b72829cbf0d098afdc8539fa5ba7458eddb077f5538fdb4d5538716b debian pool/main/n/nghttp3/libnghttp3-9_1.8.0-1_amd64.deb
+libngtcp2-16 1.11.0-1+deb13u1 amd64 131904 627eec81ebbd48c4e6091f5cd9dc5070b792b7075000eed60ab08c7daa961caf debian pool/main/n/ngtcp2/libngtcp2-16_1.11.0-1%2bdeb13u1_amd64.deb
+libngtcp2-crypto-gnutls8 1.11.0-1+deb13u1 amd64 29524 2a7f109c0c4db6a800e4661c5e5e34e1f1f83c8162482276183d1ada9da7c96c debian pool/main/n/ngtcp2/libngtcp2-crypto-gnutls8_1.11.0-1%2bdeb13u1_amd64.deb
+libp11-kit0 0.25.5-3 amd64 425240 784bf2063e166c8bc851a32623b74ebd85c499043a9d57c5bbd64fa63447f45a debian pool/main/p/p11-kit/libp11-kit0_0.25.5-3_amd64.deb
+libperl5.40 5.40.1-6+deb13u1 amd64 4325996 e44777ff47ad248d1debd57e1f96ab5e89061a341008ae39880ba3b5fc15f273 debian pool/main/p/perl/libperl5.40_5.40.1-6%2bdeb13u1_amd64.deb
+libproc2-0 2:4.0.4-9 amd64 65596 c9d61caab1b2ddfc3f17edb95be31b9809fcb2daf27d853dff615bc4ebd08b4b debian pool/main/p/procps/libproc2-0_4.0.4-9_amd64.deb
+libpsl5t64 0.21.2-1.1+b1 amd64 57188 59d42bb1f9ebc0d1776fe616efb08a7a8568b05982e00f70b03c63863db768ab debian pool/main/libp/libpsl/libpsl5t64_0.21.2-1.1%2bb1_amd64.deb
+librtmp1 2.4+20151223.gitfa8646d.1-2+b5 amd64 58840 93baa2004cbe6c8721b9e81beed078612540aef120970b4751305c51c6697368 debian pool/main/r/rtmpdump/librtmp1_2.4%2b20151223.gitfa8646d.1-2%2bb5_amd64.deb
+libsasl2-2 2.1.28+dfsg1-9 amd64 57512 66e49d7ae026811b49a0050f18b0325960a2625ffd1ff60d91b7844a815fa9d2 debian pool/main/c/cyrus-sasl2/libsasl2-2_2.1.28%2bdfsg1-9_amd64.deb
+libsasl2-modules-db 2.1.28+dfsg1-9 amd64 19768 a5c38659fbd62c33c6d9bfa2be43e75a572d1818531aad32dd74d0a58cc4bd19 debian pool/main/c/cyrus-sasl2/libsasl2-modules-db_2.1.28%2bdfsg1-9_amd64.deb
+libssh2-1t64 1.11.1-1+deb13u2 amd64 245240 dbb1024c192d4d292b7cfa902b96076cfe81b56a5eed4fb28da36e8bf543e49a debian pool/main/libs/libssh2/libssh2-1t64_1.11.1-1%2bdeb13u2_amd64.deb
+libssl3t64 3.5.9-1~deb13u1 amd64 2464736 ffefb9af363e0e4592251b2533eb06453c8e470f7772e40263c4b2129251a6d5 debian pool/main/o/openssl/libssl3t64_3.5.9-1%7edeb13u1_amd64.deb
+libtasn1-6 4.20.0-2+deb13u1 amd64 50112 23fec6e06583ce2bad9b2c04c9b485e90440e259b1abf8677cd80d3ce60831ad debian pool/main/libt/libtasn1-6/libtasn1-6_4.20.0-2%2bdeb13u1_amd64.deb
+libunistring5 1.3-2 amd64 476768 6dd3490bef06ea1096f32d10766b7e016cf579bfae8451d1b7df15ce05b8aa46 debian pool/main/libu/libunistring/libunistring5_1.3-2_amd64.deb
+openssl 3.5.9-1~deb13u1 amd64 1518324 faf53a993766c81f94f35b6a31202f0dcd936e1529791790a393aa59f41c0993 debian pool/main/o/openssl/openssl_3.5.9-1%7edeb13u1_amd64.deb
+openssl-provider-legacy 3.5.9-1~deb13u1 amd64 322440 67c70904c8d494b4631e136a6bdb692cbb44515757d63c55e7bd1d2016f9f09f debian pool/main/o/openssl/openssl-provider-legacy_3.5.9-1%7edeb13u1_amd64.deb
+perl 5.40.1-6+deb13u1 amd64 267736 ef145c247787d6f40dcdefd5b417502484827cde0d555998c17fd5b27ec1e1dd debian pool/main/p/perl/perl_5.40.1-6%2bdeb13u1_amd64.deb
+perl-modules-5.40 5.40.1-6+deb13u1 all 3013728 4c46cdd8f3135aa1c95f07e817f8e5d9be590687441ac1c27e3a8c49400f35ce debian pool/main/p/perl/perl-modules-5.40_5.40.1-6%2bdeb13u1_all.deb
+procps 2:4.0.4-9 amd64 882088 4db90bb6776772fc52585d6b1fbfc52ec2a85480e1b4363b743fbb2ffa2a5375 debian pool/main/p/procps/procps_4.0.4-9_amd64.deb

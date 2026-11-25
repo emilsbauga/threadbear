@@ -59,7 +59,7 @@ final class AnalyzerTranscriber: Transcriber {
                     readiness = .ready
                 } catch {
                     readiness = .unsupported
-                    Log.speech.error("Model download failed: \(error.localizedDescription, privacy: .public)")
+                    Log.speech.error("Model download failed: \(error: error)")
                 }
             @unknown default:
                 readiness = .unsupported
@@ -160,7 +160,7 @@ final class AnalyzerTranscriber: Transcriber {
         do {
             try await analyzer.prepareToAnalyze(in: format)
         } catch {
-            Log.speech.error("SpeechAnalyzer prepare failed: \(error.localizedDescription, privacy: .public)")
+            Log.speech.error("SpeechAnalyzer prepare failed: \(error: error)")
             return nil
         }
         Log.speech.info("SpeechAnalyzer ready in \(Int((Stopwatch.now - started) * 1000)) ms")
@@ -240,7 +240,7 @@ nonisolated final class AnalyzerFeeder: @unchecked Sendable {
             return buffer
         }
         if let error {
-            Log.speech.error("Audio conversion failed: \(error.localizedDescription, privacy: .public)")
+            Log.speech.error("Audio conversion failed: \(error: error)")
             return
         }
         if output.frameLength > 0 { continuation.yield(AnalyzerInput(buffer: output)) }

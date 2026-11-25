@@ -206,6 +206,8 @@ export type RelayRow = {
   pictures?: number;
   // The asks a user's message answered (API 89).
   answers?: AskAnswer[];
+  // Why the runner sent its own message (API 98): its note's header.
+  wakeReason?: string;
   at: string;
 };
 export type RowButton = { id: string; title: string; kind: 'start' | 'send'; target?: string; pressedThreadId?: string; failed?: string };
@@ -440,7 +442,7 @@ export function relayEvents(threadId: string, rows: RelayRow[], row: RelayThread
     if (r.role === 'user') {
       // Without the pictures read (an older backend), as that runner's words alone.
       const { text, images } = pictures ? messageWithPictures(threadId, r, pictures.get(r.seq)) : { text: r.text, images: [] };
-      out.push(env(base + 1, r, { type: 'user.message', text, images, ...(r.answers?.length ? { answers: r.answers.map((a) => ({ action: a.action, answer: a.answer })) } : {}), ...(r.origin === 'phone' || r.origin === 'runner' || r.origin === 'schedule' ? { origin: r.origin } : {}) }));
+      out.push(env(base + 1, r, { type: 'user.message', text, images, ...(r.answers?.length ? { answers: r.answers.map((a) => ({ action: a.action, answer: a.answer })) } : {}), ...(r.origin === 'phone' || r.origin === 'runner' || r.origin === 'schedule' ? { origin: r.origin } : {}), ...(r.origin === 'runner' && r.wakeReason ? { wakeReason: r.wakeReason } : {}) }));
     } else if (r.role === 'assistant' && r.plan) {
       // A Plan first plan: its card, as that runner's own Mac draws it. As a
       // reply it folded into the turn's work and nothing showed (12 Nov).
@@ -722,7 +724,7 @@ export class Relay {
       lastSeenSeq: 0,
       runnerId: t.runnerId,
     };
-    for (const k of ['model', 'createdAt', 'lastActivityAt', 'snoozedUntil', 'archivedAt', 'starredAt', 'startedBy', 'asked', 'backlogged', 'recap', 'request', 'keywords'] as const) {
+    for (const k of ['model', 'createdAt', 'lastActivityAt', 'snoozedUntil', 'archivedAt', 'starredAt', 'startedBy', 'asked', 'backlogged', 'recap', 'keywords', 'waitState'] as const) {
       if (t[k] !== undefined) thread[k] = t[k];
     }
     // Its real access, or "unknown" from a runner that doesn't say: never
@@ -776,6 +778,9 @@ export class Relay {
       else t[k] = c.value === PUT_AWAY ? UNTIL_RESTART : c.value;
     }
     if (!kept.size) this.changed.delete(threadId);
+    // The row's state is from before the change: without it the app's own
+    // rule draws the change (Codex's review, 23 Nov).
+    else delete t.waitState;
     return t as T;
   }
 

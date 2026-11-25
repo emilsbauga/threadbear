@@ -1,11 +1,13 @@
 // The dock's window: the tree of splits and groups, their bars and tabs, and
 // the press rules that turn a mouse down on a bar, tab or body into a panel
 // drag. Ported from dock/Sources/BearDock/DockView.swift (its comments say why
-// each rule is how it is); DragOverlay.swift is in overlay.rs, the torn-out
-// windows in windows.rs.
+// each rule is how it is); DragOverlay.swift is in view/overlay.rs, the
+// torn-out windows in windows.rs.
+mod overlay;
+
 use crate::content::{DockOptions, SharedContent};
 use crate::model::DockModel;
-use crate::overlay::{self, LandingRun, SpringRun, Tween};
+use crate::motion::{LandingRun, SpringRun, Tween};
 use crate::platform;
 use crate::theme::{DockTheme, GAP};
 use crate::windows::FloatingWindows;

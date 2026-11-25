@@ -4,7 +4,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import type { Runner, ThreadState } from '../runner.ts';
-import { effortTitle, modelRow } from '../runner.ts';
+import { effortTitle, modelRow } from './models.ts';
 import type { RunnerPart } from './part.ts';
 import type { Account, EffortLevel, PermissionMode } from '../protocol.ts';
 import { ErrorCode, RpcError, isEffortLevel } from '../protocol.ts';

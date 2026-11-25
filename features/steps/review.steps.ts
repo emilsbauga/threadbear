@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const DEMO_REVIEW = 'review_account_picker';
 /** The review each scenario opened: the demo's unless it made another. */
 const opened = new WeakMap<ThreadbearWorld, string>();
-const reviewId = (world: ThreadbearWorld) => opened.get(world) ?? DEMO_REVIEW;
+export const reviewId = (world: ThreadbearWorld) => opened.get(world) ?? DEMO_REVIEW;
 
 type ReviewState = {
   id: string;
@@ -38,7 +38,7 @@ type ReviewState = {
   error: string;
   /** The words under the stage: the option on show's name and reasons, or the agent's lead with them all. GPUI's own. */
   words?: string;
-  /** What the stage draws: "picture", "player", "page", "still" (a clip or a page as its still) or "all". */
+  /** What the stage draws: "picture", "player", "sound" (a sound's play bar), "page", "still" (a clip, sound or page as its still) or "all". */
   stage: string;
   /** What Open live would open, for the option on show. */
   live: string;
@@ -299,6 +299,11 @@ Then('the stage plays the clip', async function (this: ThreadbearWorld) {
   await untilReview(this, 'the clip playing on the stage', (s) => s.stage === 'player');
 });
 
+Then("the stage has the sound's play bar", async function (this: ThreadbearWorld) {
+  await untilReview(this, "the sound's play bar on the stage", (s) => s.stage === 'sound');
+});
+
 Then('the stage shows the page', async function (this: ThreadbearWorld) {
   await untilReview(this, 'the page on the stage', (s) => s.stage === 'page');
 });
+

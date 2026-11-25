@@ -151,6 +151,7 @@ class WireRowsTest {
         mapOf(
             "seq" to n(m.seq), "role" to m.role.name.lowercase(), "text" to m.text, "origin" to m.origin, "toolKind" to m.toolKind,
             "summary" to m.summary, "plan" to m.plan, "turn" to m.turn, "at" to ms(m.at),
+            "wakeReason" to m.wakeReason,
         ) +
             under("wokeBy", list(m.wokeBy) { mapOf("kind" to it.kind, "description" to it.description) }) +
             under("buttons", list(m.buttons) { b ->

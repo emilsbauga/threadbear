@@ -37,7 +37,14 @@ enum {
   TBCellVideo = 2,
   TBPaneDocument = 3,
   TBPaneQuickLook = 4,
+  TBPaneAudio = 5,
 };
+
+// The pane's own players, a film's or a sound file's: Space plays them, a
+// press on them can drag the file out.
+static BOOL tb_in_pane(int kind) {
+  return kind == TBPaneVideo || kind == TBPaneAudio;
+}
 
 // What a view is showing, for the scripted app's dump (media_view.rs's
 // NativeState, field for field).
@@ -119,7 +126,19 @@ static const long long TBFileHeldLimit = TB_FILE_HELD_LIMIT;
     _fd = fd;
     _length = length;
     NSString *ext = path.pathExtension.lowercaseString;
-    _contentType = [ext isEqualToString:@"mov"] ? AVFileTypeQuickTimeMovie : [ext isEqualToString:@"m4v"] ? AVFileTypeAppleM4V : AVFileTypeMPEG4;
+    NSDictionary<NSString *, NSString *> *types = @{
+      @"mov" : AVFileTypeQuickTimeMovie,
+      @"m4v" : AVFileTypeAppleM4V,
+      @"wav" : AVFileTypeWAVE,
+      @"mp3" : AVFileTypeMPEGLayer3,
+      @"m4a" : AVFileTypeAppleM4A,
+      @"aif" : AVFileTypeAIFF,
+      @"aiff" : AVFileTypeAIFF,
+      @"caf" : AVFileTypeCoreAudioFormat,
+      @"flac" : @"org.xiph.flac",
+      @"aac" : @"public.aac-audio",
+    };
+    _contentType = types[ext] ?: AVFileTypeMPEG4;
     _queue = dispatch_queue_create("threadbear.media.file", DISPATCH_QUEUE_SERIAL);
     _held = [TBHeldBytes new];
     if (fstat(fd, &_opened) != 0) {
@@ -409,7 +428,7 @@ static void *TBStatusContext = &TBStatusContext;
 // keys keep stepping through the shots after a click on its controls, not
 // scrubbing (ReviewVideo.Player). In the pane, Space plays and pauses.
 - (BOOL)acceptsFirstResponder {
-  return self.kind == TBPaneVideo ? [super acceptsFirstResponder] : NO;
+  return tb_in_pane(self.kind) ? [super acceptsFirstResponder] : NO;
 }
 
 - (NSView *)hitTest:(NSPoint)point {
@@ -422,7 +441,7 @@ static void *TBStatusContext = &TBStatusContext;
     return nil;
   }
   NSView *inner = [super hitTest:point];
-  if (self.kind != TBPaneVideo || !inner || NSApp.currentEvent.type != NSEventTypeLeftMouseDown) {
+  if (!tb_in_pane(self.kind) || !inner || NSApp.currentEvent.type != NSEventTypeLeftMouseDown) {
     return inner;
   }
   // A left press on the picture itself is taken here, to be a drag or a
@@ -439,7 +458,7 @@ static void *TBStatusContext = &TBStatusContext;
     [super mouseDown:event];
     return;
   }
-  if (self.kind == TBPaneVideo && self.path && tb_is_drag(event)) {
+  if (tb_in_pane(self.kind) && self.path && tb_is_drag(event)) {
     [self dragFile:event];
     return;
   }
@@ -464,7 +483,8 @@ static void *TBStatusContext = &TBStatusContext;
   }
   NSURL *file = [NSURL fileURLWithPath:copy isDirectory:NO];
   NSDraggingItem *item = [[NSDraggingItem alloc] initWithPasteboardWriter:file];
-  NSImage *image = [NSImage imageWithSystemSymbolName:@"film" accessibilityDescription:nil] ?: [NSImage new];
+  NSString *symbol = self.kind == TBPaneAudio ? @"waveform" : @"film";
+  NSImage *image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil] ?: [NSImage new];
   NSImageSymbolConfiguration *config = [NSImageSymbolConfiguration configurationWithPointSize:36 weight:NSFontWeightRegular];
   image = [image imageWithSymbolConfiguration:config] ?: image;
   NSSize size = image.size;
@@ -504,6 +524,16 @@ static void *TBStatusContext = &TBStatusContext;
 }
 
 - (void)layoutInSlot {
+  if (self.kind == TBPaneAudio) {
+    // A sound file has no picture: its controls are a bar across the middle
+    // of the pane, as wide as reads well.
+    NSRect slot = self.slot;
+    CGFloat width = MIN(NSWidth(slot) - 32, 560);
+    CGFloat height = MIN(NSHeight(slot), 44);
+    NSRect bar = NSMakeRect(NSMidX(slot) - width / 2, NSMidY(slot) - height / 2, MAX(width, 0), height);
+    tb_media_layout(self, NSIntegralRect(bar), CGSizeZero);
+    return;
+  }
   tb_media_layout(self, self.slot, self.kind == TBPaneVideo ? self.filmSize : CGSizeZero);
 }
 
@@ -881,12 +911,20 @@ void *tb_media_open(void *nativeParent, int fd, long long length, const char *pa
     player.source = source;
     player.asset = tb_asset(source, file.lastPathComponent);
     player.videoGravity = AVLayerVideoGravityResizeAspect;
-    player.controlsStyle = kind == TBCellVideo ? AVPlayerViewControlsStyleNone : AVPlayerViewControlsStyleFloating;
+    player.controlsStyle = kind == TBCellVideo ? AVPlayerViewControlsStyleNone : kind == TBPaneAudio ? AVPlayerViewControlsStyleInline : AVPlayerViewControlsStyleFloating;
     // Live Text over a paused frame would take the press too.
     if (@available(macOS 13.0, *)) {
       player.allowsVideoFrameAnalysis = NO;
     }
-    if (kind == TBPaneVideo) {
+    if (kind == TBPaneAudio) {
+      // No picture, so none of the player's black behind the controls.
+      player.wantsLayer = YES;
+      player.layer.backgroundColor = NSColor.clearColor.CGColor;
+      // The inline bar's own backing is square: rounded to the pill it holds.
+      player.layer.cornerRadius = 22;
+      player.layer.masksToBounds = YES;
+    }
+    if (tb_in_pane(kind)) {
       // Paused on its first frame until its play button, as the Swift pane.
       AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:player.asset];
       player.player = [AVPlayer playerWithPlayerItem:item];

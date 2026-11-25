@@ -59,6 +59,22 @@ Feature: The thread's bar, banners and notes
     And I make a share link for the open thread
     Then the share popover says the thread is shared with a link
 
+  # The relay answers Share for another Mac's thread, and its reply names no
+  # runner: stored as it came, the thread turned into one of this Mac's
+  # ("Thread not found" on every send), and that Mac's next list, which says
+  # nothing of sharing, put the share icon back to Only you (23 Nov review).
+  @header.share @remote-threads
+  Scenario: Sharing another Mac's thread keeps it on that Mac, shared
+    When I open the thread "Check the photo library backup"
+    And I make a share link for the open thread
+    Then the share popover says the thread is shared with a link
+    And the row "Check the photo library backup" is on the runner "On mac-mini"
+    And the composer is on the runner "mac-mini"
+    When mac-mini lists "Check the photo library backup" again
+    Then the share button stays lit
+    And the share popover says the thread is shared with a link
+    And the row "Check the photo library backup" is on the runner "On mac-mini"
+
   # The Swift app's is an NSPopover, which closes on Escape by itself; its
   # script can't press a key into one.
   @header.share @swift-pending

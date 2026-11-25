@@ -16,7 +16,16 @@ import type { UsageHistory } from './usage-history.ts';
 // blockedUntil (ms) says when a block ends when no window does: the runner
 // marks a login blocked when a turn hits its limit (pools, runner.ts) and
 // the reading didn't already say so.
-export type UsageReading = { windows: UsageWindow[]; blocked?: boolean; blockedUntil?: number; email?: string; plan?: string; resets?: UsageResets };
+// aside: titles of windows that are only shown, never deciding the login's
+// room or its block (Gemini's Claude and GPT group): a block never waits on
+// their reset, and a recheck finding them out isn't one still out
+// (Runner.recordReading).
+export type UsageReading = { windows: UsageWindow[]; blocked?: boolean; blockedUntil?: number; email?: string; plan?: string; resets?: UsageResets; aside?: string[] };
+
+// The windows of a reading that can decide its room or block.
+export function decidingWindows(reading: { windows: UsageWindow[]; aside?: string[] }): UsageWindow[] {
+  return reading.aside?.length ? reading.windows.filter((w) => !reading.aside!.includes(w.title)) : reading.windows;
+}
 
 // Another runner's reading of one of its logins, from the backend's
 // accounts table (sync.ts). A subscription is one limit wherever it's
@@ -250,7 +259,7 @@ export class UsageStore {
       if (reading.blocked) {
         // The windows at their limit say when the block ends. Without one,
         // the block holds until a reading says otherwise.
-        const ends = reading.windows.filter((w) => w.remainingPercent < 1 && w.resetsAt).map((w) => Date.parse(w.resetsAt!));
+        const ends = decidingWindows(reading).filter((w) => w.remainingPercent < 1 && w.resetsAt).map((w) => Date.parse(w.resetsAt!));
         if (ends.length) next.blockedUntil = Math.max(...ends);
         else if (reading.blockedUntil !== undefined && Number.isFinite(reading.blockedUntil)) next.blockedUntil = reading.blockedUntil;
       } else delete next.blocked;

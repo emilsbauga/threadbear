@@ -41,8 +41,11 @@ Given('the {string} section is folded away', async function (this: ThreadbearWor
   await this.until(`${key} folded`, (d) => d.sidebar.sections.find((s) => s.name.toLowerCase() === key)?.collapsed === true);
 });
 
+// After the grey loading rows: another Mac's threads are in the dump before
+// this runner's first list lands, and under a slow runner the hover's buttons
+// were clicked while only the loading rows were drawn (24 Nov).
 When('I hover the row {string}', async function (this: ThreadbearWorld, title: string) {
-  const t = await this.until(`a thread called "${title}"`, (d) => this.thread(d, title));
+  const t = await this.until(`a thread called "${title}" drawn`, (d) => (d.sidebar.loading ? undefined : this.thread(d, title)));
   await this.app.do({ cmd: 'hover', id: t.id });
 });
 

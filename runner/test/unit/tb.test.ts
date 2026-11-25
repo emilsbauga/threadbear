@@ -117,6 +117,27 @@ test('inside a thread, tb will not delete, interrupt, snooze or archive that thr
   }
 });
 
+test('tb unarchive --wrong-hide brings a thread back and writes the miss down, for the quiet inbox\'s daily review', async () => {
+  const { h, server, url } = await serve();
+  try {
+    const { thread } = h.runner.create({ text: 'rename it', accountId: 'claude-3' });
+    h.adapter.last.init();
+    h.adapter.last.result();
+    h.runner.update({ threadId: thread.id, archived: true, archivedBy: 'threadbear' });
+    const t = tb(h, url, ['unarchive', thread.id.slice(0, 8), '--wrong-hide']);
+    assert.equal(await t.exited, 0, t.out());
+    assert.equal(h.runner.get(thread.id).archivedAt, undefined);
+    assert.ok(h.events(thread.id).some((e) => e.type === 'system.note' && e.text === 'Brought back by you: you should have been shown this.'));
+    // A plain unarchive says nothing of the sort.
+    const { thread: other } = h.runner.create({ text: 'other', accountId: 'claude-3' });
+    h.runner.update({ threadId: other.id, archived: true });
+    assert.equal(await tb(h, url, ['unarchive', other.id]).exited, 0);
+    assert.ok(!h.events(other.id).some((e) => e.type === 'system.note' && /should have been shown/.test(e.text)));
+  } finally {
+    await server.close();
+  }
+});
+
 test('tb finds a runner on port 0 through runner.json, as the CLIs of a dev or sandbox runner must', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-port-'));
   try {
