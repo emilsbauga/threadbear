@@ -545,8 +545,8 @@ public final class FakeBackend: Backend, @unchecked Sendable {
             return all.filter { t in
                 switch view {
                 case .den: t.archivedAt != nil
-                case .hibernating: t.archivedAt == nil && t.starredAt == nil && InboxSections.isSnoozed(t, now: now)
-                case .inbox: t.archivedAt == nil && (t.starredAt != nil || !InboxSections.isSnoozed(t, now: now))
+                case .hibernating: t.archivedAt == nil && t.coordinatorProjectId == nil && t.starredAt == nil && InboxSections.isSnoozed(t, now: now)
+                case .inbox: t.archivedAt == nil && (t.coordinatorProjectId != nil || t.starredAt != nil || !InboxSections.isSnoozed(t, now: now))
                 }
             }.sorted { $0.lastActivityAt > $1.lastActivityAt }
         }
@@ -564,7 +564,7 @@ public final class FakeBackend: Backend, @unchecked Sendable {
         watch { [unowned self] in
             let all = lock.withLock { Array(threadsById.values) }
             let now = Date.now
-            return PhoneCounts(hibernating: all.filter { $0.archivedAt == nil && $0.starredAt == nil && InboxSections.isSnoozed($0, now: now) }.count,
+            return PhoneCounts(hibernating: all.filter { $0.archivedAt == nil && $0.coordinatorProjectId == nil && $0.starredAt == nil && InboxSections.isSnoozed($0, now: now) }.count,
                                den: all.filter { $0.archivedAt != nil }.count)
         }
     }

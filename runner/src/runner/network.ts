@@ -90,6 +90,13 @@ export const networkPart = {
     const w = rec.waitingForNetwork;
     if (!w) return;
     if (this.refusing) return; // a restart is coming; the next runner carries on
+    // A coordinator's helper carries on only for a run its coordinator still
+    // has going: after a pause or restart the coordinator reconciles it.
+    if (rec.coordinatorHelperFor && !this.coordinators?.helperRunActive(rec.id)) {
+      delete rec.waitingForNetwork;
+      this.markDirty(st);
+      return;
+    }
     delete rec.waitingForNetwork;
     this.markDirty(st);
     if (rt.deleted || rt.turn || rec.queue.length || this.bucket(rec) !== 'inbox') return;
@@ -100,6 +107,8 @@ export const networkPart = {
       this.log.info('carried on after the network came back', { threadId: rec.id, tries: w.tries + 1 });
     } catch (e) {
       this.log.error('could not carry on after the network came back', { threadId: rec.id, error: String(e) });
+      // Nothing else would end its run.
+      if (rec.coordinatorHelperFor) this.coordinators?.onHelperTurn(rec.id, 'failed', `Couldn't carry on after the network came back: ${String(e)}`);
     }
   },
 };

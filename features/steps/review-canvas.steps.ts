@@ -1,4 +1,4 @@
-// The review as a board (review-canvas.feature, the reviewCanvas experiment):
+// The review as a board (review-canvas.feature):
 // what the open review window's `canvas` says (review_window/canvas.rs,
 // `canvas_state`), and a mark drawn as the mouse would draw it.
 import { Then, When } from '@cucumber/cucumber';
@@ -6,7 +6,7 @@ import { okValue, sleep } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 import { reviewId } from './review.steps.ts';
 
-type CanvasState = { on: boolean; stop: number; stops: number; notesOn: boolean; agentMarks: number; tool: string; marks: string[]; playing?: string | null };
+type CanvasState = { on: boolean; stop: number; stops: number; lit: string; notesOn: boolean; agentMarks: number; tool: string; marks: string[]; playing?: string | null };
 type WithCanvas = { reply: string; replyKeys?: boolean; canvas?: CanvasState | null };
 
 async function board(world: ThreadbearWorld, cmd: Record<string, unknown> = {}): Promise<WithCanvas> {
@@ -101,4 +101,10 @@ Then('nothing plays on the board', async function (this: ThreadbearWorld) {
 
 Then('the board plays a sound in place', async function (this: ThreadbearWorld) {
   await untilBoard(this, 'a sound playing on the board', (s) => s.canvas?.playing === 'sound');
+});
+
+Then('the board frames option {string}, shot {int}', async function (this: ThreadbearWorld, id: string, shot: number) {
+  const option = id.charCodeAt(0) - 65;
+  const lit = shot === 1 ? `Opening(${option})` : `Shot(${option}, ${shot - 1})`;
+  await untilBoard(this, `${id}'s shot ${shot} framed`, (s) => s.canvas?.lit === lit);
 });

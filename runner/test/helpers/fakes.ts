@@ -105,7 +105,7 @@ export class FakeAdapter implements AgentAdapter {
   sessions: FakeSession[] = [];
   slowExit = false;
   // Set by a test that wants the runner's model probe to find something.
-  models?: (account: Account) => Promise<ModelChoice[]>;
+  models?: (account: Account, signal?: AbortSignal) => Promise<ModelChoice[]>;
   // Set by a test of the composer's command picker.
   commands?: (account: Account, cwd: string, untrusted?: Record<string, unknown>) => Promise<import('../../src/slash-commands.ts').SlashCommand[]>;
   archived: { accountId: string; nativeSessionId: string }[] = [];

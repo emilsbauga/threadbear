@@ -260,3 +260,5 @@ hosts (self-hosted, a custom domain) can't use this relay: run your own
 - Deploy: `npm ci` then `npx convex deploy` in `relay/`, signed in to the
   Convex CLI as Mike (it isn't part of the runner's backend deploy, which
   is for each person's own deployment).
+
+Public JSON bodies are capped while streaming, before decoding or parsing: 16,000 bytes for the relay routes and 1,024 bytes for a deployment’s `/relay/verify`. Oversized requests are cancelled and receive 413, regardless of `Content-Length`.

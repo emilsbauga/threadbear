@@ -26,6 +26,9 @@ export const DEV_HELP = `Working on Threadbear itself:
   tb self [--json]                the thread this command runs in (THREADBEAR_THREAD_ID)
   tb updates [check] [--json]     Mike's newest release and what this copy's main is missing
                                   (docs/bringing-in-updates.md); check fetches upstream now
+  tb updates publish [--json]     Mike's runner: tags and signs today's release now, asking for
+                                  Touch ID at once (the newest commit green on every check);
+                                  renews the weekly signing key first if it's due
   tb checkup [--text "note"] [--post | --skip] [--json]
                                   in someone else's copy, after bringing in a release: drafts
                                   the check-up for Mike (docs/bringing-in-updates.md, 7);
@@ -109,9 +112,28 @@ export async function runDev(client: RunnerClient, cmd: string, args: string[], 
       return 0;
     }
     case 'updates': {
-      if (args[0] && args[0] !== 'check') {
-        console.error('Usage: tb updates [check] [--json]');
+      if (args[0] && args[0] !== 'check' && args[0] !== 'publish') {
+        console.error('Usage: tb updates [check|publish] [--json]');
         return 2;
+      }
+      if (args[0] === 'publish') {
+        const p = await client.call<{ tag?: string; upstream: UpstreamStatus }>('upstream.publish').catch(quietlyTooOld);
+        if (!p) {
+          console.error("This runner can't publish a release on request yet; it picks that up on its next update.");
+          return 1;
+        }
+        const wk = p.upstream.weeklyKey;
+        // A renewal that worked is a success too, release or not.
+        const ok = Boolean(p.tag || (!p.upstream.held && wk?.until && !wk.error));
+        if (f.json) return (printJson(p), ok ? 0 : 1);
+        if (wk?.error) process.stdout.write(`The weekly signing key wasn't renewed: ${wk.error}.\n`);
+        else if (wk?.until) process.stdout.write(`The weekly signing key is good until ${new Date(wk.until).toLocaleString()}.\n`);
+        if (p.tag) process.stdout.write(`Tagged and pushed ${p.tag}.\n`);
+        else if (p.upstream.held) process.stdout.write(`No release: ${p.upstream.held.why} (main at ${p.upstream.held.commit.slice(0, 9)}).\n`);
+        else if (p.upstream.published) process.stdout.write(`Nothing new to release: the last one is ${p.upstream.published.tag}.\n`);
+        else if (wk) process.stdout.write('No release due.\n');
+        else process.stdout.write("No release: this runner doesn't publish them (runner.json releases.publish).\n");
+        return ok ? 0 : 1;
       }
       const r = await client.call<{ upstream: UpstreamStatus }>(args[0] === 'check' ? 'upstream.check' : 'upstream.status').catch(quietlyTooOld);
       if (!r) {

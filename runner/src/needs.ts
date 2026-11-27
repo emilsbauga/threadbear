@@ -9,7 +9,7 @@ import { cutSafely, safeEnd } from './safe-cut.ts';
 
 // afterJobs: the asks wait until the thread's own shell jobs end (askWhen
 // "jobsEnd"; docs/protocol/needs-you.md, "Needs you").
-export type Needs = { needs: NeedsWho; asks?: Ask[]; next?: string[]; afterJobs?: true };
+export type Needs = { needs: NeedsWho; asks?: Ask[]; next?: string[]; nextPick?: 'one'; nextSuggested?: number; afterJobs?: true };
 
 export const END_TURN_TOOL = 'end_turn';
 // As the CLIs name it: under threadbear-mcp.ts's SERVER_NAME, which lives
@@ -62,7 +62,7 @@ export function needsFromTool(input: unknown): Needs | undefined {
   // Left out, it comes from the asks: agents filling in a summary forgot
   // it 2 times in 9 (29 Oct 2026). Anything else is a call to ignore.
   if (o.needs !== undefined && o.needs !== 'you' && o.needs !== 'nothing') return undefined;
-  if (o.needs === 'nothing') return done(o.next);
+  if (o.needs === 'nothing') return done(o.next, o.nextPick, o.nextSuggested);
   const asks: Ask[] = [];
   for (const a of Array.isArray(o.asks) ? o.asks : []) {
     if (!a || typeof a !== 'object') continue;
@@ -72,6 +72,8 @@ export function needsFromTool(input: unknown): Needs | undefined {
     const action = clipText(r.action, MAX_ACTION) ?? clipText(r.question, MAX_ACTION);
     if (!action) continue;
     const ask: Ask = { action };
+    const taskId = str(r.taskId, 100);
+    if (taskId) ask.taskId = taskId;
     const where = str(r.where, MAX_SHORT);
     if (where) ask.where = where;
     const reply = str(r.reply, MAX_SHORT);
@@ -112,7 +114,7 @@ export function needsFromTool(input: unknown): Needs | undefined {
     asks.push(ask);
     if (asks.length === MAX_ASKS) break;
   }
-  if (o.needs === undefined && !asks.length) return done(o.next);
+  if (o.needs === undefined && !asks.length) return done(o.next, o.nextPick, o.nextSuggested);
   const you: Needs = asks.length ? { needs: 'you', asks } : { needs: 'you' };
   if (askWhenFromTool(o) === 'jobsEnd') you.afterJobs = true;
   return you;
@@ -203,9 +205,32 @@ export function optionNotesFromList(text: string, options: string[]): { text: st
 // A turn that needs nothing, with any follow-ups it suggested: the done
 // card's buttons (docs/protocol/needs-you.md, "Next steps"). Only here, as a card
 // of asks already has its own buttons.
-function done(v: unknown): Needs {
-  const next = [...new Set((Array.isArray(v) ? v : []).map((n) => clipText(n, MAX_NEXT_CHARS)).filter((n): n is string => !!n))].slice(0, MAX_NEXT);
-  return next.length ? { needs: 'nothing', next } : { needs: 'nothing' };
+function done(v: unknown, pick?: unknown, suggested?: unknown): Needs {
+  const seen = new Map<string, number>();
+  const next: string[] = [];
+  let mappedSuggested: number | undefined;
+  const raw = Array.isArray(v) ? v : [];
+  for (let i = 0; i < raw.length; i++) {
+    const t = clipText(raw[i], MAX_NEXT_CHARS);
+    if (!t) continue;
+    let idx = seen.get(t);
+    if (idx === undefined) {
+      if (next.length === MAX_NEXT) continue;
+      idx = next.length;
+      seen.set(t, idx);
+      next.push(t);
+    }
+    if (typeof suggested === 'number' && Number.isInteger(suggested) && suggested === i) {
+      mappedSuggested = idx;
+    }
+  }
+  if (!next.length) return { needs: 'nothing' };
+  const out: Needs = { needs: 'nothing', next };
+  if (pick === 'one' && next.length > 1) {
+    out.nextPick = 'one';
+    if (mappedSuggested !== undefined) out.nextSuggested = mappedSuggested;
+  }
+  return out;
 }
 
 // end_turn took `open` from 11 to 13 Nov 2026: lines the agent wrote for
@@ -750,6 +775,17 @@ export function unansweredItems(events: PersistedEvent[], now: string[] = []): s
   return [...open.values()].map((i) => i.text).slice(-MAX_OPEN_ITEMS);
 }
 
+export const REVIEW_NUDGE = 'Not ended: a helper finished and its task is still in review:';
+export function reviewNudge(tasks: { title: string }[]): string {
+  return `${REVIEW_NUDGE} ${tasks.map((task) => JSON.stringify(task.title)).join(', ')}. Check the result against doneWhen. If the user needs to decide or do something, put it to them now with options and a recommendation. Offer to get it ready or do it for them where your charter allows. If the work needs their sign-off, leave it ready to close. If it should stay in review, call end_turn again. This note comes once per helper run.`;
+}
+
+// Only the card's defer control is reserved. "Wait" and "Not yet" can
+// be answers to the project's decision.
+export function putsOff(answer: string): boolean {
+  return /^not now[.!?]?$/i.test(answer.trim().replace(/\s+/g, ' '));
+}
+
 // Whether this turn has had the note (connectors.ts, nudgedThisTurn, is the same).
 export function triedFirstNudged(events: PersistedEvent[]): boolean {
   return nudgedSince(events, TRY_FIRST_NUDGE);
@@ -768,7 +804,8 @@ function nudgedSince(events: PersistedEvent[], note: string): boolean {
       break;
     }
   }
-  return events.slice(start).some((e) => e.type === 'tool.result' && typeof e.text === 'string' && e.text.startsWith(note));
+  // Antigravity ACP prefixes thrown MCP tool errors with 'Encountered error in step execution: '.
+  return events.slice(start).some((e) => e.type === 'tool.result' && typeof e.text === 'string' && (e.text.startsWith(note) || e.text.startsWith(`Encountered error in step execution: ${note}`)));
 }
 
 // What end_turn says, once a turn, to a card with answers to pick from. Mike
@@ -818,9 +855,9 @@ const END_TURN_ASKS =
   'The paragraph is markdown, so where action or why names the thing a link opens, make those words a link to the same url ("Look at [the pairing screenshot](/Users/you/shots/pair.png) and say whether to land it."): the user can hover them for a peek or click them, and the button stays as the next step. ' +
   'Every decision or yes/no question needs options: 2 to 4 short likely answers, e.g. ["Go", "Not yet"] or ["Merge", "Test locally first"], with suggested: the index of the one you would pick. "Say go for X, or name another" is a decision too: give ["Go", ...the other candidates]. The user can always write their own answer instead, so options never box them in. ' +
   TRY_IT_FIRST +
-  // Mike, 30 Oct: a follow-up in the closing prose, over a card that only
-  // offered Archive, got buried and forgotten. Not make-work, though.
-  'next is for needs "nothing": up to 3 follow-ups in this thread worth doing, so they don\'t get lost: a piece still missing, a check that\'s due, something you or the user raised and didn\'t get to. Only ones that really came up; never invent work, and most turns have none, so leave it out then. ' + NEXT_ROW + 'Don\'t also list them in your message. ' +
+  // Mike, 30 Oct & 26 Nov 2026: follow-ups in closing prose over a plain Done card
+  // get forgotten; encourage real follow-ups and optional next-direction forks without filler.
+  'next is for needs "nothing": up to 3 worthwhile follow-ups that genuinely came up (remaining work, a due check, or optional next directions); leave it out if nothing natural follows, and never invent filler. Set nextPick: "one" (with optional nextSuggested index) when they are mutually exclusive directions rather than items to tick together. ' + NEXT_ROW + 'Don\'t also list them in your message. ' +
   'archive: true archives this thread once the turn is over, with needs "nothing" only. Use it only when the user asks for this thread to be archived, or the message that started the thread says to; otherwise leave it out, as a thread that vanishes from their inbox when they hadn\'t finished with it is confusing. ' +
   END_TURN_SNOOZE +
   'If you leave sub-agents running, the thread stays under Running and your asks don\'t reach the user\'s inbox until the sub-agents finish and you\'ve ended a later turn, so don\'t leave one waiting on the user. ' +
@@ -907,7 +944,7 @@ const ONE_REPLY_FIELDS =
   END_TURN_BACKGROUND +
   TRY_IT_FIRST +
   ONLY_THEY_CAN_TRY +
-  'next is only for when nothing is needed: up to 3 follow-ups that really came up and that you\'d tell the user are worth doing; usually none, and never something you\'d call optional or low priority. ' +
+  'next is for needs "nothing": up to 3 worthwhile follow-ups that genuinely came up (remaining work, a due check, or optional next directions) so the user can queue them in one click. Leave it out if nothing natural follows, and never invent filler. Use nextPick: "one" (with optional nextSuggested index) when the items are mutually exclusive directions rather than items they could tick together. ' +
   NEXT_ROW +
   'If you leave sub-agents running, the thread stays under Running and your asks don\'t reach the user\'s inbox until the sub-agents finish and you\'ve ended a later turn, so don\'t leave one waiting on the user. ' +
   'Sub-agents never call this; only the thread\'s own agent does.';
@@ -996,8 +1033,8 @@ export function strayAskProblem(fields: string[], oneReply: boolean): string {
 
 export function endTurnMisfit(problem: string, oneReply: boolean): string {
   const shape = oneReply
-    ? '{ headline?, needs?, asks?: { question, options?: { label, does? }[], suggested?, links? }[], next?, archive?, snooze?, waitFor? }, then write your reply after it, as ordinary text: that reply is the only text the user sees from the turn.'
-    : '{ needs?, summary?: string[], asks?: { action, why, reply?, options?: string[], suggested?, links? }[], next?, archive?, snooze?, waitFor? }, after writing your reply as ordinary text, with nothing after the call.';
+    ? '{ headline?, needs?, asks?: { question, options?: { label, does? }[], suggested?, links? }[], next?, nextPick?, nextSuggested?, archive?, snooze?, waitFor? }, then write your reply after it, as ordinary text: that reply is the only text the user sees from the turn.'
+    : '{ needs?, summary?: string[], asks?: { action, why, reply?, options?: string[], suggested?, links? }[], next?, nextPick?, nextSuggested?, archive?, snooze?, waitFor? }, after writing your reply as ordinary text, with nothing after the call.';
   return `Not ended: those arguments don't fit end_turn.\n${problem}\nCall it with ${shape} Go by this rather than the tool's description, which can be out of date in a session this old, and reloading it won't change that.`;
 }
 

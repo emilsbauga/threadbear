@@ -121,6 +121,26 @@ test('output only in rawOutput still shows', () => {
   n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c2', title: 'bash', kind: 'execute', status: 'in_progress', rawInput: { command: 'ls' } });
   const out = n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'c2', status: 'completed', rawOutput: { output: 'a b' } });
   assert.equal((out[0] as { event: { text: string } }).event.text, 'a b');
+
+  // Antigravity sends a plain string rawOutput on failed MCP calls (e.g. end_turn refusals).
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c2s', title: 'threadbear_end_turn', status: 'in_progress', rawInput: { needs: 'nothing' } });
+  const strOut = n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'c2s', status: 'failed', rawOutput: 'Not ended: please write your reply first.' });
+  assert.equal((strOut[0] as { event: { ok: boolean; text: string } }).event.ok, false);
+  assert.equal((strOut[0] as { event: { text: string } }).event.text, 'Not ended: please write your reply first.');
+
+  // Array rawOutput and object rawOutput.content / message.
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c2a', title: 'bash', kind: 'execute', status: 'in_progress', rawInput: { command: 'echo hi' } });
+  const arrOut = n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'c2a', status: 'completed', rawOutput: [{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }] });
+  assert.equal((arrOut[0] as { event: { text: string } }).event.text, 'first\nsecond');
+
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c2m', title: 'bash', kind: 'execute', status: 'in_progress', rawInput: { command: 'false' } });
+  const msgOut = n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'c2m', status: 'failed', rawOutput: { message: 'boom' } });
+  assert.equal((msgOut[0] as { event: { text: string } }).event.text, 'boom');
+
+  // Direct text blocks in content (without an outer { type: 'content' } wrapper).
+  n.handle({ sessionUpdate: 'tool_call', toolCallId: 'c2d', title: 'bash', kind: 'execute', status: 'in_progress', rawInput: { command: 'echo ok' } });
+  const directOut = n.handle({ sessionUpdate: 'tool_call_update', toolCallId: 'c2d', status: 'completed', content: [{ type: 'text', text: 'direct text' }] });
+  assert.equal((directOut[0] as { event: { text: string } }).event.text, 'direct text');
 });
 
 test('whatever is open closes when the agent goes', () => {

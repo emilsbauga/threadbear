@@ -115,3 +115,179 @@ test('schedules arriving after the threads load, as on every start, say nothing'
   await new Promise((r) => setImmediate(r));
   assert.equal(notes(h, id).filter((x) => x.startsWith('Moved to Hibernating')).length, 0);
 });
+
+// 25 Nov 2026: an agent's 6 h fallback snooze ran out next to its
+// every-10-minutes check. It came back unread to the inbox, with a line
+// saying no schedule was booked, and dropped out the moment Mike opened it.
+const HOUR = 3_600_000;
+function booked(id: string, at: string): Schedule[] {
+  return [{ id: 's1', title: 'Threadbear release today', text: 'look again', whenText: 'every 10 minutes', threadId: id, nextRunAt: at } as Schedule];
+}
+async function read(h: ReturnType<typeof makeHarness>, id: string): Promise<void> {
+  h.runner.markSeen(id, h.runner.get(id).lastSeq);
+  await until(() => h.runner.get(id).waitState !== 'needsYou', 'read');
+}
+
+test("its agent's snooze running out with a schedule due soon stays under Hibernating, quietly", async () => {
+  const h = makeHarness(tmpDir());
+  let schedules: Schedule[] = [];
+  h.runner.schedulesFor = () => schedules;
+  const id = finished(h);
+  await read(h, id);
+  h.runner.update({ threadId: id, snoozedUntil: new Date(h.clock.now() + 6 * HOUR).toISOString(), byAgent: true });
+  schedules = booked(id, new Date(h.clock.now() + 6 * HOUR + 600_000).toISOString());
+  h.runner.publish({ method: 'schedules.updated', params: { schedules } });
+  h.clock.advance(6 * HOUR);
+  await new Promise((r) => setImmediate(r));
+  const t = h.runner.get(id);
+  assert.equal(t.waitState, 'scheduled');
+  assert.equal(t.needsYou, false);
+  assert.equal(t.woke, undefined);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(notes(h, id).filter((x) => x.startsWith('Back in the inbox')).length, 0);
+  // One line says where it is: no "Woke up" above it.
+  assert.equal(notes(h, id).filter((x) => x.startsWith('Woke up')).length, 0);
+  assert.match(notes(h, id).at(-1)!, /^Moved to Hibernating on .+ for "Threadbear release today"\.$/);
+});
+
+test("its agent's snooze on a thread that still asks Mike something comes back unread", async () => {
+  const h = makeHarness(tmpDir());
+  const { thread } = h.runner.create({ text: 'Fix it', accountId: 'claude-main' });
+  const s = h.adapter.sessions.at(-1)!;
+  s.init();
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'you', asks: [{ question: 'Ship it?' }] } } });
+  s.text('m1', 'Ship it?');
+  s.result('completed');
+  const id = thread.id;
+  h.runner.markSeen(id, h.runner.get(id).lastSeq);
+  h.runner.schedulesFor = () => booked(id, new Date(h.clock.now() + 2 * HOUR).toISOString());
+  h.runner.update({ threadId: id, snoozedUntil: new Date(h.clock.now() + HOUR).toISOString(), byAgent: true });
+  h.clock.advance(HOUR);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.runner.get(id).needsYou, true);
+  assert.equal(h.runner.get(id).waitState, 'needsYou');
+});
+
+test("Mike's own snooze still comes back unread, schedule or not", async () => {
+  const h = makeHarness(tmpDir());
+  let schedules: Schedule[] = [];
+  h.runner.schedulesFor = () => schedules;
+  const id = finished(h);
+  await read(h, id);
+  schedules = booked(id, new Date(h.clock.now() + 2 * HOUR).toISOString());
+  h.runner.publish({ method: 'schedules.updated', params: { schedules } });
+  h.runner.update({ threadId: id, snoozedUntil: new Date(h.clock.now() + HOUR).toISOString() });
+  h.clock.advance(HOUR);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.runner.get(id).needsYou, true);
+  assert.equal(h.runner.get(id).waitState, 'needsYou');
+  // Read, it goes under Hibernating for its schedule, and its line doesn't
+  // say the schedule is gone.
+  await read(h, id);
+  assert.equal(h.runner.get(id).waitState, 'scheduled');
+  await new Promise((r) => setImmediate(r));
+  assert.equal(notes(h, id).filter((x) => x.startsWith('Back in the inbox')).length, 0);
+});
+
+test("its agent's snooze that ran out while the runner was off goes quiet once the schedules load, and back if they go", async () => {
+  const h = makeHarness(tmpDir());
+  const id = finished(h);
+  await read(h, id);
+  h.runner.update({ threadId: id, snoozedUntil: new Date(h.clock.now() + HOUR).toISOString(), byAgent: true });
+  // As on a start: no schedules hooked up yet when its time comes.
+  h.runner.schedulesFor = undefined;
+  h.clock.advance(HOUR);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.runner.get(id).needsYou, true);
+  let schedules = booked(id, new Date(h.clock.now() + 600_000).toISOString());
+  h.runner.schedulesFor = () => schedules;
+  h.runner.recheckWaitStates();
+  await until(() => h.runner.get(id).waitState === 'scheduled', 'scheduled');
+  assert.equal(h.runner.get(id).needsYou, false);
+  // Its schedule deleted (from the phone, say) before Mike looked: back
+  // in the inbox unread, as its wake would have been.
+  schedules = [];
+  h.runner.publish({ method: 'schedules.updated', params: { schedules } });
+  await until(() => h.runner.get(id).waitState === 'needsYou', 'needsYou');
+  assert.equal(h.runner.get(id).needsYou, true);
+  assert.ok(h.runner.get(id).woke);
+  // Seen, the quiet wake is over.
+  await read(h, id);
+  assert.equal(h.runner.threads.get(id)!.rec.quietWake, undefined);
+});
+
+test("end_turn's own snooze, its reply unread, stays quiet with a schedule booked", async () => {
+  const h = makeHarness(tmpDir());
+  const { thread } = h.runner.create({ text: 'Watch the release', accountId: 'claude-main' });
+  const id = thread.id;
+  h.runner.schedulesFor = () => booked(id, new Date(h.clock.now() + 600_000).toISOString());
+  const s = h.adapter.sessions.at(-1)!;
+  s.init();
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: END_TURN, kind: 'mcp', title: 'end_turn', input: { needs: 'nothing', snooze: '6h' } } });
+  s.text('m1', 'Watching it.');
+  s.result('completed');
+  await until(() => h.runner.get(id).waitState === 'hibernating', 'hibernating');
+  h.clock.advance(6 * HOUR);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.runner.get(id).waitState, 'scheduled');
+  assert.equal(h.runner.get(id).needsYou, false);
+});
+
+test('a quiet wake put away again is over: its schedule going later brings nothing back', async () => {
+  const h = makeHarness(tmpDir());
+  let schedules: Schedule[] = [];
+  h.runner.schedulesFor = () => schedules;
+  const id = finished(h);
+  await read(h, id);
+  schedules = booked(id, new Date(h.clock.now() + 7 * HOUR).toISOString());
+  h.runner.publish({ method: 'schedules.updated', params: { schedules } });
+  h.runner.update({ threadId: id, snoozedUntil: new Date(h.clock.now() + HOUR).toISOString(), byAgent: true });
+  h.clock.advance(HOUR);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.runner.threads.get(id)!.rec.quietWake, true);
+  // Mike hibernates it himself; then the schedule goes while it sleeps.
+  h.runner.update({ threadId: id, snoozedUntil: new Date(h.clock.now() + 5 * HOUR).toISOString() });
+  schedules = [];
+  h.runner.publish({ method: 'schedules.updated', params: { schedules } });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.runner.get(id).needsYou, false);
+  assert.equal(h.runner.get(id).waitState, 'hibernating');
+  assert.equal(h.runner.threads.get(id)!.rec.quietWake, undefined);
+});
+
+test("while the runner starts, its agent's snooze waits for the schedules before waking", async () => {
+  const h = makeHarness(tmpDir());
+  const id = finished(h);
+  await read(h, id);
+  h.runner.update({ threadId: id, snoozedUntil: new Date(h.clock.now() + HOUR).toISOString(), byAgent: true });
+  h.runner.schedulesFor = undefined;
+  h.runner.holdWaits = true;
+  h.clock.advance(HOUR);
+  await new Promise((r) => setImmediate(r));
+  // Not woken yet: nothing marks it unread.
+  assert.equal(h.runner.get(id).needsYou, false);
+  assert.equal(notes(h, id).filter((x) => x.startsWith('Woke up')).length, 0);
+  const schedules = booked(id, new Date(h.clock.now() + 600_000).toISOString());
+  h.runner.schedulesFor = () => schedules;
+  h.runner.recheckWaitStates();
+  h.runner.holdWaits = false;
+  h.runner.armSnoozeTimer();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.runner.get(id).waitState, 'scheduled');
+  assert.equal(notes(h, id).filter((x) => x.startsWith('Woke up')).length, 0);
+});
+
+test('a quiet wake left unread stays so through a message that sits queued', async () => {
+  const h = makeHarness(tmpDir());
+  h.runner.schedulesFor = () => [];
+  const id = finished(h);
+  await read(h, id);
+  h.runner.update({ threadId: id, snoozedUntil: new Date(h.clock.now() + HOUR).toISOString(), byAgent: true });
+  h.clock.advance(HOUR);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.runner.get(id).needsYou, true);
+  // Moves that don't put it away leave the mark.
+  h.runner.park(h.runner.threads.get(id)!, { kind: 'message', fromSchedule: true, fromMike: false });
+  assert.equal(h.runner.threads.get(id)!.rec.quietWake, true);
+  assert.equal(h.runner.get(id).needsYou, true);
+});

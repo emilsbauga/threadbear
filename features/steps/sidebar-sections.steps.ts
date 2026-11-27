@@ -62,3 +62,24 @@ Then('the sort menu ticks {string} and nothing else', function (this: Threadbear
   assert.deepEqual(sortMenu.filter((line) => line.startsWith('[x] ')), [`[x] ${title}`], `the menu read: ${sortMenu.join(' | ')}`);
   assert.equal(sortMenu.length, 3, `the menu read: ${sortMenu.join(' | ')}`);
 });
+
+Then('the {string} section comes before the {string} section', async function (this: ThreadbearWorld, first: string, second: string) {
+  await this.until(`${first} before ${second}`, (d) => {
+    const names = d.sidebar.sections.map((s) => s.name);
+    const a = names.indexOf(first);
+    const b = names.indexOf(second);
+    return a >= 0 && b >= 0 && a < b;
+  });
+});
+
+When('I start dragging the {string} heading to {string}', async function (this: ThreadbearWorld, from: string, to: string) {
+  await this.app.do({ cmd: 'section-drag', from, to, drop: false });
+});
+
+When('I drop the dragged section heading', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'section-drag', finish: true });
+});
+
+When('I cancel the section heading drag', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'section-drag', cancel: true });
+});

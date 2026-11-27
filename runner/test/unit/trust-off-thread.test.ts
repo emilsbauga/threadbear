@@ -585,3 +585,42 @@ test("the real worker refuses a FIFO for the settings at once, failing the look 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a thread with a schedule booked reads as about to start, not Hibernating, while its next message waits on the look (a coordinator woken by its helper, 26 Nov)', async (t) => {
+  let hold: Promise<void> | undefined;
+  let release = () => {};
+  const trust = {
+    ...TRUST_ALL,
+    lookClaude: async (cwd: string, opts: { grants?: boolean } = {}) => {
+      if (hold) await hold;
+      return { cwd, grants: opts.grants === true, found: undefined };
+    },
+  };
+  const off = new TrustOffThread();
+  t.after(() => off.close());
+  const h = makeHarness(tmpDir(), {}, { patchTrust: trust, offThread: off });
+  const { thread } = h.runner.create({ text: 'hi', accountId: 'claude-3', cwd: tmpDir() });
+  await until(() => h.adapter.sessions.length === 1, 'the CLI to start');
+  const s = h.adapter.last;
+  s.init();
+  s.out({ kind: 'event', event: { type: 'tool.call', itemId: 'e1', name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input: { needs: 'nothing' } } });
+  s.result('completed');
+  await tick();
+  const states: (string | undefined)[] = [];
+  h.runner.onNotification((n) => {
+    if (n.method === 'thread.updated' && n.params.thread.id === thread.id) states.push(n.params.thread.waitState);
+  });
+  hold = new Promise((r) => (release = () => r()));
+  h.runner.send(thread.id, 'A helper turn finished', [], { origin: 'runner', queue: true });
+  // The schedule list lands while the message waits on the look.
+  h.runner.schedulesFor = () => [{ id: 's1', title: 'Check', text: 'look', whenText: 'today', threadId: thread.id, nextRunAt: '2099-01-01T00:00:00Z' } as never];
+  h.runner.markDirty(h.runner.threads.get(thread.id)!);
+  await tick();
+  await tick();
+  assert.notEqual(h.runner.get(thread.id).waitState, 'scheduled');
+  assert.ok(!states.includes('scheduled'), `sent ${states.join(', ')}`);
+  release();
+  await until(() => s.sent.length >= 2, 'the message to reach the CLI');
+  const notes = h.runner.events(thread.id, { limit: 10_000 }).events.filter((e) => e.type === 'system.note' && e.text.startsWith('Moved to Hibernating'));
+  assert.equal(notes.length, 0);
+});

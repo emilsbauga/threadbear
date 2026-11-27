@@ -293,6 +293,9 @@ async fn run(
     if cmd["cmd"] == "row-drag" {
         return crate::row_swipe::row_drag_command(&weak, window, cmd, cx).await;
     }
+    if cmd["cmd"] == "section-drag" {
+        return crate::section_drag::section_drag_command(&weak, window, cmd, cx).await;
+    }
     if cmd["cmd"] == "page-swipe" {
         return crate::swipe_nav::page_swipe_command(&weak, window, cmd, cx).await;
     }
@@ -924,7 +927,7 @@ fn step(
         "dock-move" | "panel" | "float" | "mode" | "zoom" | "rename" | "undo-archive"
         | "open-archived" | "error" | "mouse-button" | "copy-thread-id" | "menus" | "menu-item"
         | "app-menu" | "data-dir" | "share" | "signin" | "edit-message" | "message-words"
-        | "refusal" | "appearance" | "resize" | "canvas" => shell_step(app, cmd, window, cx),
+        | "refusal" | "appearance" | "resize" => shell_step(app, cmd, window, cx),
         "search" => {
             let words = text(cmd, "text").to_string();
             let search = app.read(cx).search.clone();
@@ -1771,15 +1774,6 @@ fn shell_step(
                 model.update(cx, |m, cx| m.open_in_window(&id, cx));
             }
             Ok(json!(format!("ok {}", dock_summary(app, cx))))
-        }
-        // The Canvas page (thread_canvas.rs): show it, fly in and out, and
-        // read the board.
-        // Drawn first, as `click` is: the board is laid out as it's drawn,
-        // and a window the Mac isn't drawing (CI's, behind another) said
-        // only "showing" for good (24 Nov 2026).
-        "canvas" => {
-            window.render_frame(cx);
-            app.update(cx, |t, cx| t.canvas_command(cmd, window, cx))
         }
         "mode" => {
             let mode = match cmd["mode"].as_str().unwrap_or("inbox") {

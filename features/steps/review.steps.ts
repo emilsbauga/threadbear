@@ -18,6 +18,7 @@ export const reviewId = (world: ThreadbearWorld) => opened.get(world) ?? DEMO_RE
 
 type ReviewState = {
   id: string;
+  canvas?: { lit: string } | null;
   status: string;
   mode: string;
   focused: string;
@@ -102,8 +103,8 @@ When('I follow the link {string} in the agent\'s last reply', async function (th
   await this.app.do({ cmd: 'link', row: row.id, url });
 });
 
-Then('the review window is open on option {string}, one at a time', async function (this: ThreadbearWorld, id: string) {
-  await untilReview(this, `the review on ${id}, one at a time`, (s) => s.mode === 'Single' && s.focused === id && s.status === 'pending');
+Then('the review window is open on option {string}', async function (this: ThreadbearWorld, id: string) {
+  await untilReview(this, `the review on ${id}`, (s) => s.status === 'pending' && (s.canvas ? s.canvas.lit === `Opening(${id.charCodeAt(0) - 65})` || (id === 'A' && s.canvas.lit === 'Start') : s.mode === 'Single' && s.focused === id));
 });
 
 Then('the bar over the thread says {string}', async function (this: ThreadbearWorld, words: string) {

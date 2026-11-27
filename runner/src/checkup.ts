@@ -10,7 +10,11 @@
 //   the agent's --text note, which they read on the card first;
 // - a runner error is listed by its message only when that message is in
 //   the code of Mike's release (git grep at the tag), so anything of their
-//   own, and every log line's details, stay out. The rest is a count;
+//   own, and every log line's free-form details, stay out. Safe causes come
+//   only from fixed allowlists (error classes, OS errno codes, integer
+//   reinstall exit codes) or values verified against Mike's release (RPC
+//   method names, runner/src/ stack frames). Fork-only crashes and RPC
+//   methods are counted as "other", never named;
 // - a patch is named only when it's one of Mike's (built in, or a file in
 //   the release); theirs are a count;
 // - the draft goes through redaction.ts and has the home folder taken out;
@@ -23,12 +27,15 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { errorExitsPath } from './error-exits.ts';
 import { atomicWriteFileSync } from './fsutil.ts';
-import { scrubText } from './redaction.ts';
-import { LISTING_GIT_CONFIG, untrustedGitEnv } from './safe-git.ts';
-import { RELEASE_NAME, repoKey, signersPath, TAG_PREFIX, UPSTREAM_REFS, verifiedRelease, type SignedTag } from './upstream.ts';
 import { LAND_TIMES_FILE } from './land-queue.ts';
 import type { PatchInfo } from './protocol.ts';
+import { scrubText } from './redaction.ts';
+import { readState as readReleaseState } from './release.ts';
+import { LISTING_GIT_CONFIG, untrustedGitEnv } from './safe-git.ts';
+import { errorKind } from './sentry.ts';
+import { RELEASE_NAME, repoKey, signersPath, TAG_PREFIX, UPSTREAM_REFS, verifiedRelease, type SignedTag } from './upstream.ts';
 
 export const CHECKUPS_REPO = 'mikecann/threadbear';
 // The pinned Discussion check-ups go to, as comments
@@ -43,17 +50,48 @@ const DAY_MS = 86_400_000;
 const FIRST_LOOK_DAYS = 14;
 const MAX_LISTED = 10;
 const MAX_NOTE = 600;
+// Errors of the same bucket within this gap count as one burst, so a single
+// outage or full-disk storm doesn't look like hundreds of separate bugs.
+export const BURST_GAP_MS = 15 * 60_000;
+const GIB = 1024 ** 3;
+const LOW_DISK_BYTES = 10 * GIB;
+
+// Strict shapes for tokens verified against Mike's release before printing:
+// single-line, no spaces or quotes, so git grep can never match a substring
+// of one line and let the rest through.
+const METHOD_NAME = /^[a-z][a-zA-Z0-9._-]{0,59}$/;
+const SRC_FILE = /^[a-zA-Z0-9][a-zA-Z0-9_/-]{0,80}\.[cm]?[jt]s$/;
+
+export type ErrorSummary = {
+  message: string;
+  count: number;
+  // Safe cause token(s) from allowlists / release-verified identifiers (e.g.
+  // "ENOSPC", "threads.send, TypeError", "exit 1").
+  cause?: string;
+  // Present when multiple occurrences collapsed into fewer bursts (a storm).
+  bursts?: number;
+  // Duration in seconds when all occurrences happened in a single burst.
+  spanSeconds?: number;
+};
+
+export type RunnerHealth = {
+  rolledBack?: boolean;
+  restartGuardTripped?: boolean;
+  // Only set when free space is under 10 GiB (rounded to 0.1 GiB).
+  lowDiskGb?: number;
+};
 
 export type Checkup = {
   release?: { tag: string; date?: string; rev?: string };
   previous?: { tag: string; date?: string; rev?: string };
   sinceDays: number;
-  errors: { message: string; count: number }[];
+  errors: ErrorSummary[];
   otherErrors: number;
   updateFailing: boolean;
   patches: { id: string; error: string }[];
   otherPatchesFailing: number;
   checks?: LandingChecks;
+  health?: RunnerHealth;
   note?: string;
 };
 
@@ -102,22 +140,168 @@ export function parseLogLine(line: string): { at: number; level: string; message
   return { at, level: m[2], message: (cut >= 0 ? m[3].slice(0, cut) : m[3]).trim() };
 }
 
-// ERROR lines since `since`, counted by message, most first. `known` says
-// whether a message is one of Mike's (in his release's code); the rest are
-// only counted.
-export function countErrors(lines: string[], since: number, known: (message: string) => boolean): { errors: { message: string; count: number }[]; otherErrors: number } {
-  const counts = new Map<string, number>();
+type LogExtra = {
+  error?: string;
+  method?: string;
+  code?: number;
+};
+
+function parseLogExtra(line: string): LogExtra | undefined {
+  const m = /^\S+ (?:ERROR|WARN|INFO|DEBUG) (.*)$/.exec(line);
+  if (!m) return undefined;
+  const cut = m[1].indexOf(' {');
+  if (cut < 0) return undefined;
+  try {
+    const raw = JSON.parse(m[1].slice(cut + 1)) as Record<string, unknown>;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const out: LogExtra = {};
+    if (typeof raw.error === 'string') out.error = raw.error;
+    if (typeof raw.method === 'string') out.method = raw.method;
+    if (typeof raw.code === 'number' && Number.isInteger(raw.code)) out.code = raw.code;
+    return out;
+  } catch {
+    return undefined;
+  }
+}
+
+// Safe error cause from sentry.ts's fixed allowlist (error classes and OS
+// errno codes). Plain "Error" carries no extra signal so it's omitted, and
+// "Error (ENOSPC)" shortens to "ENOSPC".
+export function safeErrorCause(errorText: string | undefined): string | undefined {
+  if (!errorText) return undefined;
+  const kind = errorKind(errorText);
+  if (kind === 'Error') return undefined;
+  const plainErrno = /^Error \((E[A-Z0-9]{2,15})\)$/.exec(kind);
+  return plainErrno ? plainErrno[1] : kind;
+}
+
+// First runner `src/<file>` frame from a logged JS stack trace (skipping line
+// 0 so error message text cannot spoof a frame, and skipping node_modules).
+// Always checked against Mike's release before naming.
+export function topStackSourceFile(errorText: string | undefined): string | undefined {
+  if (!errorText) return undefined;
+  const lines = errorText.split(/\r?\n/);
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/^\s+at\s+/.test(line)) continue;
+    if (/node_modules[\\/]/.test(line)) continue;
+    const m = /(?:^|[\\/])src[\\/]([a-zA-Z0-9][a-zA-Z0-9_.\\/-]{0,80}\.[cm]?[jt]s)(?::\d+:\d+)?(?:\)|\s*$)/.exec(line);
+    if (!m) continue;
+    const rel = m[1].replace(/\\/g, '/');
+    if (rel.includes('..') || !SRC_FILE.test(rel)) continue;
+    return rel;
+  }
+  return undefined;
+}
+
+// Matches sentry.ts's non-bug filter: provider limits and offline network
+// retries aren't Threadbear bugs.
+function isNonBug(message: string, extra: LogExtra | undefined): boolean {
+  if (message === 'model call failed') return true;
+  if (message === 'convex sync failed; will retry' && /fetch failed/i.test(extra?.error ?? '')) return true;
+  return false;
+}
+
+export type CountErrorCheckers = {
+  // Whether an RPC method name exists in Mike's release code.
+  knownMethod?: (method: string) => boolean;
+  // Whether a runner/src/<rel> path exists in Mike's release tree.
+  knownSourceFile?: (rel: string) => boolean;
+};
+
+// ERROR lines since `since`, grouped by message + safe cause, collapsing
+// storms into bursts. `known` says whether a message is one of Mike's (in
+// his release's code); fork-only messages, fork-only RPC methods and crashes
+// whose top runner/src/ frame isn't in Mike's release are only counted.
+export function countErrors(
+  lines: string[],
+  since: number,
+  known: (message: string) => boolean,
+  checkers: CountErrorCheckers = {},
+): { errors: ErrorSummary[]; otherErrors: number } {
+  type Bucket = { message: string; cause?: string; times: number[] };
+  const buckets = new Map<string, Bucket>();
+  let otherErrors = 0;
+
   for (const line of lines) {
     const p = parseLogLine(line);
     if (!p || p.level !== 'ERROR' || p.at < since || !p.message) continue;
-    counts.set(p.message, (counts.get(p.message) ?? 0) + 1);
+    const extra = parseLogExtra(line);
+    if (isNonBug(p.message, extra)) continue;
+    if (!known(p.message)) {
+      otherErrors++;
+      continue;
+    }
+
+    let message = p.message;
+    const parts: string[] = [];
+
+    if (p.message === 'request failed' && extra?.method && checkers.knownMethod) {
+      if (!METHOD_NAME.test(extra.method) || !checkers.knownMethod(extra.method)) {
+        otherErrors++;
+        continue;
+      }
+      parts.push(extra.method);
+    }
+
+    if ((p.message === 'unhandled rejection' || p.message === 'uncaught exception') && checkers.knownSourceFile) {
+      const file = topStackSourceFile(extra?.error);
+      if (file) {
+        if (!checkers.knownSourceFile(file)) {
+          otherErrors++;
+          continue;
+        }
+        message = `${p.message} in ${file}`;
+      }
+    }
+
+    if (p.message === 'reinstall finished' && extra?.code !== undefined && extra.code >= -999 && extra.code <= 999) {
+      parts.push(`exit ${extra.code}`);
+    }
+
+    const cause = safeErrorCause(extra?.error);
+    if (cause) parts.push(cause);
+
+    const detail = parts.length ? parts.join(', ') : undefined;
+    const key = detail ? `${message}\0${detail}` : message;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { message, ...(detail ? { cause: detail } : {}), times: [] };
+      buckets.set(key, bucket);
+    }
+    bucket.times.push(p.at);
   }
-  const errors: { message: string; count: number }[] = [];
-  let otherErrors = 0;
-  for (const [message, count] of [...counts].sort((a, b) => b[1] - a[1])) {
-    if (errors.length < MAX_LISTED && known(message)) errors.push({ message, count });
-    else otherErrors += count;
-  }
+
+  const summarized: ErrorSummary[] = [...buckets.values()].map((b) => {
+    b.times.sort((a, z) => a - z);
+    let bursts = 1;
+    for (let i = 1; i < b.times.length; i++) {
+      if (b.times[i] - b.times[i - 1] > BURST_GAP_MS) bursts++;
+    }
+    const count = b.times.length;
+    const collapsed = bursts < count;
+    const spanSeconds = collapsed && bursts === 1 ? Math.round((b.times[count - 1] - b.times[0]) / 1000) : undefined;
+    return {
+      message: b.message,
+      count,
+      ...(b.cause ? { cause: b.cause } : {}),
+      ...(collapsed ? { bursts } : {}),
+      ...(spanSeconds ? { spanSeconds } : {}),
+    };
+  });
+
+  // Sort by distinct incidents first (so a single storm doesn't bury recurring
+  // bugs), then by total count, then alphabetically.
+  summarized.sort((a, b) => {
+    const aInc = a.bursts ?? a.count;
+    const bInc = b.bursts ?? b.count;
+    if (bInc !== aInc) return bInc - aInc;
+    if (b.count !== a.count) return b.count - a.count;
+    return a.message.localeCompare(b.message);
+  });
+
+  const errors = summarized.slice(0, MAX_LISTED);
+  for (const extra of summarized.slice(MAX_LISTED)) otherErrors += extra.count;
   return { errors, otherErrors };
 }
 
@@ -184,6 +368,42 @@ export function landingChecks(lines: string[], since: number, knownStep: (name: 
   };
 }
 
+function readRunnerHealth(home: string, since: number, freeBytesOverride?: number | null): RunnerHealth | undefined {
+  const health: RunnerHealth = {};
+
+  const rolledAt = readReleaseState(home)?.rolledBack?.at;
+  if (typeof rolledAt === 'string' && Date.parse(rolledAt) >= since) {
+    health.rolledBack = true;
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(errorExitsPath(home), 'utf8')) as { tripped?: { at?: string; lastErrorAt?: string } };
+    const tAt = raw?.tripped?.lastErrorAt ?? raw?.tripped?.at;
+    if (typeof tAt === 'string' && Date.parse(tAt) >= since) {
+      health.restartGuardTripped = true;
+    }
+  } catch {
+    // No error-exits file or unreadable.
+  }
+
+  let free: number | undefined;
+  if (freeBytesOverride !== undefined) {
+    free = freeBytesOverride ?? undefined;
+  } else {
+    try {
+      const s = fs.statfsSync(home);
+      free = s.bavail * s.bsize;
+    } catch {
+      free = undefined;
+    }
+  }
+  if (free !== undefined && Number.isFinite(free) && free >= 0 && free < LOW_DISK_BYTES) {
+    health.lowDiskGb = Math.round((free / GIB) * 10) / 10;
+  }
+
+  return Object.keys(health).length ? health : undefined;
+}
+
 function duration(s: number): string {
   if (s < 60) return `${s} s`;
   const m = Math.round(s / 60);
@@ -192,6 +412,19 @@ function duration(s: number): string {
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+function formatErrorLine(e: ErrorSummary): string {
+  const cause = e.cause ? ` (${e.cause})` : '';
+  let burst = '';
+  if (e.bursts && e.bursts < e.count) {
+    if (e.bursts === 1) {
+      burst = e.spanSeconds && e.spanSeconds >= 60 ? `, 1 burst over ${duration(e.spanSeconds)}` : ', 1 burst';
+    } else {
+      burst = `, ${e.bursts} bursts`;
+    }
+  }
+  return `- ${e.count}x ${e.message}${cause}${burst}`;
 }
 
 // The report as posted, markdown. Facts first, the agent's note last.
@@ -208,9 +441,12 @@ export function formatCheckup(c: Checkup): string {
   if (!c.errors.length && !c.otherErrors) lines.push(`Runner errors ${span}: none.`);
   else {
     lines.push(`Runner errors ${span}:`);
-    for (const e of c.errors) lines.push(`- ${e.count}x ${e.message}`);
+    for (const e of c.errors) lines.push(formatErrorLine(e));
     if (c.otherErrors) lines.push(`- ${plural(c.otherErrors, 'other', 'others')} (not from Threadbear's own code, so not listed)`);
   }
+  if (c.health?.rolledBack) lines.push(`A runner release rolled back after crashing ${span}.`);
+  if (c.health?.restartGuardTripped) lines.push(`The error-restart guard tripped ${span}.`);
+  if (c.health?.lowDiskGb !== undefined) lines.push(`Disk space is low right now (${c.health.lowDiskGb} GB free).`);
   if (c.checks) {
     const k = c.checks;
     const where = k.onCheckHost === k.count ? 'all on a check host' : k.onCheckHost ? `${k.onCheckHost} on a check host, ${k.count - k.onCheckHost} on their Mac` : 'all on their Mac, no check host';
@@ -326,6 +562,9 @@ export type CheckupInputs = {
   now: number;
   // The times log's lines; read from the checkout's git folder when left out.
   landTimes?: string[];
+  // Free disk bytes on `home`'s volume; read with statfsSync when left out.
+  // Pass null in tests to disable disk probing.
+  freeBytes?: number | null;
 };
 
 function readLandTimes(checkout: string): string[] {
@@ -344,11 +583,27 @@ export async function buildCheckup(i: CheckupInputs): Promise<Checkup> {
   const since = last ? Date.parse(last) : i.now - FIRST_LOOK_DAYS * DAY_MS;
   const sinceDays = Math.max(1, Math.round((i.now - since) / DAY_MS));
   const tag = release?.rev;
-  const cache = new Map<string, boolean>();
+  const msgCache = new Map<string, boolean>();
   const known = (message: string) => {
     if (!tag) return false;
-    if (!cache.has(message)) cache.set(message, spawnSync('git', [...GIT_CONFIG, '-C', i.checkout, 'grep', '-q', '-F', '-e', message, tag, '--', 'runner/src'], { encoding: 'utf8', env: GIT_ENV }).status === 0);
-    return cache.get(message)!;
+    if (!msgCache.has(message)) msgCache.set(message, spawnSync('git', [...GIT_CONFIG, '-C', i.checkout, 'grep', '-q', '-F', '-e', message, tag, '--', 'runner/src'], { encoding: 'utf8', env: GIT_ENV }).status === 0);
+    return msgCache.get(message)!;
+  };
+  const methodCache = new Map<string, boolean>();
+  const knownMethod = (method: string) => {
+    if (!tag || !METHOD_NAME.test(method)) return false;
+    if (!methodCache.has(method)) {
+      methodCache.set(method, spawnSync('git', [...GIT_CONFIG, '-C', i.checkout, 'grep', '-q', '-F', '-e', `'${method}'`, '-e', `"${method}"`, tag, '--', 'runner/src'], { encoding: 'utf8', env: GIT_ENV }).status === 0);
+    }
+    return methodCache.get(method)!;
+  };
+  const srcFileCache = new Map<string, boolean>();
+  const knownSourceFile = (rel: string) => {
+    if (!tag || rel.includes('..') || !SRC_FILE.test(rel)) return false;
+    if (!srcFileCache.has(rel)) {
+      srcFileCache.set(rel, git(i.checkout, ['cat-file', '-e', `${tag}:runner/src/${rel}`]) !== undefined);
+    }
+    return srcFileCache.get(rel)!;
   };
   const inRelease = (file: string) => {
     if (!tag) return false;
@@ -358,7 +613,18 @@ export async function buildCheckup(i: CheckupInputs): Promise<Checkup> {
   const note = i.note?.trim().replace(/\s+/g, ' ').slice(0, MAX_NOTE);
   const stepKnown = (name: string) => !!tag && spawnSync('git', [...GIT_CONFIG, '-C', i.checkout, 'grep', '-q', '-F', '-e', `"${name}"`, tag, '--', 'check.sh'], { encoding: 'utf8', env: GIT_ENV }).status === 0;
   const checks = landingChecks(i.landTimes ?? readLandTimes(i.checkout), since, stepKnown);
-  return { release, previous, sinceDays, ...countErrors(i.logLines, since, known), updateFailing: i.updateFailing, ...failingPatches(i.patches, inRelease), ...(checks ? { checks } : {}), ...(note ? { note } : {}) };
+  const health = readRunnerHealth(i.home, since, i.freeBytes);
+  return {
+    release,
+    previous,
+    sinceDays,
+    ...countErrors(i.logLines, since, known, { knownMethod, knownSourceFile }),
+    updateFailing: i.updateFailing,
+    ...failingPatches(i.patches, inRelease),
+    ...(checks ? { checks } : {}),
+    ...(health ? { health } : {}),
+    ...(note ? { note } : {}),
+  };
 }
 
 // Why this copy doesn't do check-ups, or undefined when it does.

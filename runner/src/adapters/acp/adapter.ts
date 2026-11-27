@@ -22,6 +22,7 @@ import { commandRule, ruleMayCover, shellWords } from '../codex/approvals.ts';
 import { toolGuidance, type ToolDefinition } from '../codex/tools.ts';
 import { fileContext, type NormalizerContext } from '../context.ts';
 import { formContent, formQuestions, type FormSchema } from '../elicitation.ts';
+import { acpCoordinatorTool, archiveReadTool, isHelperQuestionTool } from '../../coordinator-policy.ts';
 import type { AdapterOutput, AgentAdapter, AgentSession, QuestionAnswer, SessionSink, StartSessionOptions, ToolApprovalAnswer, TurnResult, UserInput } from '../types.ts';
 import { SessionNotFoundError } from '../types.ts';
 import type { AcpAgent } from './agents.ts';
@@ -56,6 +57,9 @@ export type AcpAdapterDeps = {
   // The runner's data dir, where an agent keeps what Threadbear gives it
   // (Grok's hook: grok-guard.ts).
   dataDir?: string;
+  // Extra MCP servers for every session, for an agent that takes them
+  // (AcpAgent.takesMcpServers): Agent Archive, read at each session's start.
+  mcpServers?: () => Record<string, { command: string; args: string[] }>;
 };
 
 // How often a login whose turns don't report its limits is read (an agent
@@ -68,15 +72,43 @@ export const LIMITS_POLL_MS = 10 * 60_000;
 export const EDIT_RULE = 'acp:edit';
 
 type ConfigOption = { id?: string; category?: string; type?: string; currentValue?: unknown; options?: unknown[] };
-// Grok's `models` also says each model's effort levels and its default one.
+// Grok's `models` also says each model's effort levels and its default one;
+// Antigravity lists `<modelId>-<level>` entries there.
 type ModelState = { availableModels?: unknown[] } | null;
 type SessionResult = { sessionId?: string; configOptions?: ConfigOption[] | null; modes?: { currentModeId?: string; availableModes?: { id?: string }[] } | null; models?: ModelState };
 
-// The effort levels a model lists (Grok: _meta.reasoningEfforts), those that
-// are Threadbear's own, and the one it marks as its default.
-export function modelEfforts(models: ModelState | undefined): Map<string, { levels: EffortLevel[]; defaultEffort?: EffortLevel }> {
+function optionValues(options: unknown[] | undefined): string[] {
+  const out: string[] = [];
+  const add = (o: unknown) => {
+    if (!isPlainObject(o)) return;
+    if (Array.isArray(o.options)) return o.options.forEach(add);
+    if (typeof o.value === 'string' && o.value) out.push(o.value);
+  };
+  if (Array.isArray(options)) options.forEach(add);
+  return out;
+}
+
+function thoughtLevelInfo(options: ConfigOption[] | null | undefined): { levels: EffortLevel[]; defaultEffort?: EffortLevel; hasDefault: boolean } | undefined {
+  const opt = options?.find((o) => o.category === 'thought_level');
+  if (!opt) return undefined;
+  const values = optionValues(opt.options);
+  const levels = [...new Set(values.filter(isEffortLevel))].sort((a, b) => EFFORT_LEVELS.indexOf(a) - EFFORT_LEVELS.indexOf(b));
+  const hasDefault = values.includes('default');
+  const defaultEffort = isEffortLevel(opt.currentValue) && levels.includes(opt.currentValue) ? opt.currentValue : undefined;
+  return { levels, ...(defaultEffort ? { defaultEffort } : {}), hasDefault };
+}
+
+// The effort levels each model lists, those that are Threadbear's own, and
+// the one it marks as its default: Grok's `_meta.reasoningEfforts`, or
+// Antigravity's `<modelId>-<level>` entries in `models.availableModels`.
+export function modelEfforts(
+  models: ModelState | undefined,
+  options?: ConfigOption[] | null,
+  includeCurrentAsDefault = true,
+): Map<string, { levels: EffortLevel[]; defaultEffort?: EffortLevel }> {
   const out = new Map<string, { levels: EffortLevel[]; defaultEffort?: EffortLevel }>();
-  for (const m of Array.isArray(models?.availableModels) ? models.availableModels : []) {
+  const available = Array.isArray(models?.availableModels) ? models.availableModels : [];
+  for (const m of available) {
     if (!isPlainObject(m) || typeof m.modelId !== 'string' || !isPlainObject(m._meta) || !Array.isArray(m._meta.reasoningEfforts)) continue;
     const levels: EffortLevel[] = [];
     let defaultEffort: EffortLevel | undefined;
@@ -89,13 +121,35 @@ export function modelEfforts(models: ModelState | undefined): Map<string, { leve
     levels.sort((a, b) => EFFORT_LEVELS.indexOf(a) - EFFORT_LEVELS.indexOf(b));
     if (levels.length) out.set(m.modelId, { levels, ...(defaultEffort ? { defaultEffort } : {}) });
   }
+  const baseIds = new Set(optionValues(options?.find((o) => o.category === 'model')?.options));
+  if (baseIds.size) {
+    const byBase = new Map<string, Set<EffortLevel>>();
+    for (const m of available) {
+      if (!isPlainObject(m) || typeof m.modelId !== 'string') continue;
+      const dash = m.modelId.lastIndexOf('-');
+      if (dash <= 0) continue;
+      const base = m.modelId.slice(0, dash);
+      const level = m.modelId.slice(dash + 1);
+      if (!baseIds.has(base) || out.has(base) || !isEffortLevel(level)) continue;
+      const set = byBase.get(base) ?? new Set<EffortLevel>();
+      set.add(level);
+      byBase.set(base, set);
+    }
+    const currentThought = includeCurrentAsDefault ? options?.find((o) => o.category === 'thought_level')?.currentValue : undefined;
+    const currentDefault = isEffortLevel(currentThought) ? currentThought : undefined;
+    for (const [base, set] of byBase) {
+      const levels = [...set].sort((a, b) => EFFORT_LEVELS.indexOf(a) - EFFORT_LEVELS.indexOf(b));
+      const defaultEffort = currentDefault && levels.includes(currentDefault) ? currentDefault : undefined;
+      out.set(base, { levels, ...(defaultEffort ? { defaultEffort } : {}) });
+    }
+  }
   return out;
 }
 
 export function modelChoices(options: ConfigOption[] | null | undefined, models?: ModelState): ModelChoice[] {
   const model = options?.find((o) => o.category === 'model');
   if (!model || !Array.isArray(model.options)) return [];
-  const efforts = modelEfforts(models);
+  const efforts = modelEfforts(models, options);
   const out: ModelChoice[] = [];
   const add = (o: unknown) => {
     if (!isPlainObject(o)) return;
@@ -186,9 +240,44 @@ export class AcpAdapter implements AgentAdapter {
 
   // What session/new offers. It makes a session in the agent's own list; a
   // folder of temp means it's in nobody's way, and it's closed where the
-  // agent can.
-  async models(account: Account): Promise<ModelChoice[]> {
-    return this.shortLived(account, `models:${account.id}`, async (_p, r) => modelChoices(r?.configOptions, r?.models));
+  // agent can. For an agent that only reports thought_level for the active
+  // model (OpenCode 2), switches through each model to read its effortLevels.
+  async models(account: Account, signal?: AbortSignal): Promise<ModelChoice[]> {
+    return this.shortLived(
+      account,
+      `models:${account.id}`,
+      async (p, r) => {
+        const choices = modelChoices(r?.configOptions, r?.models);
+        if (!r?.sessionId || !choices.length || choices.some((c) => c.effortLevels?.length)) return choices;
+        if (providerInfo(this.provider).effort === 'none') return choices;
+        const modelOpt = r.configOptions?.find((o) => o.category === 'model');
+        if (!modelOpt?.id) return choices;
+        const hasThought = Boolean(r.configOptions?.some((o) => o.category === 'thought_level'));
+        if (!hasThought && !this.deps.agent.probesModelEfforts) return choices;
+        const active = typeof modelOpt.currentValue === 'string' ? modelOpt.currentValue : undefined;
+        const probed = new Map<string, { levels: EffortLevel[]; defaultEffort?: EffortLevel }>();
+        const note = (id: string, opts: ConfigOption[] | null | undefined) => {
+          const tl = thoughtLevelInfo(opts);
+          if (tl?.levels.length) probed.set(id, { levels: tl.levels, ...(tl.defaultEffort ? { defaultEffort: tl.defaultEffort } : {}) });
+        };
+        if (active) note(active, r.configOptions);
+        for (const c of choices) {
+          if (c.id === active) continue;
+          try {
+            const next = await p.request<SessionResult>('session/set_config_option', { sessionId: r.sessionId, configId: modelOpt.id, value: c.id }, MODEL_PROBE_MS);
+            note(c.id, next?.configOptions);
+          } catch (e) {
+            if (e instanceof AcpExitedError || (e instanceof AcpRpcError && e.code === -32601)) break;
+          }
+        }
+        if (!probed.size) return choices;
+        return choices.map((c) => {
+          const e = probed.get(c.id);
+          return e ? { ...c, effortLevels: e.levels, ...(e.defaultEffort ? { defaultEffort: e.defaultEffort } : {}) } : c;
+        });
+      },
+      { deadlineMs: MODELS_DEADLINE_MS, signal },
+    );
   }
 
   // A login's limits from the agent's own request (Grok's _x.ai/billing):
@@ -244,8 +333,9 @@ export class AcpAdapter implements AgentAdapter {
     account: Account,
     label: string,
     job: (p: AcpProcess, session: SessionResult | undefined, commands: (ms: number) => Promise<string[]>) => Promise<T>,
-    o: { session?: boolean; noTools?: boolean; deadlineMs?: number } = {},
+    o: { session?: boolean; noTools?: boolean; deadlineMs?: number; signal?: AbortSignal } = {},
   ): Promise<T> {
+    o.signal?.throwIfAborted();
     const { deps } = this;
     const bin = this.binary();
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'threadbear-acp-'));
@@ -276,6 +366,8 @@ export class AcpAdapter implements AgentAdapter {
     let init: InitializeResult | undefined;
     const deadline = o.deadlineMs ? setTimeout(() => p.kill(), o.deadlineMs) : undefined;
     deadline?.unref();
+    const onAbort = () => p.kill();
+    o.signal?.addEventListener('abort', onAbort, { once: true });
     try {
       init = await p.start();
       if (!deps.agent.identifies(init)) throw new Error(`The program found for ${providerName(this.provider)} isn't it.`);
@@ -285,6 +377,7 @@ export class AcpAdapter implements AgentAdapter {
       if (r?.sessionId && p.alive && init?.agentCapabilities?.sessionCapabilities?.close !== undefined) await p.request('session/close', { sessionId: r.sessionId }, CLOSE_SESSION_MS).catch(() => undefined);
       clearTimeout(deadline);
       await p.close().catch(() => undefined);
+      o.signal?.removeEventListener('abort', onAbort);
       removeQuietly(cwd);
     }
   }
@@ -300,6 +393,9 @@ const USAGE_PROMPT_MS = 30_000;
 // recheck moves on. Antigravity 1.4.5's /usage takes 4 to 18 s, Grok's
 // _x.ai/billing under a second.
 const LIMITS_DEADLINE_MS = 50_000;
+// A short-lived models() read (OpenCode 2 probes ~100 models in ~400 ms).
+const MODELS_DEADLINE_MS = 20_000;
+const MODEL_PROBE_MS = 5_000;
 // A short-lived session's session/close: it's closed anyway after.
 const CLOSE_SESSION_MS = 5_000;
 // More than any answer is: what a runaway one adds past it is dropped.
@@ -340,6 +436,8 @@ export class AcpSession implements AgentSession {
   private ownEfforts = new Map<string, { levels: EffortLevel[]; defaultEffort?: EffortLevel }>();
   // The threadbear tools this session's MCP server offers, as the agent names them.
   private ownTools = new Set<string>();
+  // Agent Archive is the runner's own server in this session (session start).
+  private archiveOurs = false;
   // Every frame of a tool call, by id, as the agent sent it: whether any said
   // it's an MCP call, and every argument list it carried. A later frame
   // can't wash out what an earlier one said (Codex's and Gemini's third
@@ -429,10 +527,35 @@ export class AcpSession implements AgentSession {
         mode: () => this.mode,
         rules: () => this.rules,
         addRules: (rules) => this.addRules(rules),
+        ...(opts.coordinator
+          ? {
+              checkCoordinator: (fullName: string, args: Record<string, unknown>) =>
+                opts.coordinator!.checkTool({ name: fullName, input: args, agentId: opts.coordinator!.role === 'helper' ? opts.threadId : undefined }),
+            }
+          : {}),
       });
       const url = await this.mcp.listen();
       mcpServers = [{ type: 'http', name: 'threadbear', url, headers: [{ name: 'Authorization', value: `Bearer ${this.mcp.token}` }] }];
       this.ownTools = new Set(defs.map((d) => `threadbear__${d.name}`));
+    }
+    if (deps.agent.takesMcpServers) {
+      const own = (deps.agent.mcpConfigFiles?.(os.homedir(), opts.cwd) ?? []).flatMap((f) => {
+        try {
+          return [fs.readFileSync(f, 'utf8')];
+        } catch {
+          return [];
+        }
+      });
+      for (const [name, s] of Object.entries(deps.mcpServers?.() ?? {})) {
+        // The agent's own config names a server the same: that one could
+        // answer instead, so ours isn't added, nor its calls trusted.
+        if (own.some((text) => text.includes(name))) {
+          deps.log.warn('acp: not adding a runner MCP server the agent config already names', { threadId: opts.threadId, name });
+          continue;
+        }
+        mcpServers.push({ name, command: s.command, args: s.args, env: [] });
+        if (name === 'agent-archive') this.archiveOurs = true;
+      }
     }
 
     let res: SessionResult;
@@ -449,13 +572,14 @@ export class AcpSession implements AgentSession {
     this.sessionId = this.sessionId ?? res.sessionId;
     if (typeof this.sessionId !== 'string' || !this.sessionId) throw new Error(`${name} started a session without an id`);
     this.noteOptions(res);
-    this.ownEfforts = modelEfforts(res.models);
+    this.ownEfforts = modelEfforts(res.models, res.configOptions, !opts.resume);
     if (!opts.resume) {
-      this.preamble = [defs.length ? toolGuidance(defs) : '', defs.length ? (deps.extraGuidance?.() ?? '') : '', deps.agent.folderNote?.(opts.cwd) ?? '', opts.instructions ?? ''].filter(Boolean).join('\n\n') || undefined;
+      const isHelper = opts.coordinator?.role === 'helper';
+      this.preamble = [!isHelper && defs.length ? toolGuidance(defs) : '', !isHelper && defs.length ? (deps.extraGuidance?.() ?? '') : '', deps.agent.folderNote?.(opts.cwd) ?? '', opts.instructions ?? ''].filter(Boolean).join('\n\n') || undefined;
     }
     await this.applyMode();
     if (this.model) await this.applyModel(this.model);
-    if (this.effort) await this.applyEffort(this.effort);
+    if (this.effort !== undefined || opts.resume) await this.applyEffort(this.effort);
     const model = this.modelNow();
     this.sink.output({ kind: 'session', nativeSessionId: this.sessionId, ...(model ? { model } : {}) });
     this.state = 'ready';
@@ -520,9 +644,16 @@ export class AcpSession implements AgentSession {
     return run;
   }
 
+  private effectiveMode(): PermissionMode {
+    // Cursor's agent mode runs edits without asking, so a Cursor coordinator
+    // stays in ask (read-only) mode even when the thread is in Full access.
+    if (this.opts.coordinator?.role === 'coordinator' && this.deps.agent.provider === 'cursor') return 'ask';
+    return this.mode;
+  }
+
   private async settleMode(): Promise<void> {
     for (let i = 0; i < 8; i++) {
-      const want = this.deps.agent.modeFor(this.mode);
+      const want = this.deps.agent.modeFor(this.effectiveMode());
       if (!want || want === this.currentMode) return;
       await this.setAgentMode(want);
     }
@@ -539,11 +670,11 @@ export class AcpSession implements AgentSession {
         this.currentMode = want;
       }
     } catch (e) {
-      if (this.mode !== 'full') throw new Error(`Couldn't put ${providerName(this.deps.agent.provider)} in its ${want} mode, so this thread wasn't started (${(e as Error).message}).`);
+      if (this.effectiveMode() !== 'full') throw new Error(`Couldn't put ${providerName(this.deps.agent.provider)} in its ${want} mode, so this thread wasn't started (${(e as Error).message}).`);
       this.deps.log.info('could not set the agent mode', { threadId: this.opts.threadId, want, error: String(e) });
       return;
     }
-    if (this.currentMode !== want && this.mode !== 'full') throw new Error(`Couldn't put ${providerName(this.deps.agent.provider)} in its ${want} mode, so this thread wasn't started.`);
+    if (this.currentMode !== want && this.effectiveMode() !== 'full') throw new Error(`Couldn't put ${providerName(this.deps.agent.provider)} in its ${want} mode, so this thread wasn't started.`);
   }
 
   private modeChain: Promise<unknown> = Promise.resolve();
@@ -560,14 +691,16 @@ export class AcpSession implements AgentSession {
     }
   }
 
-  // An agent that has a thought_level option (Grok's reasoning_effort) takes
-  // the thread's effort there; undefined is the model's own level. Others have
-  // none, and providers.ts says so, so the runner never sends them one.
+  // An agent that has a thought_level option (Grok's reasoning_effort,
+  // Antigravity's thinking_level, OpenCode 2's effort) takes the thread's
+  // effort there; undefined resets to an explicit "default" option when the
+  // agent offers one, else the model's own default level.
   private async applyEffort(effort: EffortLevel | undefined): Promise<void> {
     const option = this.configOptions.find((o) => o.category === 'thought_level');
     if (!option?.id) return;
     const model = this.modelNow();
-    const value = effort ?? (model ? this.ownEfforts.get(model)?.defaultEffort : undefined);
+    const modelDefault = model ? (this.ownEfforts.get(model)?.defaultEffort ?? this.opts.account.models?.find((m) => m.id === model)?.defaultEffort) : undefined;
+    const value: string | undefined = effort ?? (optionValues(option.options).includes('default') ? 'default' : modelDefault);
     if (!value || value === option.currentValue) return;
     try {
       const r = await this.proc.request<SessionResult>('session/set_config_option', { sessionId: this.sessionId, configId: option.id, value });
@@ -792,14 +925,46 @@ export class AcpSession implements AgentSession {
     this.proc.respond(id, optionId ? { outcome: { outcome: 'selected', optionId } } : { outcome: { outcome: 'cancelled' } });
   }
 
+  // One of Agent Archive's read tools, by name, with every frame of the call
+  // saying it was that same tool and none running or writing anything, as
+  // for the threadbear tools below. A call with no history never counts.
+  private archiveRead(mcpName: string | undefined, frames: ReturnType<typeof this.callFrames.get>): boolean {
+    return Boolean(this.archiveOurs && this.deps.agent.trustsRunnerMcp && mcpName && archiveReadTool(mcpName) && frames && [...frames.ids].every((i) => i === mcpName) && frames.named.get(mcpName) === frames.acting && frames.kinds.size <= 1 && ![...frames.kinds].some((k) => k === 'execute' || writesFiles(k)));
+  }
+
   private async permission(id: RequestId, p: { toolCall?: AcpToolCall; options?: PermissionOption[] }): Promise<void> {
     const options = Array.isArray(p.options) ? p.options : [];
     const frames = typeof p.toolCall?.toolCallId === 'string' && p.toolCall.toolCallId !== '' ? this.callFrames.get(p.toolCall.toolCallId) : undefined;
     const mcpCall = Boolean(frames?.mcp) || (p.toolCall !== undefined && isMcpFrame(p.toolCall));
     const seen = this.normalizer.noteCall(p.toolCall ?? {});
     this.emit(this.normalizer.flush());
+    const coord = this.opts.coordinator;
+    if (coord) {
+      const mcpNameEarly = p.toolCall ? this.deps.agent.mcpToolName?.(p.toolCall) : undefined;
+      const toolName = typeof p.toolCall?.name === 'string' ? p.toolCall.name : undefined;
+      const externalEarly = (mcpCall || mcpNameEarly !== undefined) && !(mcpNameEarly !== undefined && this.ownTools.has(mcpNameEarly));
+      const rawArgs = isPlainObject(p.toolCall?.rawInput) ? (p.toolCall.rawInput as Record<string, unknown>) : seen.input;
+      const policy = acpCoordinatorTool({ role: coord.role, kind: seen.kind, name: toolName, mcpName: mcpNameEarly, external: externalEarly, readOnlyMcp: this.archiveRead(mcpNameEarly, frames) });
+      const checkName = mcpNameEarly ? `mcp__${mcpNameEarly}` : (toolName ?? seen.kind ?? 'tool');
+      let refused: string | undefined;
+      try {
+        refused = coord.checkTool({ name: checkName, input: rawArgs, agentId: coord.role === 'helper' ? this.opts.threadId : undefined }) ?? policy.reason;
+      } catch {
+        refused = 'The runner could not verify this coordinator operation.';
+      }
+      if (coord.role === 'helper' && toolName && isHelperQuestionTool(toolName)) {
+        const rawQs = Array.isArray(rawArgs.questions) ? rawArgs.questions : [];
+        const qs: Question[] = rawQs
+          .filter((q): q is Record<string, unknown> => isPlainObject(q) && typeof q.question === 'string')
+          .map((q) => ({ question: String(q.question), header: typeof q.header === 'string' ? q.header : 'Helper question', options: Array.isArray(q.options) ? q.options.filter((o): o is { label: string; description?: string } => isPlainObject(o) && typeof o.label === 'string') : [], multiSelect: Boolean(q.multiSelect ?? q.is_multi_select) }));
+        if (qs.length) coord.helperQuestion?.(this.opts.threadId, qs);
+      }
+      if (refused) return this.answer(id, options, false, seen.id);
+    }
     // Read at the moment it's asked, not when the turn began.
     if (this.mode === 'full') return this.answer(id, options, true, seen.id);
+    // Agent Archive only reads, so its tools go ahead in any mode.
+    if (this.archiveRead(p.toolCall ? this.deps.agent.mcpToolName?.(p.toolCall) : undefined, frames)) return this.answer(id, options, true, seen.id);
     // One of this session's own threadbear tools: its MCP server asks where
     // the tool needs it (tool-gate.ts), so a card here would be a second one.
     // Grok names the tool exactly, and a name it can't find doesn't run.

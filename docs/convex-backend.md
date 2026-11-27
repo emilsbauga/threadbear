@@ -182,6 +182,15 @@ all meet. So:
   says "Update it on the Mac" when the backend is below
   `BackendCompatibility.minimumAPIVersion` (ThreadbearKit).
 
+Project coordinators (API 102) add optional `coordinatorProjectId` to the
+phone thread and sidebar index rows. A nonempty string moves the thread to
+Coordinators above Starred; archived still wins. The runner keeps sleeping
+coordinators in the inbox view so their heading remains visible. Older
+backends receive ordinary thread rows without the field; older apps ignore
+it. The phones and website can read and message a coordinator and answer its
+questions. The experiment's project home, editable project state and setup
+controls are initially in the Mac app.
+
 ## 6. The phone's API
 
 Agreed with thread f5247e5b on 27 Oct. All in `convex/phone.ts`. Every

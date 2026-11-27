@@ -1003,10 +1003,10 @@ Mac"; Box mode, "A refused token"), behind the `virtualRunners` experiment
   row archived (Codex's review of slice 5, with the first sidebar row's
   secrets scrubbed).
 - **A refused token.** A box's turn refused with a 401 sends
-  `boxes:tokenRefused` (only the token it was given dies), holds the thread
+  `boxes:tokenRefused` (only its own grant is quarantined), holds the thread
   and asks `boxes:boxCloudToken` every 30 s; a newer token is written in,
   the CLI closed, and the thread carries on by itself
-  (`runner/src/box-token.ts`). The card comes back meanwhile.
+  (`runner/src/box-token.ts`). Only that box’s card comes back meanwhile; other threads keep using the login token. An owner SET releases grants already quarantined; active boxes cannot fetch a succession of replacements.
 
 Not built in this slice: Settings' list of cloud tokens with their expiry,
 a picture with a virtual runner thread's first message, and the first

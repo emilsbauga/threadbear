@@ -877,8 +877,7 @@ impl Threadbear {
 
     fn render_hello_folder(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let folder = self
-            .runner_settings
-            .as_ref()
+            .runner_settings()
             .and_then(|s| s["defaultCwd"].as_str())
             .unwrap_or("")
             .to_owned();
@@ -1041,7 +1040,7 @@ impl Threadbear {
     }
 
     fn render_hello_extras(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let settings = self.runner_settings.clone().unwrap_or(Value::Null);
+        let settings = self.runner_settings().cloned().unwrap_or(Value::Null);
         let mut rows = vec![];
         if let Some(on) = settings["labReview"].as_bool() {
             let switch = switch(

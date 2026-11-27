@@ -787,6 +787,12 @@ With `keep`:
   again. Only while the folder is still the thread's own checkout, and only
   real folders inside it, never through a link; each is renamed aside right
   after that check, then deleted.
+- With the `buildCacheCleanup` experiment on (`runner/src/build-cache-cleanup.ts`),
+  an hourly sweep also clears git-ignored Cargo `CACHEDIR.TAG` build folders
+  (like `desktop/target`) not listed in `keep` from spare, kept-archived and
+  long-idle open worktrees (plus stale shared build caches under
+  `~/Library/Caches/Threadbear` and `~/.cache/threadbear-check/local-builds`),
+  and sweeps aggressively whenever free disk drops below 10 GiB.
 - The record keeps `keep`, and `spare: true` once it's set aside. What the
   record says of the worktree (held, cleanup owed, removed, handed on) is
   one state type in `runner/src/slot.ts`, with every write in its

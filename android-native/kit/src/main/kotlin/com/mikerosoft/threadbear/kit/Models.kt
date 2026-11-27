@@ -201,6 +201,7 @@ data class PhoneThread(
     val asked: String? = null,
     val archivedAt: Instant? = null,
     val starredAt: Instant? = null,
+    val coordinatorProjectId: String? = null,
     val costUsd: Double? = null,
     val projects: List<ProjectRef>? = null,
     val working: String? = null,
@@ -209,6 +210,8 @@ data class PhoneThread(
     val asks: List<PhoneAsk>? = null,
     val asksSeq: Double? = null,
     val next: List<String>? = null,
+    val nextPick: String? = null,
+    val nextSuggested: Double? = null,
     val needs: String? = null,
     val pendingReviews: Double? = null,
     val waitingForRoom: PhoneWaitingForRoom? = null,
@@ -234,6 +237,17 @@ data class PhoneThread(
 ) {
     val id get() = threadId
     val isBusy get() = status == ThreadStatus.RUNNING || status == ThreadStatus.STARTING
+
+    /** Whether the Done card follow-ups are mutually exclusive choices. */
+    val nextPickOne: Boolean get() = nextPick == "one" && (next?.size ?: 0) > 1
+
+    /** Validated 0-based index for `nextSuggested` when `nextPick == "one"`. */
+    val nextSuggestedIndex: Int?
+        get() {
+            if (!nextPickOne) return null
+            val idx = nextSuggested?.wholeCount() ?: return null
+            return idx.takeIf { it < (next?.size ?: 0) }
+        }
 
     /** A design review waits on Mike and the thread has finished working. */
     val reviewWaiting get() = waitState?.let { it == WaitState.REVIEW } ?: ((pendingReviews ?: 0.0) > 0 && !isBusy && working == null)
@@ -294,6 +308,7 @@ data class PhoneThread(
             asked = o.str("asked"),
             archivedAt = o.date("archivedAt"),
             starredAt = o.date("starredAt"),
+            coordinatorProjectId = o.str("coordinatorProjectId")?.takeIf { it.isNotBlank() },
             costUsd = o.num("costUsd"),
             projects = o.arr("projects")?.lossy { val p = it as JsonObject; ProjectRef(p.needStr("id"), p.needStr("title")) },
             working = o.str("working"),
@@ -302,6 +317,8 @@ data class PhoneThread(
             asks = o.arr("asks")?.lossy { PhoneAsk.read(it as JsonObject) },
             asksSeq = o.num("asksSeq"),
             next = o.strings("next"),
+            nextPick = o.str("nextPick"),
+            nextSuggested = o.num("nextSuggested"),
             needs = o.str("needs"),
             pendingReviews = o.num("pendingReviews"),
             waitingForRoom = o.obj("waitingForRoom")?.let { w -> w.str("until")?.let { PhoneWaitingForRoom(it, w.str("accountId")) } },

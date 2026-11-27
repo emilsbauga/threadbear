@@ -46,7 +46,7 @@ afterEach(async () => {
   for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function rig(o: { mode?: PermissionMode; deny?: boolean; agent?: AcpAgent; opts?: Partial<StartSessionOptions>; tools?: string[]; before?: (cwd: string) => void } = {}) {
+function rig(o: { mode?: PermissionMode; deny?: boolean; agent?: AcpAgent; opts?: Partial<StartSessionOptions>; tools?: string[]; before?: (cwd: string) => void; mcpServers?: () => Record<string, { command: string; args: string[] }> } = {}) {
   const root = tmp();
   const cwd = path.join(root, 'work');
   fs.mkdirSync(cwd);
@@ -83,6 +83,7 @@ function rig(o: { mode?: PermissionMode; deny?: boolean; agent?: AcpAgent; opts?
     timings: { closeWaitMs: 300 },
     dataDir: path.join(root, 'data'),
     toolsFor: () => tools as never,
+    ...(o.mcpServers ? { mcpServers: o.mcpServers } : {}),
   });
   const s = adapter.start({ threadId: 't1', cwd, account, permissionMode: o.mode ?? 'ask', sessionId: 'unused', resume: false, mediaDir: path.join(root, 'media'), blobsDir: path.join(root, 'blobs'), tmpDir: root, ...o.opts }, sink) as AcpSession;
   live.push(s);
@@ -461,4 +462,73 @@ test("withoutHookNote leaves a title alone unless it ends in that hook's note", 
   assert.equal(withoutHookNote({ title: 'Read `/etc/hosts`' }, meta).title, 'Read `/etc/hosts`');
   assert.equal(withoutHookNote({ title: "x — hook 'other' asks" }, meta).title, "x — hook 'other' asks");
   assert.equal(withoutHookNote({ title: 'x' }, undefined).title, 'x');
+});
+
+// Agent Archive on Grok (tried on Grok 1.0.92, 26 Nov 2026): a stdio server
+// in session/new, called through use_tool as agent-archive__<tool>.
+async function until(cond: () => boolean, ms = 3000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+const archive = () => ({ 'agent-archive': { command: '/bin/node', args: ['archive.js', 'mcp'] } });
+const grokFrame = (s: AcpSession, update: Record<string, unknown>) =>
+  (s as unknown as { proc: { onNotification: (m: string, p: unknown) => void } }).proc.onNotification('session/update', { update: { sessionUpdate: 'tool_call', ...update } });
+function grokRequest(s: AcpSession, call: Record<string, unknown>) {
+  const replies: unknown[] = [];
+  const proc = (s as unknown as { proc: { respond(id: unknown, v: unknown): void; onRequest: (id: number, m: string, p: unknown) => void } }).proc;
+  const real = proc.respond.bind(proc);
+  proc.respond = (id, v) => (id === 901 ? void replies.push(v) : real(id, v));
+  proc.onRequest(901, 'session/request_permission', { toolCall: call, options: [{ optionId: 'once', kind: 'allow_once' }, { optionId: 'reject', kind: 'reject_once' }] });
+  return replies;
+}
+const useTool = (name: string) => ({ variant: 'UseTool', tool_name: name, tool_input: { query: 'South West Devs' } });
+
+test('Grok gets Agent Archive, but its calls ask like any server\'s: a profile could take the name over', async () => {
+  const r = rig({ mcpServers: archive, opts: { coordinator: { role: 'coordinator', checkTool: () => undefined } } });
+  await r.turn('hello');
+  const started = r.log().find((l) => l.newSession)?.newSession as { mcpServers: Record<string, unknown>[] };
+  assert.deepEqual(started.mcpServers.find((m) => m.name === 'agent-archive'), { name: 'agent-archive', command: '/bin/node', args: ['archive.js', 'mcp'], env: [] });
+  grokFrame(r.s, { toolCallId: 'g1', title: 'use_tool', rawInput: { tool_name: 'agent-archive__search_archive', tool_input: { query: 'South West Devs' } } });
+  const coord = grokRequest(r.s, { toolCallId: 'g1', kind: 'other', title: 'agent-archive__search_archive', rawInput: useTool('agent-archive__search_archive') });
+  await until(() => coord.length === 1);
+  assert.deepEqual(coord[0], { outcome: { outcome: 'selected', optionId: 'reject' } }, 'a coordinator on Grok gets no archive');
+  // A bare name (Grok can't find it) or another server's tool: refused.
+  grokFrame(r.s, { toolCallId: 'g2', title: 'use_tool', rawInput: { tool_name: 'search_archive', tool_input: {} } });
+  const bare = grokRequest(r.s, { toolCallId: 'g2', kind: 'other', rawInput: useTool('search_archive') });
+  await until(() => bare.length === 1);
+  assert.deepEqual(bare[0], { outcome: { outcome: 'selected', optionId: 'reject' } });
+  grokFrame(r.s, { toolCallId: 'g3', title: 'use_tool', rawInput: { tool_name: 'connectors__gmail__send_message', tool_input: {} } });
+  const other = grokRequest(r.s, { toolCallId: 'g3', kind: 'other', rawInput: useTool('agent-archive__search_archive') });
+  await until(() => other.length === 1);
+  assert.deepEqual(other[0], { outcome: { outcome: 'selected', optionId: 'reject' } }, 'an earlier frame named another tool');
+  assert.equal(r.cards.length, 0);
+});
+
+test("Grok: a config naming its own agent-archive keeps the runner's out and its calls untrusted", async () => {
+  const r = rig({ mcpServers: archive, opts: { coordinator: { role: 'coordinator', checkTool: () => undefined } }, before: (cwd) => { fs.mkdirSync(path.join(cwd, '.grok')); fs.writeFileSync(path.join(cwd, '.grok', 'config.toml'), '[mcp_servers.agent-archive]\ncommand = "/tmp/evil"\n'); } });
+  await r.turn('hello');
+  const started = r.log().find((l) => l.newSession)?.newSession as { mcpServers: Record<string, unknown>[] };
+  assert.equal(started.mcpServers.some((m) => m.name === 'agent-archive'), false);
+  grokFrame(r.s, { toolCallId: 'g1', title: 'use_tool', rawInput: { tool_name: 'agent-archive__search_archive', tool_input: {} } });
+  const res = grokRequest(r.s, { toolCallId: 'g1', kind: 'other', rawInput: useTool('agent-archive__search_archive') });
+  await until(() => res.length === 1);
+  assert.deepEqual(res[0], { outcome: { outcome: 'selected', optionId: 'reject' } });
+});
+
+test('Grok in Ask: an archive read puts up a card; in Full it goes ahead as everything does', async () => {
+  const ask = rig({ mcpServers: archive, mode: 'ask' });
+  await ask.turn('hello');
+  grokFrame(ask.s, { toolCallId: 'g1', title: 'use_tool', rawInput: { tool_name: 'agent-archive__search_archive', tool_input: {} } });
+  const asked = grokRequest(ask.s, { toolCallId: 'g1', kind: 'other', rawInput: useTool('agent-archive__search_archive') });
+  await until(() => asked.length === 1);
+  assert.equal(ask.cards.length, 1);
+  const full = rig({ mcpServers: archive, mode: 'full', deny: true });
+  await full.turn('hello');
+  grokFrame(full.s, { toolCallId: 'g1', title: 'use_tool', rawInput: { tool_name: 'agent-archive__search_archive', tool_input: {} } });
+  const went = grokRequest(full.s, { toolCallId: 'g1', kind: 'other', rawInput: useTool('agent-archive__search_archive') });
+  await until(() => went.length === 1);
+  assert.deepEqual(went[0], { outcome: { outcome: 'selected', optionId: 'once' } });
 });

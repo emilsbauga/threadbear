@@ -20,7 +20,8 @@ type ProviderInfo = {
   loginCommand: string  // run in a Terminal to sign a login in ("claude auth login")
   effort: "claude" | "codex" | "none" // which effort levels it offers: Claude's,
                         // those plus Codex's ultra, or none of Threadbear's own
-                        // (Grok: "codex", each model's effortLevels narrowing it)
+                        // (Grok: "codex"; Antigravity and OpenCode: "claude",
+                        // each model's effortLevels narrowing it)
   autoMode: "classifier" | "asks"     // Auto: a classifier judges each action, or
                         // it behaves like Ask (Codex)
   rewind: boolean       // can go back to an earlier message
@@ -69,6 +70,19 @@ type Account = {
                         // isn't coming). Pools and the default account skip
                         // it; clients say "Plan ended", and offer no sign-in
                         // or reset for it
+  resetHint?: ResetHint // a usage reset worth using now (Pools, "Telling Mike
+                        // about resets"). Worked out by the runner alone, so
+                        // every client draws the same; absent when there's
+                        // nothing to say
+}
+
+type ResetHint = {
+  why: "out" | "expiring" // out: blocked, or under 1% in its 5-hour or weekly
+                        // window. expiring: the soonest reset expires within 3
+                        // days and the week is under 70% left. An unknown why
+                        // is drawn as out
+  available: number     // resets left, at least 1
+  nextExpiresAt?: string // when the soonest expires
 }
 
 // "ultra" is Codex's multi-agent level. Claude never offers it.
@@ -100,9 +114,11 @@ type AccountUsage = {
                         // there's no live reading since
   blocked?: boolean     // the provider says this login is at its limit
   notice?: string       // Token Stats' own note ("64,390 credits · 2 limit resets available")
-  resets?: { available: number, nextExpiresAt?: string } // Codex: the usage
-                        // resets it has left, from its last read (Pools,
-                        // "Usage resets"); left out once the soonest has expired
+  resets?: { available: number, nextExpiresAt?: string, readAt?: string }
+                        // Codex: the usage resets it has left, from the newest
+                        // read of them on any runner (Pools, "Usage resets");
+                        // readAt is when that read was. Left out once the
+                        // soonest has expired
 }
 
 type CliStatus = {
@@ -241,6 +257,13 @@ type ThreadSummary = {
                         // line on why he didn't need to see it. Only while
                         // archivedAt is set and archivedBy is "threadbear"
                         // (threads.md, "Inbox guess")
+  coordinatorProjectId?: string // Optional project coordinator. Nonempty project id;
+                        // shown under Coordinators before Starred, even asleep.
+                        // Archived still wins. Missing or malformed: ordinary thread.
+                        // Mirrored in thread/index rows from backend API 102.
+                        // No registry on another Mac is required to show its row.
+                        // Reading leaves open questions waiting; replying uses
+                        // the ordinary message and card-answer paths.
   starredAt?: string    // Mike starred it, at this time: it stays in the
                         // Starred section above the Inbox, hibernating or
                         // not, oldest star first. Kept while archived, when
@@ -618,6 +641,8 @@ type Schedule = {
   effort?: EffortLevel
   permissionMode?: "full" | "ask" | "auto" // absent: the runner's
                         // defaults.permissionMode when it runs, else full
+  starThreads?: boolean // each thread it starts begins starred (Starred,
+                        // above the Inbox). New-thread ones only
   defaultMode?: "full" | "ask" | "auto" | "plan" // set by the runner on a
                         // new-thread one with no permissionMode that runs
                         // here: the mode it inherits. Absent for another

@@ -56,6 +56,7 @@ export class ClaudeNormalizer {
   private authFailed = false; // this turn's login was refused (signed out, or its session ran out)
   private afterCompact = false;
   private agentTasks = new Set<string>(); // task ids that are sub-agents
+  private agentRuns = new Map<string, string>(); // newest native run_id for each task
   // The Agent call's tool_use_id -> its task id, and the model last reported
   // for each: a sub-agent's own messages name their tool_use_id, not the task.
   private agentByToolUse = new Map<string, string>();
@@ -145,7 +146,11 @@ export class ClaudeNormalizer {
   }
 
   private system(msg: AnyMsg, out: AdapterOutput[]): void {
-    if (typeof msg.subtype === 'string' && msg.subtype.startsWith('task_')) this.subagentTask(msg, out);
+    if (typeof msg.subtype === 'string' && msg.subtype.startsWith('task_')) {
+      const before = typeof msg.task_id === 'string' ? this.agentRuns.get(msg.task_id) : undefined;
+      if (before && typeof msg.run_id === 'string' && msg.run_id < before) return;
+      this.subagentTask(msg, out);
+    }
     if (msg.subtype === 'init' && typeof msg.session_id === 'string') {
       out.push({ kind: 'session', nativeSessionId: msg.session_id, model: msg.model });
       if (typeof msg.model === 'string') this.model = msg.model;
@@ -191,11 +196,13 @@ export class ClaudeNormalizer {
   private subagentTask(msg: AnyMsg, out: AdapterOutput[]): void {
     const id = typeof msg.task_id === 'string' ? msg.task_id : '';
     if (!id) return;
+    const runId = typeof msg.run_id === 'string' ? msg.run_id : undefined;
     if (msg.subtype === 'task_started') {
       if (msg.task_type !== 'local_agent' && msg.task_type !== 'remote_agent' && !msg.subagent_type) return;
       if (msg.ambient || msg.skip_transcript) return;
       this.agentTasks.add(id);
-      const update: SubagentUpdate = { id, started: true, status: 'running', background: msg.is_backgrounded === true };
+      if (runId) this.agentRuns.set(id, runId);
+      const update: SubagentUpdate = { id, ...(runId ? { runId } : {}), started: true, status: 'running', background: msg.is_backgrounded === true };
       if (typeof msg.tool_use_id === 'string') {
         update.itemId = msg.tool_use_id;
         this.agentByToolUse.set(msg.tool_use_id, id);
@@ -212,17 +219,18 @@ export class ClaudeNormalizer {
       if (msg.subtype !== 'task_progress' || typeof msg.subagent_type !== 'string') return;
       this.agentTasks.add(id);
     }
+    if (runId) this.agentRuns.set(id, runId);
     if (msg.subtype === 'task_progress') {
       // description here is the CLI's running line ("Running npm test");
       // summary, when the CLI makes one, says it better.
-      const update: SubagentUpdate = { id };
+      const update: SubagentUpdate = { id, ...(runId ? { runId } : {}) };
       const activity = typeof msg.summary === 'string' && msg.summary.trim() ? msg.summary : msg.description;
       if (typeof activity === 'string' && activity.trim()) update.activity = oneLineNote(activity);
       if (typeof msg.usage?.tool_uses === 'number') update.toolUses = msg.usage.tool_uses;
       out.push({ kind: 'subagent', update });
     } else if (msg.subtype === 'task_updated') {
       const p = (msg.patch ?? {}) as AnyMsg;
-      const update: SubagentUpdate = { id };
+      const update: SubagentUpdate = { id, ...(runId ? { runId } : {}) };
       const status = subagentStatus(p.status);
       if (status) update.status = status;
       if (p.is_backgrounded === true) update.background = true;
@@ -230,7 +238,7 @@ export class ClaudeNormalizer {
       if (status === 'failed' && typeof p.error === 'string' && p.error) update.summary = oneLineNote(p.error);
       if (update.status || update.background || update.description) out.push({ kind: 'subagent', update });
     } else if (msg.subtype === 'task_notification') {
-      const update: SubagentUpdate = { id, status: subagentStatus(msg.status) ?? 'completed' };
+      const update: SubagentUpdate = { id, ...(runId ? { runId } : {}), status: subagentStatus(msg.status) ?? 'completed' };
       if (typeof msg.summary === 'string' && msg.summary.trim()) update.summary = oneLineNote(msg.summary);
       if (typeof msg.usage?.tool_uses === 'number') update.toolUses = msg.usage.tool_uses;
       out.push({ kind: 'subagent', update });
@@ -552,7 +560,7 @@ export class ClaudeNormalizer {
 // A login the CLI couldn't use, when the made-up assistant message saying
 // so didn't come first: "Failed to authenticate: OAuth session expired and
 // could not be refreshed", "Invalid API key · Please run /login".
-export const AUTH_TEXT = /failed to authenticate|oauth (session|token) (has )?expired|authentication_error|invalid api key|please run \/login|not logged in/i;
+export const AUTH_TEXT = /failed to authenticate|oauth (session|token) (has )?expired|authentication_error|invalid api key|please run \/login|not logged in|disabled claude subscription access|can't use your claude subscription|payment is past due/i;
 
 // What a failed turn says when the API couldn't be reached at all, after
 // the CLI's own retries: its connection-error messages ("API Error: Can't

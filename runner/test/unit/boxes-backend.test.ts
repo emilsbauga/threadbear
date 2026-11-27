@@ -522,6 +522,8 @@ test('no query hands back a sealed token, a thread key or a key hash', async () 
     await call(s.ctx, viewer.rows, { token: PHONE, table: 'boxes' }),
     await call(s.ctx, viewer.rows, { token: PHONE, table: 'boxes', machine: 'box', kind: 'awake' }),
     await call(s.ctx, viewer.row, { token: PHONE, table: 'boxes', id: s.boxId }),
+    await call(s.ctx, viewer.rows, { token: PHONE, table: 'boxTokenGrants' }),
+    await call(s.ctx, viewer.row, { token: PHONE, table: 'boxTokenGrants', id: s.rows('boxTokenGrants')[0]._id }),
   ];
   assert.equal(viewed[1].rows.length, 1, 'the viewer still lists the box');
   assert.equal(viewed[3].doc.threadId, THREAD, 'and shows its row');

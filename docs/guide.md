@@ -123,9 +123,12 @@ it to another login; it carries on by itself when the limit resets.
 
 To keep a thread at the very top, star it: hover its row and press the star,
 or use its right-click or ... menu. Starred threads sit in a Starred section
-above the Inbox, whatever they're doing, hibernating ones too, in the order you
-starred them, so they don't jump around. Archiving one moves it to Archived;
-bring it back and it's starred again.
+at the top by default (above Coordinators and Inbox), whatever they're doing,
+hibernating ones too, in the order you starred them, so they don't jump around.
+Archiving one moves it to Archived; bring it back and it's starred again.
+You can drag any section heading up or down to rearrange the sidebar's
+sections; open sections fold while you drag and reopen in the new order when
+you drop, and Threadbear remembers your order.
 
 The search box at the top, beside the New thread button, looks through
 every thread, the put-away ones too. Type part of a title, or of a thread's
@@ -279,10 +282,13 @@ the message box, with an Archive button to put the thread away. When something i
 still worth doing (a piece it didn't get to, a check that's due), the
 card lists them under "Or carry on". Click any of them to tick them
 (click again to untick), add anything you like in the message box, and
-send: the ticked ones go to the agent together, with your words. Not
-sure what one means? Click the ? at its right to ask; it toggles the
-same way, so you can ask about several, tick others, and send them all
-together.
+send: the ticked ones go to the agent together, with your words. When
+the follow-ups are mutually exclusive directions rather than independent
+steps, the card shows them under "Or pick one" with radio buttons (and
+a Recommended badge if the agent recommends one) so clicking one picks
+just that direction. Not sure what one means? Click the ? at its right
+to ask; it toggles the same way, so you can ask about several, tick
+others, and send them all together.
 
 Before you archive, the Done card says what's still open, so you don't
 have to ask the agent first. Threadbear checks it itself: commits on the
@@ -357,34 +363,30 @@ in the sheet while it reloads, ready for you to check and send again.
 
 In the thread, a review's card shows the agent's lead and each option's
 small picture and name. Click one to open the comparison window on that
-option, or the card's button to start on the first. The picture has the
-whole width of the window, with back and next beside it. Under it is a tab
-for each option, with its tick, and under the tabs the name of the option on
-show and the agent's reasons for it, at the size you read replies in the
-thread, so you read about each one while you're looking at it. An option
-can have several pictures (its overview, how it looks mid-drag, a detail),
-shown in a strip under the picture. Next and back (or the left and right
-arrow keys) step through every picture of every option, up and down jump to
-the option before or after, and after the last one they're all side by
-side, with the agent's lead under them. Click a tab or one of the strip's
-small pictures to go straight to it, the first tab to see them all, and
-Open live at the end of the tabs to try one the agent has running (a web
-page only). A review from a thread on another Mac opens on that Mac. An
-agent can show a video, a sound or an HTML page in place of a picture: videos play
-quietly on a loop, side by side when they're all showing, with controls
-for sound when one is big; a sound (MP3, M4A, AAC or WAV, say music beds to
-compare) shows its waveform, with a play bar under it when it's big; a page
-shows as it does in the side pane, with its scripts off. When
-the agent includes today's version to compare against, hold Space (or click
-its button at the end of the tabs) to flick to it and back. To look closer at a
-picture, scroll or pinch over it to zoom in where the pointer is (a long page
-starts small enough to see whole). Then scroll or drag to move around, or use
-the small picture in the corner to jump to a part. Pinching out, ⌘0, Esc or a
-double-click goes back to the whole thing, and ⌘+ and ⌘- zoom too. Tick as
-many as you like, or None of them if none will do, write what you think in
-the box at the bottom right, and Send takes it all back to the thread.
-Pasting with the keyboard outside the reply box puts the words in it and moves
-the cursor there, so you can dictate just after ticking an option.
+option, or the card's button to start at the beginning. A review from a
+thread on another Mac opens on that Mac.
+
+On the desktop, the window is a board you drag around and zoom into. Each
+option's pages form a column under its name, on a faint glow with its big
+letter behind. Ticking an option turns its glow green and rings its pictures.
+The agent can draw circles, underlines, highlights and arrows on any page,
+with handwritten notes beside it: yellow points something out, green shows
+what solves it, and rose shows a cost. The notes switch hides them when
+you want the pictures clean.
+
+Next and Back take a tour through every picture, then show everything.
+The mouse wheel or a pinch zooms at the pointer; drag the background to
+move around. A clip, sound or page plays where it sits: press Play (Show
+page for a page), or double-click it. One plays at a time. Pages have their
+scripts off. Sounds show a waveform with a play bar.
+
+Your own tools circle, highlight or pin a part of any picture. Each adds
+a numbered chip to the reply, so you can say "[Mark 1] is too tight"; the
+agent gets a cut-out of that part with your answer. You can also paste
+pictures into the reply. Tick as many options as you like, or None of them,
+write what you think, and Send takes it back to the thread. Pasting with
+the keyboard outside the reply box puts the words in it and moves the
+cursor there, so you can dictate just after ticking an option.
 
 Short tables in replies stay as wide as their words need. Wide tables fit or
 scroll inside the reply, and list items have space between their lines.
@@ -887,13 +889,15 @@ the foot of the list, soonest to wake first. Hibernate the thread you have
 open and its page sinks into the moon on that heading as the next thread
 comes in.
 
-Or pick Wake when… and say it in your own words: "at the weekend", "in a
-few weeks", "next time I talk about woodworking". Opus works out what you
-meant (the row says Thinking… for a few seconds) and the thread says what
-it settled on. A topic waits for you to bring it up: when the librarian
-sees you talking about it in another thread, it wakes this one and says
-where. Give it a limit as well ("or Saturday at the latest") and, if you
-haven't brought it up by then, it comes back saying so.
+Or pick Wake when… and say it in your own words: "tomorrow morning",
+"Friday 9am", "at the weekend", "in a few weeks", "next time I talk about
+woodworking". Plain times are worked out locally right away, even with no
+model room left; topics and fuzzy phrases go to the model (the row says
+Thinking… for a few seconds) and the thread says what it settled on. A
+topic waits for you to bring it up: when the librarian sees you talking
+about it in another thread, it wakes this one and says where. Give it a
+limit as well ("or Saturday at the latest") and, if you haven't brought it
+up by then, it comes back saying so.
 
 Whenever a thread is hibernated, woken, archived or brought back, a grey
 line in it says who did it (you, an agent or Threadbear), when, and why
@@ -901,7 +905,11 @@ if there's more to say: "Hibernated by you on Tue 24 Nov, 3:32 pm, until
 Wed 25 Nov, 9:00 am." A thread that's done with a check-in booked moves
 under Hibernating by itself, with no snooze, and its line says so and
 names the check-in; it goes back to the Inbox, saying so, if the check-in
-is deleted or paused. These lines are on the Mac only.
+is deleted or paused. A thread Quiet inbox archived says so, with the
+model's reason, and hovering the line says what Quiet inbox is; one brought
+back because Quiet inbox shouldn't have hidden it says that, and whether you
+or an agent brought it back. These lines never fold into the turn's work
+above them. They are on the Mac only.
 
 When a thread is done, archive it: press ⌘E, hover its row and press the
 box, or swipe the row left with two fingers on the trackpad (right with
@@ -935,7 +943,9 @@ check-in booked. If threads it started itself are still going, it waits for
 them first. A note in the thread says why it went, and it shows as archived
 under "Threads it started" in the Highlights of the thread that started it.
 It stays in the inbox if you've written in it, starred it or brought it back
-out of the archive, and so does one that failed or was stopped. Threads you
+out of the archive, and so does one that failed or was stopped. So does one
+you asked for as its own thread, rather than as part of the work that
+started it: the reply is often what you wanted to read. Threads you
 started, and ones a tool or a schedule started, don't archive this way,
 unless you've turned on the experiment Quiet inbox for your threads.
 
@@ -944,10 +954,11 @@ that finishes with nothing for you is archived too when a model judges you
 didn't need to read the reply, with a note in the thread giving its reason.
 Not one with follow-ups, anything left open or a design review waiting for
 you, one you've starred, one you
-had open as it finished, or one you've brought back out of the archive
-before. To check what it hid, a daily thread lists the ones it archived
-the day before, each with the model's reason: tell it which you should have
-seen, and it brings them back and writes the misses down. Or right-click an
+had open as it finished, one you've brought back out of the archive
+before, or one you asked for as its own thread. To check what it hid, a
+daily thread lists the ones it archived the day before, each with the model's
+reason: tell it which you should have seen, and it brings them back and
+writes the misses down. Or right-click an
 archived thread and pick Should Have Shown Me, which brings it straight
 back to your inbox and tells the model it got that one wrong.
 
@@ -1186,9 +1197,10 @@ files out of Highlights into other apps.
 
 ### Pull requests
 
-A GitHub pull request link clicked in a reply, or in Highlights' Links,
-opens as a tab in the panel instead of your browser (⌘-click still goes to
-the browser). In the desktop app only, and it needs the `gh` command line
+A GitHub pull request link clicked in a reply (a project coordinator's too),
+or in Highlights' Links, opens as a tab in the panel instead of your browser,
+as does Open in Panel in its right-click menu (⌘-click still goes to the
+browser). In the desktop app only, and it needs the `gh` command line
 tool installed and signed in (`gh auth login`); it acts on GitHub as
 whoever that is. A PR link in a reply has GitHub's pull request mark before
 it: green while it's open, grey as a draft, purple once merged and red if
@@ -1231,9 +1243,6 @@ few things that matter most. To have something pinned, ask the thread
 ## Projects
 <!-- slug: projects -->
 
-When a project update needs your approval, its details show the current
-project name and ID alongside the proposed changes.
-
 <!-- picture: /docs-img/projects.webp alt: The Projects view: each project with its threads, what it's for and where it's up to -->
 
 A project gathers the threads about one thing, whatever folder they ran
@@ -1269,7 +1278,8 @@ parent's page lists its parts. A thread in a part is told the parent's
 goals as well as the part's own; a thread in the parent is told which
 parts there are. One level only: a part can't have parts. Agents can do
 the same with update_project. The phone and the website list parts as
-projects of their own for now.
+projects of their own for now. When a project update needs your approval, its details show the current
+project name and ID alongside the proposed changes.
 
 A project can show a task board from Notion. Give it a Notion page with a
 Tasks database on it (a board grouped by Status): Add Notion page… under
@@ -1291,6 +1301,41 @@ Notion. The menu also offers Copy Link and, when another thread is working
 on the card, Open the Thread Working on It. Boards are read through
 a Connectors gateway (see [Connectors](#connectors)); without one, the
 project's page says so and nothing is read.
+
+With the **Project coordinators** experiment enabled, a project's page offers
+**Add a coordinator** with the ordinary pool and model picker, and you can switch
+its model or provider at any time from the composer. A thread can do the same
+for you: ask it to make a project and hand it to a coordinator, and it starts one
+with a charter, starting to-dos and a note on where things stand (a thread that
+asks before edits puts up a card first). It runs on this Mac; its
+conversation stays in a Coordinators section below Starred by default, while routine helpers
+run as hidden sessions out of the inbox and appear on the Activity tab.
+The project home has **Conversation**, **Activity**, **Tasks** and **Threads**
+tabs. On a narrow window the tabs move below the bar. Tasks shows the
+coordinator's work items, their progress and any ungrouped tasks. Select a task
+to see what's happening, what counts as done and where the work came from.
+Use the Add box to send the coordinator a request.
+
+Highlights shows the same tasks under **Needs you**, **In flight** and
+**Ready to close**. Answer a decision or mark your step done from either view.
+**Not now** can bring a decision back tomorrow at 9 a.m., on a date you pick
+or once another task is done. **Got it, close** confirms that work is finished,
+and **Undo** reopens it.
+
+The **Project brief** holds state, goals and links. Open the **Agent memory**
+drawer to see and edit the raw notes the coordinator and its helpers use. If
+another thread changed a field while you were editing, your draft stays open so
+you can merge it. Helpers report to the coordinator, which checks their results
+and brings you decisions it cannot settle. Ask it for a side job that isn't part of the
+project and it offers a button in its reply that starts a new thread for it,
+only when you press it, rather than filing the job under the project. Pause stops it and its helpers, and
+Resume reconciles interrupted work first. Other Macs, the phones and the
+website show the coordinator's
+conversation and questions, while setup and the living document are desktop
+controls in this version. The coordinator can follow project-thread completions,
+literal interest keywords and times it schedules itself; automatic email, Slack
+and Sentry routing is not part of this first experiment. Account usage remains
+in Usage.
 
 ## The librarian
 <!-- slug: librarian -->
@@ -1319,17 +1364,18 @@ itself stays unsent. It can also improve a Backlog title using that context,
 without editing your saved message. Your own titles stay protected, and
 Evolving titles controls these renames too.
 
-Each look is one short call to Haiku, Claude's small, cheap model, rather
-than the model your threads run on. When it wants to file a thread in a
-project the thread hasn't touched the folders of, one more short call, to
-Opus, checks the thread is really working on that project and doesn't just
-share a subject with it. They run on one of your own Claude
-logins: the one the pool would pick next in the pool chosen under Runs on (the
-same pool that writes thread titles, also in Settings › Models), and they
-count towards that login's usage like any other call. When every login in
-the pool is out of room it waits, and with only Codex logins it doesn't
-run at all. Threads in a private folder (Settings › Models) are never sent
-to it.
+Each look is one short call to a small, cheap model (Haiku on Claude),
+rather than the model your threads run on. When it wants to file a thread
+in a project the thread hasn't touched the folders of, one more short call
+(Opus on Claude) checks the thread is really working on that project and
+doesn't just share a subject with it. They run on the pool chosen under
+Runs on (the same pool that writes thread titles, also in Settings ›
+Models), trying Claude first, then Codex, then Grok or OpenCode logins in
+that pool (or your custom provider order in Settings › Models), and they
+count towards that login's usage like any other call. When every supported
+login in the pool is out of room it waits, and with no pool picked or no
+supported login in it, it doesn't run. Threads in a private folder
+(Settings › Models) are never sent to it.
 
 The Librarian view lists what it did and what it will look at next. Click a
 project name in its log to open that project's page. Hover
@@ -1363,7 +1409,9 @@ whichever of that pool's logins it would pick then; ask an agent to put
 it on another pool or one login. Its model and effort start as the
 composer's too, and you can change them in the schedule's editor (click it
 in the list). In a pool with logins of several kinds, each run starts on
-the kind you picked its model under. Click a heading to fold it away (Done starts folded); a
+the kind you picked its model under. Tick **Star each new thread** in its
+editor (or ask the agent setting it up) and each thread it starts lands in
+Starred, above the Inbox, as a daily brief might. Click a heading to fold it away (Done starts folded); a
 folded one shows how many are under it. Its page
 says what's coming up next with a few numbers: how many are on, due in the
 next day, repeating, set by threads, paused, and how often they've run.
@@ -1617,8 +1665,8 @@ If a login stops working (you signed out, or its sign-in ended), the
 thread's turn fails and a line above its messages says so, naming the login
 and its email ("claude-1 (you@example.com) is signed out."). Sign in… opens Terminal on that login's own sign-in, and Send
 again sends your last message again once you're done. A thread in a pool
-doesn't wait for you: it moves to another login in the pool and carries on,
-and the pool leaves the signed-out login alone until you sign it back in.
+moves and carries on if another login can run it. If you picked a
+specific model, the other login has to offer it.
 A schedule pinned to a signed-out login runs on another login in a pool
 that login is in, and its thread says which. If no pool has another login
 for it (a login kept apart for work, say), the run fails once with the
@@ -1656,6 +1704,17 @@ ends on, and Paste code back in the panel. That machine makes the token and
 keeps it, and it never leaves there. It needs `python3` on that machine,
 and your main Mac's app (it goes through your Convex backend).
 
+Or skip signing in there at all: a year-long token works on any machine, so
+that machine's card in the Runners panel also has Use this Mac's Claude
+logins. Switch it on and your main Mac sends its Claude logins that have
+year-long tokens there, each sealed so only that machine can open it, and
+they show in its list of logins straight away. A renewed token goes again
+by itself. Logins that are hidden, have a note (like "Convex work only"), or
+are only in pools tied to folders stay on your main Mac. A login already
+signed in on that machine with the same email is left as it is. Switch it
+off and that machine removes the logins it got this way, and nothing else.
+A machine that's offline gets them when it's back.
+
 The sign-in command comes from the runner's provider list, so Cursor opens
 `agent login`, for example. Sign in… is offered only when the login's own
 details can be read.
@@ -1678,8 +1737,12 @@ The switch happens only when you click.
 
 OpenCode, Cursor and Grok, and other agent CLIs that speak the Agent Client
 Protocol, get threads of their own too. If one is installed and logged in
-it turns up as a login and a pool, with its models in the picker. A pool
-with logins of several kinds lists each one's models under its name. OpenCode's
+it turns up as a login and a pool, with its models in the picker. In the model picker, pools sit across the top, the chosen pool's providers down
+the left, and that provider's models on the right (search looks across
+every provider in the chosen pool). When any login isn't in a pool, a **No pool**
+tab appears after a divider so you can still pick its models and pin the thread
+directly to it (or choose a specific unpooled login from the Login line at the
+foot). OpenCode's
 free models work with no login; Cursor needs `agent login` first, and Grok
 `grok login`.
 Gemini on a Google AI plan (Pro or Ultra) runs through Google's own
@@ -1710,10 +1773,13 @@ do anything. A folder you've trusted in Grok runs its own Grok hooks, which
 could act before anything asks you, so there (and in your home folder, which
 Grok always trusts) Grok threads need Full access;
 take the folder out of Grok's trusted folders (`/hooks-untrust`) to use Ask
-or Auto. Denying a card ends Grok's turn, as it does in Grok's own app. Grok's models each list their effort levels (low to extra
-high), and the effort you pick is the one it runs at. Small jobs (titles
-and summaries) stay on Claude unless you pick a pool of only OpenCode or
-Grok logins for them in Settings. Grok logins show their plan's room in
+or Auto. Denying a card ends Grok's turn, as it does in Grok's own app. Grok,
+Gemini and OpenCode models that support effort levels each list theirs in the
+model picker, and the effort you pick is the one the thread runs at. Small jobs (titles,
+summaries, the librarian and fuzzy Wake when…) run on the pool you pick in
+Settings > Models, trying Claude first, then Codex, then Grok or OpenCode
+logins in that same pool when a provider is out of room, or in any custom
+provider order you drag them into in Settings > Models. Grok logins show their plan's room in
 Usage, read from Grok itself (its weekly share and when it resets, a minute
 after the runner starts and after Grok turns). When a Grok login runs out
 of balance, the thread says so in plain words ("grok-main is out of Grok
@@ -1725,12 +1791,14 @@ usage readings. None of these have a sandbox or
 going back to an earlier message yet, and Threadbear only updates
 their CLIs when you press Update in the Updates panel.
 
-Titles, the librarian and Wake when… run on a Claude login, so with only
-Codex they don't happen: threads keep the first line of their first message
-as their title.
+Titles, the librarian and Wake when… run on any small-job provider in the
+pool you pick in Settings > Models (Claude, Codex, Grok or OpenCode); with
+none picked or no supported login in the pool, threads keep the first line
+of their first message as their title.
 
 Logins are grouped into pools, one for Claude and one for Codex to begin
-with (Settings > Pools). A new thread in a pool starts on the login with room whose
+with (Settings > Pools). Picking a model starts the thread on a login
+that offers it. A new thread in a pool starts on the login with room whose
 weekly limit resets soonest, so a week's leftover gets spent before it's
 lost rather than draining the login with the most room. A login is used
 until it's all but out (under 1% left), so none of a week goes to waste. When
@@ -1739,9 +1807,10 @@ another login in the pool with room, and carries on from where it was. A
 quiet line in the conversation says so each time: the login it moved to,
 the one that ran out, and when that one is back (for a thread on another
 of your machines too, and on the phone and the website). When
-none has room, the thread waits and carries on by itself once a limit
-resets, and the line says when that is. With only one login, that means it waits for that login's limit to
-reset. A thread pinned to one login does the same on that login. Either
+no eligible login has room, the thread waits for a limit to reset. If
+you picked a specific model, the thread only moves automatically to
+another login on the same provider that offers that model. A pinned
+thread waits for its own login's limit to reset. Either
 way, the box at the top of the message field says what happened and offers
 Switch to another login now; set its Carry on by itself to No and the
 thread waits for your next message instead.
@@ -1750,6 +1819,19 @@ gives out free ones, listed under Usage limit resets in its settings), the
 box also offers Use a reset: it restores that login's 5-hour and weekly
 limits at once, spending the reset that expires soonest, and the thread
 carries on. Threadbear never uses one by itself.
+You don't have to wait for a thread to stop to hear about one, though.
+When a login with a reset left is out of room, or its soonest reset
+expires within 3 days while it has used more than 30% of its week (so
+using it still buys something back), Threadbear says so quietly where you
+already look: the Usage button gets a dot and its tooltip names the login,
+the login's row in Usage says how many resets it has and offers Use a
+reset (even when the row is shut), and the login lists in the message
+box (the login picker, and the Login line in the model menu) say "2
+resets left" beside it with Use a reset. It's one subscription however
+many machines it's signed in on, so the count is the newest from any of
+them, and a reset used on one counts on all. No notification and no new
+thread; the hint goes once you use the reset, the login's room comes
+back, or the reset expires. `tb accounts` and `list_accounts` say it too.
 A Codex login that reads as used up is asked for its limits again every
 10 minutes (free, no turn), so a reset you use in Codex itself shows up
 here within minutes and that login is used again.
@@ -1780,7 +1862,8 @@ claude:you@example.com` sets it. Your first Mac goes by its own readings,
 never that Mac's.
 
 Usage, the honey pot near the bottom of the left-hand rail (it's filled to the
-room left on the login your next new thread would use), shows how much room each login
+best room left in the open thread's pool, or its own login if pinned; on the
+new-thread screen it follows the draft's login), shows how much room each login
 has left before it hits its limits: the weekly one, and the 5-hour one for
 logins that still have it (Claude Team does, Max plans don't any more).
 Threadbear learns these numbers from the threads it runs, so a login's bars
@@ -1904,15 +1987,17 @@ reviewer does. `"labPanelLines"` in `runner.json` changes the 150. The review ru
 the same permissions as the thread it reviews, and is told not to edit
 anything. Your thread says who is reviewing and waits. The reviewer gives a
 verdict: a list of concrete findings, or nothing that holds up. Then your
-thread wakes with them numbered, and it can't finish until it has answered
-each one: fixed, disputed (saying why), or left for you to decide, which
-comes to you as a question. Anything it fixed gets reviewed again, just the
-new change, until a round finds nothing. A quiet line in the thread, over
-the reply, shows who reviewed and how it came out. It folds like the
-agent's work: click it for each finding and what was done about it, and
-the review thread's link under them. Findings still open (left for you,
-or not answered) show under it even while it's folded. It
-stays off the done card, as it happens in the background. The review thread is archived when it's
+thread wakes with them as a checklist in the thread: one row per finding with
+its severity dot, clickable file and line, and claim (click a row for the
+reviewer's case and what the agent did about it, and Full reply for the
+reviewer's own words). Your thread can't finish until it has answered each one,
+so once it does each row shows Fixed, Disputed or Left in place, and anything
+left for you comes as a question. Anything it fixed gets reviewed again, just
+the new change, until a round finds nothing. When a round finds nothing (or has
+no verdict or unchecked fixes), a quiet line over the reply shows who reviewed
+and how it came out; it folds like the agent's work, with any open findings
+still visible under it. Either way it stays off the done card, as it happens in
+the background. The review thread is archived when it's
 done, so it stays out of your inbox. That holds however the review ends:
 if it gives no verdict, asks you something or stops with an error, your
 thread still wakes with whatever it said, and carries on. A thread gets at most three reviews
@@ -1957,7 +2042,7 @@ past this, as it could with anything on your Mac.
 ## Open Anything
 <!-- slug: open-anything -->
 
-In the new desktop app (the `gpuiApp` experiment), ⌘K or ⌘P (or Go > Open
+In the new desktop app, ⌘K or ⌘P (or Go > Open
 Anything…) from anywhere in the main window puts a box over it, with the rest
 dimmed. Type part of a name and
 it finds threads, panels, projects and the app's own pages, in that order of
@@ -2166,7 +2251,7 @@ swipe. The search at the top of the inbox finds any thread, hibernating
 and archived ones too, by its title, last reply, project, the librarian's
 search words for it, or a word said anywhere in it. What a thread needs from you shows under its reply with the
 likely answers as buttons (type in the box to say something else; the one you tap spins until the runner has it, and the card comes back if it's refused), and
-a thread that's done offers its suggested next steps and Archive, which takes you back to the inbox as its row slides away. Hibernate from a thread's ... menu does the same, with its row sinking towards the Hibernating heading. Clear the last thread from the inbox and the bear waves at you, the once. Pull the inbox down and let go to reconnect to your Mac's mirror, if the list ever looks stuck. A new thread from the phone starts in your default folder; pick its model and effort under the message, or leave them on Default. With more than one runner it starts on the first one that's online in your order, so a sleeping Mac doesn't hold it up; pick another under Runner, or change the order in Settings > Runners > Change the order. The sheet closes as soon as you tap Start, and a row at the top of the inbox says Starting until that Mac has made the thread, which then opens. If it couldn't start, the row says why; tap it to open it again as you left it, photos and choices too. While a thread is working and nothing's typed, Send turns into Stop, as on the Mac, here and on the website; it spins until the turn has stopped. Anything typed while it works goes into that turn instead. Paste a photo straight into any message box, or add one with the photo button: it goes in where the cursor is as a chip, "Picture 1", as on the Mac, and pictures in your messages show as chips too. The photos you sent show over your message, where the Mac uploaded them for your website (on unless `"sync": { "pastedPictures": false }`); one that stayed on the Mac leaves a "[1 picture]" line instead. Pictures an agent puts in its reply or pins show in the thread, and animated GIFs play (one of hundreds of frames, or too big or fast to keep decoding, shows its first frame still, and Android plays four at once at most); tap one to see it full screen and pinch to zoom. An MP4 or MOV video an agent pins shows its first frame with a play button, and plays when you tap it. Anything over 10 MB, or from a thread that's been quiet for over two weeks, says it's on your Mac. Rename a thread from its ... menu or the menu when you press and hold its row: the new title shows straight away, and goes back with the error if your Mac can't take it. To point one thread at another, use Copy Thread ID in the same menus, and paste it into a message, here or on the Mac: it goes in as a link to that thread, with its title. When the Mac a thread runs on is asleep or offline, its message box says so, and what you send waits for it: each message shows faded with a Cancel under it until that Mac takes it, and Cancel puts its words back in the box. It can send notifications too,
+a thread that's done offers its suggested next steps and Archive, which takes you back to the inbox as its row slides away. Hibernate from a thread's ... menu does the same, with its row sinking towards the Hibernating heading. Clear the last thread from the inbox and the bear waves at you, the once. Pull the inbox down and let go to reconnect to your Mac's mirror, if the list ever looks stuck. A new thread from the phone or the website starts in your default folder; pick its model and effort under the message, or leave them on Default. With more than one runner it starts on the first one that's online in your order, so a sleeping Mac doesn't hold it up; pick another under Runner, or change the order in Settings > Runners > Change the order. The sheet closes as soon as you tap Start, and a row at the top of the inbox says Starting until that Mac has made the thread, which then opens. If it couldn't start, the row says why; tap it to open it again as you left it, photos and choices too. While a thread is working and nothing's typed, Send turns into Stop, as on the Mac, here and on the website; it spins until the turn has stopped. Anything typed while it works goes into that turn instead. Paste a photo straight into any message box, or add one with the photo button: it goes in where the cursor is as a chip, "Picture 1", as on the Mac, and pictures in your messages show as chips too. The photos you sent show over your message, where the Mac uploaded them for your website (on unless `"sync": { "pastedPictures": false }`); one that stayed on the Mac leaves a "[1 picture]" line instead. Pictures an agent puts in its reply or pins show in the thread, and animated GIFs play (one of hundreds of frames, or too big or fast to keep decoding, shows its first frame still, and Android plays four at once at most); tap one to see it full screen and pinch to zoom. An MP4 or MOV video an agent pins shows its first frame with a play button, and plays when you tap it. Anything over 10 MB, or from a thread that's been quiet for over two weeks, says it's on your Mac. Rename a thread from its ... menu or the menu when you press and hold its row: the new title shows straight away, and goes back with the error if your Mac can't take it. To point one thread at another, use Copy Thread ID in the same menus, and paste it into a message, here or on the Mac: it goes in as a link to that thread, with its title. When the Mac a thread runs on is asleep or offline, its message box says so, and what you send waits for it: each message shows faded with a Cancel under it until that Mac takes it, and Cancel puts its words back in the box. It can send notifications too,
 though you don't need them for any of that. It pairs with your Mac by scanning a
 QR code: on the Mac, Settings (⌘,) > Phone & browser > Show the code, then
 scan it with Scan the code in the iPhone or Android app (not the Camera app:
@@ -2247,9 +2332,16 @@ Other changes are done on the Mac or by asking an agent. The gear
 has the appearance and Sign out. Pictures you paste show there too: they go to
 your Convex deployment as they are, so nothing can scrub a secret from one, and
 `"sync": { "pastedPictures": false }` in `runner.json` keeps them on the Mac. A tool line opens to what the tool did if its runner has full sync on (it starts off; `tb settings full on|off` changes it, and docs/on-your-mac.md says what it sends), and its screenshots show when you tap them. The pencil beside the search starts a new
-thread on a runner's default folder and login. On your Mac,
+thread in the runner's default folder, with pickers for runner, model and
+effort (or Default for each). On your Mac,
 `threadbear://thread/<id>` opens a thread in the app instead (the Open
-thread button on a tab BrowserBear has marked for an agent uses it). With
+thread button on a tab BrowserBear has marked for an agent uses it). Another
+app can start a thread for you with `threadbear://new?text=<words>`, plus
+`project=<id>` and `folder=<one of its folders>` on the Mac: the new-thread
+box opens with the words in it, in that project and folder if this Mac has
+them, and nothing is sent until you press Send. The iPhone app takes the same
+link and opens its New thread sheet with the words (Earshot's Ask Claude
+button uses it to start a thread that works out who a voice was). With
 the new desktop app installed beside the Mac app, those links open the new
 one; `desktop/scripts/thread-links.sh swift` sends them back to the Mac app.
 
@@ -2737,14 +2829,12 @@ Mac app. This part is for a Mac that already has the old one.
 
 The Mac app is being replaced by a new desktop app that looks and works the
 same and runs on Windows and Linux too. The Mac app is frozen now: it no
-longer gets new features, and everything new goes into the new app. There's
-no date yet for when it stops being updated; once there is, the window and
-the card below say it too.
+longer gets new features, everything new goes into the new app, and it stops
+being updated on 2 December 2026, when its code leaves the repo.
 
-The Mac app tells you about it once when it starts, in a window with Not now
-and Start using the new app, and keeps a card at the top of the sidebar until
-you start or press Later (which hides it for a week); the card's Start using
-it brings the window back. Start using the new app starts a thread, "Switch
+The Mac app tells you about it each time it starts, in a window with Close
+and Start using the new app, and keeps a card at the top of the sidebar; the
+card's Start using it brings the window back. Start using the new app starts a thread, "Switch
 to the new Threadbear app", in your checkout, and the window closes once it's
 made. The card then shows that thread, what it's doing and Open the thread.
 The thread builds the new app on your Mac from your checkout's `main` with

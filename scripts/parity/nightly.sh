@@ -22,19 +22,25 @@
 # The schedule runs --check at 2:00 and 4:00: the first starts the run, the
 # second reports it, so a thread starts only when something didn't show.
 set -uo pipefail
-# The Mac to run it on: THREADBEAR_PARITY_HOST, else the first check host in
+# The Mac to run it on: THREADBEAR_PARITY_HOST, else a reachable Mac check host in
 # runner.json (checkHosts, as check.sh reads it). It needs Xcode, Chrome and
 # Desk Runner (~/.local/bin/desk) for the simulator and the GPUI app, and
 # Rust (remote.sh's, in ~/.cache/threadbear-check/gpui) to build it.
 RUNNER_JSON="${THREADBEAR_HOME:-$HOME/Library/Application Support/Threadbear}/runner.json"
-HOST=${THREADBEAR_PARITY_HOST:-$(/usr/bin/python3 -c 'import json,sys
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+. "$ROOT/scripts/parity/host.sh"
+HOST=$(
+  if [ -n "${THREADBEAR_PARITY_HOST:-}" ]; then
+    printf '%s\n' "$THREADBEAR_PARITY_HOST"
+  else
+    /usr/bin/python3 -c 'import json,sys
 try:
   j=json.load(open(sys.argv[1])); h=j.get("checkHosts") or j.get("checkHost") or []
   h=[h] if isinstance(h,str) else h
-  print(h[0] if h else "")
-except Exception: print("")' "$RUNNER_JSON")}
-[ -n "$HOST" ] || { echo "No Mac to run it on: set THREADBEAR_PARITY_HOST or checkHosts in $RUNNER_JSON"; exit 1; }
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+  print("\n".join(x for x in h if isinstance(x,str)))
+except Exception: pass' "$RUNNER_JSON"
+  fi | parity_host
+) || { echo "Parity could not start: no reachable Mac with Desk Runner (THREADBEAR_PARITY_HOST or $RUNNER_JSON)."; exit 1; }
 KEEP="$HOME/Library/Caches/Threadbear/parity"
 REMOTE=.cache/threadbear-parity
 mkdir -p "$KEEP"

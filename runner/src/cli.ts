@@ -7,6 +7,8 @@ import { loadConfig, runnerUrl, RunnerJsonError } from './config.ts';
 import { connectTb, onDisk, ownerOnly } from './tb-connect.ts';
 import { RunnerClient } from './client.ts';
 import { poolLine, sameEmailWarnings } from './pools.ts';
+import { resetHintWords } from './reset-hint.ts';
+import { resetTime } from './usage.ts';
 import { providerName } from './providers.ts';
 import type { Account, ImageRef, Pool, LibrarianStatus, PersistedEvent, Project, RunnerDefaults, Schedule, ThreadSummary } from './protocol.ts';
 import type { Settings } from './settings.ts';
@@ -124,7 +126,7 @@ const HELP = `tb: talk to the Threadbear runner
                                   stops it, without moving
   tb delete <threadId>
   tb accounts                     the Claude and Codex logins (* new threads start on it)
-  tb accounts --json              every login with its usage (weekly %, resets) as JSON
+  tb accounts --json              every login with its usage (weekly %, resets) and resetHint as JSON
   tb accounts <account> [--json]  that account's models and its default
   tb pools [--json]               the pools, their logins and room (* new threads start on it)
   tb actions <threadId> [--json]  the thread's actions, panels and patches (from its folder)
@@ -605,7 +607,7 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
       // "restart": until the runner next starts; "release": until it starts on a new release.
       const word = args[1]?.toLowerCase();
       const until = word === 'restart' || word === 'release' ? word : parseWhen(args[1] ?? '1h');
-      const r = await client.call<{ thread: ThreadSummary }>('threads.update', { threadId: id, snoozedUntil: until });
+      const r = await client.call<{ thread: ThreadSummary }>('threads.update', { threadId: id, snoozedUntil: until, ...(process.env.THREADBEAR_THREAD_ID ? { byAgent: true } : {}) });
       console.log(`snoozed until ${r.thread.snoozedUntilRelease ? 'a new release' : r.thread.snoozedUntilRestart ? 'the runner restarts' : r.thread.snoozedUntil}`);
       return 0;
     }
@@ -620,8 +622,9 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
     case 'unarchive': {
       const id = await resolveId(client, args[0]);
       if (cmd === 'archive') notSelf(id, STOPS_SELF);
-      // Run from a thread (its agent), it's the agent archiving, not Mike.
-      const by = cmd === 'archive' && process.env.THREADBEAR_THREAD_ID ? { archivedBy: 'agent' } : {};
+      // Run from a thread (its agent), it's the agent archiving or bringing
+      // it back, not Mike: the line in the thread says who (place-notes.ts).
+      const by = !process.env.THREADBEAR_THREAD_ID ? {} : cmd === 'archive' ? { archivedBy: 'agent' } : { byAgent: true };
       // Mike saying the quiet inbox shouldn't have hidden it (its daily
       // review thread asks him): brought back, written down as a wrong hide.
       const wrong = cmd === 'unarchive' && f['wrong-hide'] ? { verdict: 'shouldHaveShown' } : {};
@@ -743,6 +746,8 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
           signedOut: a.signedOut,
           planEnded: a.planEnded,
           usage: a.usage,
+          // A usage reset worth using now (reset-hint.ts), for agents to mention.
+          resetHint: a.resetHint,
         }));
         console.log(JSON.stringify({ accounts, defaultAccountId: r.defaults.accountId }, null, 2));
         return 0;
@@ -752,6 +757,7 @@ async function run(client: RunnerClient, cmd: string, args: string[], f: Flags):
         // The provider has its own column, so not "Codex · " again.
         const who = a.email ?? a.title.replace(/^Codex · /, '');
         console.log(`${a.id === r.defaults.accountId ? '*' : ' '} ${a.id.padEnd(12)} ${providerName(a.provider).padEnd(9)}${who}${note}`);
+        if (a.resetHint) console.log(`  ${''.padEnd(12)} ${''.padEnd(9)}${resetHintWords(a.resetHint, (iso) => resetTime(iso, Date.now()))}`);
       }
       // Two config folders signed in to one account (issue 18).
       for (const line of sameEmailWarnings(r.accounts)) console.log(`\n${line}`);

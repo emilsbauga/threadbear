@@ -614,27 +614,40 @@ function Dock({ token, thread: t, lastSeq, onArchive, archiving, linkTo }: { tok
           ))}
         </div>
       ) : null}
-      {next.length ? <div className="choices">
-        {next.map((n, i) => {
-          const on = ticked.seq === lastSeq && ticked.set.has(i);
-          return (
-            <button
-              key={i}
-              className={`choice ${on ? 'on' : ''}`}
-              disabled={holding}
-              onClick={() => {
-                const set = new Set(ticked.seq === lastSeq ? ticked.set : []);
-                if (on) set.delete(i);
-                else set.add(i);
-                setTicked({ seq: lastSeq, set });
-              }}
-            >
-              <span className="radio check" />
-              <span>{n}</span>
-            </button>
-          );
-        })}
-      </div> : null}
+      {next.length ? (() => {
+        const pickOne = t.nextPick === 'one' && next.length > 1;
+        return (
+          <div className="choices">
+            <div className="loose-label">{pickOne ? 'Or pick one' : 'Or carry on'}</div>
+            {next.map((n, i) => {
+              const on = ticked.seq === lastSeq && ticked.set.has(i);
+              const suggested = pickOne && t.nextSuggested === i;
+              return (
+                <button
+                  key={i}
+                  className={`choice ${on ? 'on' : ''}`}
+                  disabled={holding}
+                  onClick={() => {
+                    const set = new Set(ticked.seq === lastSeq ? ticked.set : []);
+                    if (on) set.delete(i);
+                    else {
+                      if (pickOne) set.clear();
+                      set.add(i);
+                    }
+                    setTicked({ seq: lastSeq, set });
+                  }}
+                >
+                  <span className={pickOne ? 'radio' : 'radio check'} />
+                  <span>
+                    {n}
+                    {suggested ? <span className="pick"><span className="star" aria-hidden>★</span> Recommended</span> : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      })() : null}
     </section>
   ) : null;
 

@@ -7,7 +7,7 @@
 // address bar. A link with the token itself stayed good for 90 days wherever
 // it was seen (API 81).
 //
-//   npm run web:sign-in                       Chrome on this Mac, prod site
+//   npm run web:sign-in                       the default browser, prod site
 //   npm run web:sign-in -- --qr               a QR code to scan on another device
 //   npm run web:sign-in -- --dev              the dev deployment's site
 //   npm run web:sign-in -- --local            Vite on localhost:5181 (dev data)
@@ -85,16 +85,12 @@ if qr {
     try? FileManager.default.removeItem(at: file)
     print("Showing a sign-in QR for \"\(name)\" (\(site), \(days) days). Scan it with the camera, then close Preview.")
 } else {
-    // Mike's browser is Chrome; fall back to the default browser if it's missing.
-    let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome")
+    // The default browser, as Settings > Phone & browser > Open signed in
+    // uses: this once always picked Chrome when it was installed, so someone
+    // on Dia or Arc got a signed-in Chrome instead of their own browser.
     let url = URL(string: link)!
-    let config = NSWorkspace.OpenConfiguration()
     let done = DispatchSemaphore(value: 0)
-    if let chrome {
-        NSWorkspace.shared.open([url], withApplicationAt: chrome, configuration: config) { _, _ in done.signal() }
-    } else {
-        NSWorkspace.shared.open(url, configuration: config) { _, _ in done.signal() }
-    }
+    NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { _, _ in done.signal() }
     done.wait()
     print("Opened \(site) signed in as \"\(name)\" (\(days) days).")
 }

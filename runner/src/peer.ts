@@ -10,12 +10,12 @@ import os from 'node:os';
 import { lsofPath } from './handover.ts';
 import { psTable, type ProcessRegistry } from './proc.ts';
 import type { Logger } from './log.ts';
-import { parseSnapshot, win32Helper, winAddress, type WinConnection, type WinProcess } from './win32-helper.ts';
+import { parseEnviron, parseJobs, parseProcesses, parseSnapshot, win32Helper, winAddress, type WinConnection, type WinProcess } from './win32-helper.ts';
 
 export type PeerDeps = {
   // threadOfPid gets the process's start time where the lookup has one
   // (Windows), so a CLI's pid taken by a newer process doesn't count.
-  registry: { threadOfPid(pid: number, created?: bigint): string | undefined | Promise<string | undefined> } & Partial<Pick<ProcessRegistry, 'threadOfGroup'>>;
+  registry: { threadOfPid(pid: number, created?: bigint): string | undefined | Promise<string | undefined> } & Partial<Pick<ProcessRegistry, 'threadOfGroup' | 'threadOfJob'>>;
   // A thread this runner or a draining one really has (a registry entry can
   // be a job's label, like models:<account>).
   known: (threadId: string) => boolean;
@@ -42,6 +42,10 @@ export type PeerDeps = {
   // A thread's key as this runner makes it (threadKey with its token): a
   // key found in an environment is checked against it.
   keyOf?: (threadId: string) => string;
+  // Windows: the Threadbear jobs each process is in (jobsOfHelper). Tests
+  // pass a stand-in; a lookup given a stand-in snapshot and none of these
+  // looks at no jobs.
+  jobsOf?: JobsOf;
   // This runner's pid (tests pass a stand-in): a process under it that it
   // started for a thread (a patch's action) has the thread's id and the key's
   // variable, empty.
@@ -51,6 +55,8 @@ export type PeerDeps = {
 // Every process's environment it could read, by pid; one it couldn't find
 // is left out.
 export type EnvsOf = (pids: number[]) => Promise<Map<number, string>>;
+// Each process's Threadbear jobs by name; one that has gone is left out.
+export type JobsOf = (pids: number[]) => Promise<Map<number, string[]>>;
 
 // 3 s until 23 Nov 2026. A lookup that runs out now closes the connection
 // rather than letting its credential decide (Daybreak finding 175), so it
@@ -111,7 +117,9 @@ const ID_IN_TEXT = /(?:^|[\s\0])THREADB(?:EAR|ARE)_THREAD_ID=([\w:.-]{1,128})(?=
 // before thread keys has no such variable at all.
 export type ThreadMarks = { keys: string[]; ids: string[]; emptyKey: boolean };
 const EMPTY_KEY = /(?:^|[\s\0])THREADB(?:EAR|ARE)_THREAD_KEY=(?=[\s\0]|$)/;
-export type OwnMarks = { keys: ReadonlySet<string>; ids: ReadonlySet<string> };
+// jobs: on Windows, the Threadbear jobs this runner itself is in (a dev
+// runner started from a thread's shell is in that thread's CLI's job).
+export type OwnMarks = { keys: ReadonlySet<string>; ids: ReadonlySet<string>; jobs?: ReadonlySet<string> };
 export function threadMarksIn(text: string): ThreadMarks {
   // Linux's (NUL-separated, from procEnvs): each entry by its exact name, so
   // a value that mentions one isn't one. A Mac's ps line can't be split
@@ -454,11 +462,11 @@ export async function threadOfSocket(sock: PeerSocket, deps: PeerDeps): Promise<
     throw new UnresolvedPeer(`could not tell which process connected: ${String(e)}`);
   }
   const threads = new Set<string>();
-  const placed: { thread?: string; below: number[] }[] = [];
+  const placed: { pid: number; thread?: string; below: number[] }[] = [];
   for (const peer of pids) {
     const found = await threadOfPid(peer, table, deps, windows);
     if (found.thread) threads.add(found.thread);
-    placed.push({ ...found, below: found.below ?? lookedAt(peer, table, platform) });
+    placed.push({ pid: peer, ...found, below: found.below ?? lookedAt(peer, table, platform) });
   }
   if (threads.size > 1) throw new AmbiguousPeer(`one connection is held by processes under ${threads.size} threads`);
   // The environments say the rest (Daybreak finding 177). Under none of this
@@ -480,14 +488,79 @@ export async function threadOfSocket(sock: PeerSocket, deps: PeerDeps): Promise<
     for (const t of keyed) threads.add(t);
     if (threads.size > 1) throw new AmbiguousPeer(`one connection is held by processes under ${threads.size} threads`);
   }
+  // Windows: the jobs the holders are in. A thread's CLI and everything it
+  // starts are in its job and can't leave, whatever their parents say (Git
+  // Bash's processes lose theirs at each exec, and its programs keep their
+  // environment where the PEB doesn't show it), so this is what places a
+  // process there: one of this runner's threads' jobs makes it that thread,
+  // one this runner was started in is the owner's, any other is another
+  // runner's thread (Daybreak finding 177).
+  const jobsOf = deps.jobsOf ?? (windows && !deps.lsof && !deps.snapshot ? jobsOfHelper : undefined);
+  if (jobsOf) {
+    let jobs: Map<number, string[]>;
+    try {
+      jobs = await deadline(jobsOf(placed.map((h) => h.pid)), ms);
+    } catch (e) {
+      deps.log.warn('could not tell which process connected to the RPC', { error: String(e) });
+      throw new UnresolvedPeer(`could not read the jobs of the processes holding it: ${String(e)}`);
+    }
+    const own = deps.own?.jobs ?? new Set<string>();
+    for (const h of placed) {
+      const names = jobs.get(h.pid);
+      if (names === undefined) throw new UnresolvedPeer(`process ${h.pid} went before its jobs could be read`);
+      for (const name of names) {
+        const t = deps.registry.threadOfJob?.(name);
+        if (t !== undefined && deps.known(t)) {
+          if (h.thread !== undefined && h.thread !== t) throw new ForeignPeer(`process ${h.pid} is in another thread's job`);
+          threads.add(t);
+        } else if (!own.has(name)) {
+          deps.log.warn("an RPC client is in another runner's thread's job; closing it", { pid: h.pid });
+          throw new ForeignPeer("this connection comes from under a thread of another runner on this machine, which didn't start this one");
+        }
+      }
+    }
+    if (threads.size > 1) throw new AmbiguousPeer(`one connection is held by processes under ${threads.size} threads`);
+  }
   return threads.size === 1 ? threadPeer([...threads][0]) : OWNER_PEER;
 }
 
-// The environment reader for this system: a Mac's /bin/ps, Linux's /proc.
-// Windows has none (its processes' environments can't be read from
-// outside), so there the check isn't made: SECURITY.md says so.
+// Asks made while one is going wait for it and then go as one, for every
+// pid asked for meanwhile: the helper answers one question at a time, so
+// one each per connection would let a thread queue enough to push others
+// past their time (Gemini's review of finding 177), as with snapshots.
+export function batched<T>(ask: (pids: number[]) => Promise<Map<number, T>>): (pids: number[]) => Promise<Map<number, T>> {
+  let waiting: { pids: number[]; resolve: (m: Map<number, T>) => void; reject: (e: unknown) => void }[] = [];
+  let running = false;
+  const run = async () => {
+    running = true;
+    while (waiting.length) {
+      const batch = waiting;
+      waiting = [];
+      try {
+        const answer = await ask([...new Set(batch.flatMap((w) => w.pids))]);
+        for (const w of batch) w.resolve(answer);
+      } catch (e) {
+        for (const w of batch) w.reject(e);
+      }
+    }
+    running = false;
+  };
+  return (pids) =>
+    new Promise((resolve, reject) => {
+      waiting.push({ pids, resolve, reject });
+      if (!running) void run();
+    });
+}
+
+// The Threadbear jobs these processes are in, from the runner's helper.
+const jobsOfHelper: JobsOf = batched(async (pids) => parseJobs(await win32Helper().ask('jobsOf', { pids: pids.join(',') }), pids));
+const environHelper: EnvsOf = batched(async (pids) => parseEnviron(await win32Helper().ask('environ', { pids: pids.join(',') }), pids));
+
+// The environment reader for this system: a Mac's /bin/ps, Linux's /proc,
+// Windows' helper (which reads each process's environment block from its
+// PEB, as a debugger does; Daybreak finding 177).
 function realEnvsOf(platform: NodeJS.Platform, procRoot: string | undefined, ms: number): EnvsOf | undefined {
-  if (platform === 'win32') return undefined;
+  if (platform === 'win32') return environHelper;
   if (platform === 'linux') return (pids) => procEnvs(pids, procRoot);
   return (pids) => psEnvs(pids, ms);
 }
@@ -617,7 +690,7 @@ export function lookedAt(start: number, table: ProcRow[], platform: NodeJS.Platf
 // no pass for it (Gemini's third review). So is an environment with more keys or ids than any CLI's. Throws
 // UnresolvedPeer when it can't say: a process it has to look at has gone,
 // or the look fails or runs out of time.
-async function keyedThreads(placed: { thread?: string; below: number[] }[], envOf: EnvsOf, deps: PeerDeps, ms: number): Promise<'foreign' | Set<string>> {
+async function keyedThreads(placed: { pid: number; thread?: string; below: number[] }[], envOf: EnvsOf, deps: PeerDeps, ms: number): Promise<'foreign' | Set<string>> {
   const pids = new Set<number>();
   for (const h of placed) for (const p of h.below) pids.add(p);
   const threads = new Set<string>();
@@ -671,7 +744,7 @@ async function keyedThreads(placed: { thread?: string; below: number[] }[], envO
 // started it. A runner started by launchd, systemd or a terminal has none.
 // Read once, as it starts, while its parents are still there to read; a
 // look that fails leaves only its own environment's.
-export async function ownThreadMarks(deps: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; table?: () => Promise<ProcRow[]>; envOf?: EnvsOf; self?: number; log?: Logger } = {}): Promise<OwnMarks> {
+export async function ownThreadMarks(deps: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; table?: () => Promise<ProcRow[]>; envOf?: EnvsOf; jobsOf?: JobsOf; self?: number; log?: Logger } = {}): Promise<OwnMarks> {
   const env = deps.env ?? process.env;
   const keys = new Set<string>();
   const ids = new Set<string>();
@@ -682,17 +755,28 @@ export async function ownThreadMarks(deps: { env?: NodeJS.ProcessEnv; platform?:
   };
   add(['', ...MARK_NAMES.map((n) => `${n}=${env[n] ?? ''}`), ''].join('\0'));
   const platform = deps.platform ?? process.platform;
+  const jobs = new Set<string>();
+  if (platform === 'win32' || deps.jobsOf) {
+    try {
+      const self = deps.self ?? process.pid;
+      // As long as a helper starting cold gets (win32-helper.ts): read once,
+      // as the runner starts, before anything waits on it.
+      for (const j of (await deadline((deps.jobsOf ?? jobsOfHelper)([self]), 25_000)).get(self) ?? []) jobs.add(j);
+    } catch (e) {
+      deps.log?.warn("could not read the runner's own jobs", { error: String(e) });
+    }
+  }
   const envOf = deps.envOf ?? realEnvsOf(platform, undefined, LOOKUP_MS);
-  if (!envOf) return { keys, ids };
+  if (!envOf) return { keys, ids, jobs };
   try {
-    const table = await deadline((deps.table ?? (platform === 'linux' ? () => procTable() : psTable))(), LOOKUP_MS);
+    const table = await deadline((deps.table ?? (platform === 'linux' ? () => procTable() : platform === 'win32' ? async () => parseProcesses(await win32Helper().ask('processes')) : psTable))(), LOOKUP_MS);
     const pids = lookedAtLoosely(deps.self ?? process.pid, table);
     const envs = await deadline(envOf(pids), LOOKUP_MS);
     for (const text of envs.values()) add(text);
   } catch (e) {
     deps.log?.warn("could not read the thread keys of the runner's own parents", { error: String(e) });
   }
-  return { keys, ids };
+  return { keys, ids, jobs };
 }
 
 // The variables that mark a thread's process. The runner takes them out of

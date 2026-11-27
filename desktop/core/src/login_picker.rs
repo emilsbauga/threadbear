@@ -87,6 +87,30 @@ pub struct LoginItem {
     pub is_blocked: bool,
     /// Under a quarter left (orange) or at its limit (red), as on the chip.
     pub badge: Option<ChipBadge>,
+    /// A usage reset worth using now: "2 resets left" beside it, with Use a
+    /// reset (reset_hint.rs).
+    pub reset: Option<ResetOffer>,
+}
+
+/// "2 resets left" on a login's line in a login list, and Use a reset's tip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResetOffer {
+    pub words: String,
+    pub tip: String,
+}
+
+/// The login's offer, from the runner's hint.
+pub fn reset_offer<Tz: TimeZone>(
+    account: &Account,
+    accounts: &[Account],
+    now: &DateTime<Tz>,
+) -> Option<ResetOffer> {
+    let ms = now.timestamp_millis();
+    let hint = crate::reset_hint::hint(account, ms)?;
+    Some(ResetOffer {
+        words: crate::reset_hint::count_words(hint),
+        tip: crate::reset_hint::use_tip(account, accounts, hint, ms, &now.timezone()),
+    })
 }
 
 /// A provider's logins (AccountMenu.Section).
@@ -115,6 +139,7 @@ pub fn login_sections<Tz: TimeZone>(
             is_selected: account.id == selected,
             is_blocked: usage_of(account).is_some_and(|u| u.blocked),
             badge: chip_badge(Some(account)),
+            reset: reset_offer(account, accounts, now),
         };
         match sections.iter_mut().find(|s| s.id == provider) {
             Some(section) => section.items.push(item),
@@ -151,6 +176,9 @@ pub fn login_lines(sections: &[LoginSection], footer: Option<&str>) -> Vec<Strin
             );
             if let Some(subtitle) = &item.subtitle {
                 line.push_str(&format!(" - {subtitle}"));
+            }
+            if let Some(reset) = &item.reset {
+                line.push_str(&format!(" [{}: Use a reset]", reset.words));
             }
             lines.push(line);
         }
@@ -207,14 +235,29 @@ pub const AUTO_HELP: &str = "The pool picks, and moves on when one runs out";
 
 /// The closed line, in two parts: "Login: Auto" and "(acme for now)" for a
 /// thread in a pool, the second only when its login is one of the pool's;
-/// "Login: gmail" and nothing for one pinned to a login.
+/// "Login: gmail" and nothing for one pinned to a pooled login; or
+/// "Login: cannstudios" and "(not in a pool)" when pinned to an unpooled login.
 pub fn login_line(
     account_id: &str,
     accounts: &[Account],
     pool: Option<&Pool>,
 ) -> (String, Option<String>) {
+    login_line_for(account_id, accounts, pool, false)
+}
+
+/// Same as `login_line`, appending "(not in a pool)" when the thread is pinned
+/// to a login that doesn't belong to any pool.
+pub fn login_line_for(
+    account_id: &str,
+    accounts: &[Account],
+    pool: Option<&Pool>,
+    unpooled: bool,
+) -> (String, Option<String>) {
     match pool {
-        None => (format!("Login: {}", login_name(account_id, accounts)), None),
+        None => (
+            format!("Login: {}", login_name(account_id, accounts)),
+            unpooled.then(|| "(not in a pool)".to_owned()),
+        ),
         Some(pool) => {
             let on = (!account_id.is_empty()
                 && pool.account_ids.iter().any(|a| a == account_id)
@@ -225,7 +268,7 @@ pub fn login_line(
     }
 }
 
-/// A row of the opened list: Auto (no `id`), or one of the pool's logins.
+/// A row of the opened list: Auto (no `id`), or one of the pool's (or unpooled) logins.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PoolLoginRow {
     pub id: Option<String>,
@@ -236,6 +279,8 @@ pub struct PoolLoginRow {
     /// Orange under a quarter, red at its limit, as on the chip.
     pub badge: Option<ChipBadge>,
     pub is_selected: bool,
+    /// A usage reset worth using now (reset_hint.rs).
+    pub reset: Option<ResetOffer>,
 }
 
 impl PoolLoginRow {
@@ -248,6 +293,36 @@ impl PoolLoginRow {
             _ => {}
         }
         self.room.map(percent)
+    }
+}
+
+fn account_login_row<Tz: TimeZone>(
+    account: &Account,
+    accounts: &[Account],
+    is_selected: bool,
+    now: &DateTime<Tz>,
+) -> PoolLoginRow {
+    let usage = usage_of(account);
+    let left = usage.as_ref().and_then(room);
+    // A window run dry is at its limit even before the runner's flag
+    // says so, as the room cards have it (Codex's review, 12 Nov).
+    let blocked = usage.as_ref().is_some_and(|u| u.blocked) || left.is_some_and(|r| r < 1.);
+    PoolLoginRow {
+        id: Some(account.id.clone()),
+        title: login_name(&account.id, accounts),
+        subtitle: subtitle(account, now),
+        room: if blocked { Some(0.) } else { left },
+        badge: if account.plan_ended {
+            Some(ChipBadge::PlanEnded)
+        } else if account.signed_out {
+            Some(ChipBadge::SignedOut)
+        } else if blocked {
+            Some(ChipBadge::Blocked)
+        } else {
+            chip_badge(Some(account))
+        },
+        is_selected,
+        reset: reset_offer(account, accounts, now),
     }
 }
 
@@ -269,6 +344,7 @@ pub fn pool_login_rows<Tz: TimeZone>(
         room: None,
         badge: None,
         is_selected: thread_pool == Some(pool.id.as_str()),
+        reset: None,
     }];
     let mut logins: Vec<&Account> = pool_logins(pool, accounts, None);
     if let Some(pinned) = pinned_login.and_then(|id| accounts.iter().find(|a| a.id == id)) {
@@ -277,29 +353,29 @@ pub fn pool_login_rows<Tz: TimeZone>(
         }
     }
     for account in logins {
-        let usage = usage_of(account);
-        let left = usage.as_ref().and_then(room);
-        // A window run dry is at its limit even before the runner's flag
-        // says so, as the room cards have it (Codex's review, 12 Nov).
-        let blocked = usage.as_ref().is_some_and(|u| u.blocked) || left.is_some_and(|r| r < 1.);
-        rows.push(PoolLoginRow {
-            id: Some(account.id.clone()),
-            title: login_name(&account.id, accounts),
-            subtitle: subtitle(account, now),
-            room: if blocked { Some(0.) } else { left },
-            badge: if account.plan_ended {
-                Some(ChipBadge::PlanEnded)
-            } else if account.signed_out {
-                Some(ChipBadge::SignedOut)
-            } else if blocked {
-                Some(ChipBadge::Blocked)
-            } else {
-                chip_badge(Some(account))
-            },
-            is_selected: thread_pool.is_none() && pinned_login == Some(account.id.as_str()),
-        });
+        let is_selected = thread_pool.is_none() && pinned_login == Some(account.id.as_str());
+        rows.push(account_login_row(account, accounts, is_selected, now));
     }
     rows
+}
+
+/// The opened list when browsing the "No pool" tab: the unpooled logins (for
+/// `provider` when given, else all unpooled logins), with no Auto row.
+pub fn unpooled_login_rows<Tz: TimeZone>(
+    pools: &[Pool],
+    accounts: &[Account],
+    provider: Option<&str>,
+    thread_pool: Option<&str>,
+    pinned_login: Option<&str>,
+    now: &DateTime<Tz>,
+) -> Vec<PoolLoginRow> {
+    crate::new_thread::unpooled_logins(pools, accounts, provider)
+        .into_iter()
+        .map(|account| {
+            let is_selected = thread_pool.is_none() && pinned_login == Some(account.id.as_str());
+            account_login_row(account, accounts, is_selected, now)
+        })
+        .collect()
 }
 
 /// The line and list as text, for the automation's `composer-menu`: the
@@ -317,6 +393,9 @@ pub fn pool_login_lines(line: &(String, Option<String>), rows: &[PoolLoginRow]) 
         );
         if let Some(sub) = &row.subtitle {
             text.push_str(&format!(" - {sub}"));
+        }
+        if let Some(reset) = &row.reset {
+            text.push_str(&format!(" [{}: Use a reset]", reset.words));
         }
         lines.push(text);
     }
@@ -695,5 +774,135 @@ mod tests {
             unpin_target(&[], "claude-3", "/", "/Users/alex", None),
             None
         );
+    }
+
+    #[test]
+    fn unpooled_login_list_has_no_auto_and_marks_pinned_unpooled_login() {
+        let accounts = vec![
+            account(
+                "claude-main",
+                "claude",
+                "alex@acme.io",
+                None,
+                json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 100 }] }),
+            ),
+            account(
+                "claude-solo",
+                "claude",
+                "mike@cannstudios.co",
+                None,
+                json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 15 }] }),
+            ),
+            account(
+                "claude-studio",
+                "claude",
+                "mike@studio.io",
+                None,
+                json!({ "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 88 }] }),
+            ),
+            account(
+                "cursor-solo",
+                "cursor",
+                "mike@cursor.sh",
+                None,
+                serde_json::Value::Null,
+            ),
+        ];
+        let pools = vec![Pool {
+            id: "main".into(),
+            title: "Main".into(),
+            account_ids: vec!["claude-main".into()],
+            icon: None,
+            folders: vec![],
+        }];
+        assert_eq!(
+            login_line_for("claude-solo", &accounts, None, true),
+            (
+                "Login: cannstudios".to_owned(),
+                Some("(not in a pool)".to_owned())
+            )
+        );
+        let rows = unpooled_login_rows(
+            &pools,
+            &accounts,
+            Some("claude"),
+            None,
+            Some("claude-studio"),
+            &now(),
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            vec!["cannstudios", "studio"]
+        );
+        assert!(rows.iter().all(|r| r.id.is_some()), "no Auto row");
+        assert!(!rows[0].is_selected && rows[1].is_selected);
+        assert_eq!(rows[0].badge, Some(ChipBadge::Low("15%".into())));
+        // When the thread is currently on a pool, none of the unpooled logins are ticked.
+        let on_pool = unpooled_login_rows(
+            &pools,
+            &accounts,
+            Some("claude"),
+            Some("main"),
+            None,
+            &now(),
+        );
+        assert!(on_pool.iter().all(|r| !r.is_selected));
+    }
+
+    #[test]
+    fn a_login_with_a_reset_worth_using_says_so_in_both_lists() {
+        let mut gmail = account(
+            "codex-1",
+            "codex",
+            "alex@example.com",
+            None,
+            json!({ "blocked": true, "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": 0 }] }),
+        );
+        gmail.reset_hint = Some(crate::logins::ResetHint {
+            why: "out".into(),
+            available: 2,
+            next_expires_at: Some("2026-12-09T00:00:00.000Z".into()),
+        });
+        let other = account(
+            "codex-2",
+            "codex",
+            "sam@example.com",
+            None,
+            serde_json::Value::Null,
+        );
+        let accounts = vec![gmail.clone(), other];
+        let sections = login_sections(&accounts, "codex-2", &now());
+        let item = &sections[0].items[0];
+        assert_eq!(
+            item.reset.as_ref().map(|r| r.words.as_str()),
+            Some("2 resets left")
+        );
+        assert!(sections[0].items[1].reset.is_none());
+        assert!(login_lines(&sections, None)[1].ends_with(" [2 resets left: Use a reset]"));
+        let pool = Pool {
+            id: "codex".into(),
+            title: "Codex".into(),
+            account_ids: vec!["codex-1".into(), "codex-2".into()],
+            icon: None,
+            folders: vec![],
+        };
+        let rows = pool_login_rows(&pool, &accounts, Some("codex"), None, &now());
+        assert!(rows[0].reset.is_none(), "not on Auto");
+        let offer = rows[1]
+            .reset
+            .as_ref()
+            .expect("the login out of room offers one");
+        assert_eq!(offer.words, "2 resets left");
+        assert!(
+            offer
+                .tip
+                .starts_with("Restores Codex alex's 5-hour and weekly limits now. 2 left"),
+            "{}",
+            offer.tip
+        );
+        // Once the soonest has expired it can't be counted on.
+        gmail.reset_hint.as_mut().unwrap().next_expires_at =
+            Some("2026-11-11T08:00:00.000Z".into());
+        assert!(reset_offer(&gmail, &accounts, &now()).is_none());
     }
 }

@@ -63,7 +63,7 @@ import Testing
                                                           (.running, built.running), (.hibernating, built.scheduled)]
             let found = lists.filter { !$0.1.isEmpty }.map(\.0)
             switch section {
-            case .backlog, .starred, .inbox, .running: #expect(found == [section], "\(c.name)")
+            case .coordinators, .backlog, .starred, .inbox, .running: #expect(found == [section], "\(c.name)")
             case .hibernating:
                 let snoozed = InboxSections.isSnoozed(row, now: now)
                 #expect(found == (snoozed ? [] : [.hibernating]), "\(c.name)")

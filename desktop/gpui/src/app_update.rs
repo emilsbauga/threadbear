@@ -708,13 +708,19 @@ impl Threadbear {
         }
         // followMain: false in runner.json stops the runner rebuilding, and
         // the app too (on-your-mac.md promises both). Only an explicit false.
-        if self
-            .runner_settings
-            .as_ref()
-            .and_then(|s| s["followMain"].as_bool())
-            == Some(false)
-        {
+        // A build staged by hand is still noticed, so the app menu and the
+        // Updates panel offer Restart to Update for it.
+        let follow_main = self
+            .runner_settings()
+            .and_then(|s| s["followMain"].as_bool());
+        if rules::look(follow_main) == rules::Look::StagedOnly {
             self.updater.settling = false;
+            let staged = staged_build();
+            if staged != self.updater.staged {
+                self.updater.staged = staged;
+                self.menus_stale = true;
+                cx.notify();
+            }
             return;
         }
         let checkout = running.checkout.clone();
@@ -732,11 +738,7 @@ impl Threadbear {
                     .quiet_main
                     .ready(&tree, std::time::Instant::now(), quiet);
                 // followMain can have changed while git was being read.
-                if t.runner_settings
-                    .as_ref()
-                    .and_then(|s| s["followMain"].as_bool())
-                    == Some(false)
-                {
+                if t.runner_settings().and_then(|s| s["followMain"].as_bool()) == Some(false) {
                     t.updater.settling = false;
                     return;
                 }
@@ -944,6 +946,7 @@ impl Threadbear {
             || crate::reply_links::left_held()
             || self.swipe_nav.under_way()
             || self.sidebar.gestures.under_way()
+            || self.sidebar.section_drag.under_way()
             || self.sidebar.menu.is_some()
             || crate::tips::any_menu_up()
             || gpui_kit::base::GlobalState::is_in_deferred_context(cx)
@@ -1009,6 +1012,7 @@ impl Threadbear {
             || crate::reply_links::left_held()
             || self.swipe_nav.under_way()
             || self.sidebar.gestures.under_way()
+            || self.sidebar.section_drag.under_way()
         {
             return s("the drag or swipe ends");
         }
@@ -1339,8 +1343,7 @@ impl Threadbear {
             building: u.building.is_some(),
             settling: u.settling
                 && self
-                    .runner_settings
-                    .as_ref()
+                    .runner_settings()
                     .and_then(|s| s["followMain"].as_bool())
                     != Some(false),
             quiet_minutes: u.quiet_minutes,

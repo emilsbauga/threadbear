@@ -19,7 +19,9 @@ type Group = { pgid: number; lstart: string } & Started;
 // (JobControl), by name.
 // exited: the CLI has gone, and the entry is kept only until its job has
 // been ended (a failure is tried again at the next start).
-type Entry = { pid: number; command: string; startedAt: string; lstart?: string; started?: string; groups?: Group[]; threadId?: string; job?: string; exited?: boolean };
+// alsoJobs: a job a first try took the CLI into before failing (still the
+// thread's, for the RPC's look).
+type Entry = { pid: number; command: string; startedAt: string; lstart?: string; started?: string; groups?: Group[]; threadId?: string; job?: string; alsoJobs?: string[]; exited?: boolean };
 
 // Windows' stand-in for a CLI's process group: a Job Object, made by the
 // runner's helper (win32-helper.ps1) as the CLI starts. Ending it ends
@@ -27,8 +29,11 @@ type Entry = { pid: number; command: string; startedAt: string; lstart?: string;
 // taskkill /T can't find once a parent has gone. Tests pass a stand-in.
 // What a CLI starts before it's in its job (Node can't start a process
 // suspended, so the job comes a few milliseconds after the CLI, longer
-// while the helper is busy) isn't in it, and outlives it as before: a gap
-// in clean-up, not a boundary anything relies on (Codex's review).
+// while the helper is busy) is swept in with it by the helper, by parent;
+// one whose parent has already gone isn't found. The RPC's look at who's
+// calling relies on the job too (peer.ts, Daybreak finding 177), so a
+// thread's CLI the helper couldn't put in a job (tried twice) is stopped
+// (killUnjobbed) rather than left running outside it.
 // assign answers the start time (a FILETIME) of the process it put in the
 // job, so the runner can tell it was the CLI (Codex's review, 18 Nov:
 // asked asynchronously, the pid could have been reused by then). forget
@@ -202,14 +207,41 @@ export class ProcessRegistry {
       },
       (e) => {
         this.assigning.delete(entry);
-        this.log.warn('could not put a CLI in a job of its own; taskkill /T still stops it', { pid: entry.pid, error: String(e) });
         // Refused (a name someone else made, a process that isn't the CLI):
         // never ended.
         this.dropJob(entry);
+        // A thread's CLI outside a job is one whose processes the RPC can't
+        // place once their parents have gone (Git Bash's do at each exec).
+        // Tried once more, under a new name (the helper may have been
+        // restarted mid-question); then stopped, so the thread's turn fails
+        // rather than run unplaceable.
+        const live = entry.threadId && !entry.exited && this.entries.get(entry.pid) === entry;
+        if (live && this.jobs && !this.retriedJobs.has(entry)) {
+          this.retriedJobs.add(entry);
+          // The first may have taken the CLI before failing (its handle in
+          // the CLI keeps it): still this thread's (Codex's and Gemini's
+          // reviews).
+          (entry.alsoJobs ??= []).push(job);
+          const again = newJobName();
+          entry.job = again;
+          this.save();
+          this.log.warn("could not put a thread's CLI in a job of its own; trying again", { pid: entry.pid, threadId: entry.threadId, error: String(e) });
+          this.settleJob(entry, again, this.jobs.assign(entry.pid, again, notAfter), notAfter);
+          return;
+        }
+        if (live) {
+          this.log.warn("could not put a thread's CLI in a job of its own; stopping it", { pid: entry.pid, threadId: entry.threadId, error: String(e) });
+          this.killUnjobbed(entry.pid);
+        } else {
+          this.log.warn('could not put a CLI in a job of its own; taskkill /T still stops it', { pid: entry.pid, error: String(e) });
+        }
       },
     );
     this.settling.set(entry, settled);
-    void settled.finally(() => this.settling.delete(entry));
+    // Only its own: a retry's has taken its place by then (Gemini's review).
+    void settled.finally(() => {
+      if (this.settling.get(entry) === settled) this.settling.delete(entry);
+    });
   }
 
   private dropJob(entry: Entry): void {
@@ -255,6 +287,27 @@ export class ProcessRegistry {
   threadOfGroup(pgid: number): string | undefined {
     for (const e of this.entries.values()) {
       if (e.threadId && (e.pid === pgid || e.groups?.some((g) => g.pgid === pgid))) return e.threadId;
+    }
+    return undefined;
+  }
+
+  // The thread whose CLI's Windows job this is (Local\threadbear-job-<hex>):
+  // this runner's own CLIs (one that has exited stays until its job is
+  // ended), or a draining runner's, from its list beside this one.
+  // Everything a CLI starts is in its job and can't leave it, so this places
+  // a process whatever its parents (Daybreak finding 177).
+  threadOfJob(name: string): string | undefined {
+    for (const e of [...this.entries.values(), ...this.lingering]) if (e.threadId && (e.job === name || e.alsoJobs?.includes(name))) return e.threadId;
+    let names: string[];
+    try {
+      names = fs.readdirSync(path.dirname(this.file)).filter((n) => /^children-\d+\.json$/.test(n));
+    } catch {
+      return undefined;
+    }
+    for (const n of names) {
+      const entries = readJsonSync<Entry[]>(path.join(path.dirname(this.file), n));
+      const e = Array.isArray(entries) ? entries.find((x) => (x?.job === name || (Array.isArray(x?.alsoJobs) && x.alsoJobs.includes(name))) && typeof x.threadId === 'string') : undefined;
+      if (e?.threadId) return e.threadId;
     }
     return undefined;
   }
@@ -405,6 +458,10 @@ export class ProcessRegistry {
   // The jobs (Windows) of CLIs that are gone. A job's name is the runner's,
   // random, so ending one can only reach what's in it, never a reused pid.
   jobs?: JobControl = IS_WINDOWS ? helperJobs : undefined;
+  private retriedJobs = new WeakSet<Entry>();
+  // How a thread's CLI that couldn't be put in its job is stopped (tests
+  // pass a stand-in).
+  killUnjobbed: (pid: number) => void = (pid) => void killTreeWindows(pid);
 
   // CLIs being put in their jobs, and exited ones whose jobs haven't been
   // ended yet.
@@ -556,12 +613,19 @@ export function groupAlive(pgid: number): boolean {
   }
 }
 
+// Windows' own taskkill, never one found on PATH (Gemini's review of
+// finding 177: a thread's CLI that couldn't be put in a job is stopped with
+// it, and a folder ahead of System32 on PATH could hold another).
+export function taskkillPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'taskkill.exe');
+}
+
 // Windows ends a process and everything it started in one go. There's no
 // gentler signal for a console program: SIGTERM is a hard kill there too.
 // Only a pid the runner started and still has recorded reaches this.
 function killTreeWindows(pid: number): boolean {
   try {
-    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    execFileSync(taskkillPath(), ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
     return true;
   } catch {
     return false;

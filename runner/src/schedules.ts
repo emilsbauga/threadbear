@@ -125,7 +125,7 @@ const ONLINE_MS = 3 * 60_000;
 // offered in runners.list: an old install, or a test's.
 const FORGET_MS = 30 * 86_400_000;
 
-export type ScheduleRunner = Pick<Runner, 'create' | 'send' | 'sendScheduled' | 'dropScheduled' | 'get' | 'list' | 'hello' | 'onNotification' | 'publish' | 'patchTrust'> & Partial<Pick<Runner, 'accessOf' | 'scheduleHeld'>> & { cfg?: Pick<Runner['cfg'], 'defaults'> };
+export type ScheduleRunner = Pick<Runner, 'createAfterModelProbe' | 'send' | 'sendScheduled' | 'dropScheduled' | 'get' | 'list' | 'hello' | 'onNotification' | 'publish' | 'patchTrust'> & Partial<Pick<Runner, 'accessOf' | 'scheduleHeld'>> & { cfg?: Pick<Runner['cfg'], 'defaults'> };
 
 export type CreateScheduleParams = {
   // A card's approval of `check` (patch-trust.ts, approveCheck). Not from a client.
@@ -144,6 +144,8 @@ export type CreateScheduleParams = {
   model?: string;
   effort?: EffortLevel;
   permissionMode?: PermissionMode;
+  // Each new thread starts starred. Only without threadId.
+  starThreads?: boolean;
   // A shell command run before each run (schedule-check.ts).
   check?: string;
   // How long it may take, in seconds; absent, a minute.
@@ -182,6 +184,7 @@ export type UpdateScheduleParams = {
   model?: string | null;
   effort?: EffortLevel | null;
   permissionMode?: PermissionMode;
+  starThreads?: boolean;
   // null or "" takes the check off.
   check?: string | null;
   checkCard?: CheckCard;
@@ -878,6 +881,7 @@ export class Scheduler {
     if (p.accountId && p.poolId) throw bad('Give accountId or poolId, not both: a pool picks the login.');
     if (p.provider && !p.poolId) throw bad('provider is for a schedule with a poolId: a login has its own.');
     if (away && p.threadId) throw bad("A schedule that sends to a thread runs on that thread's runner; leave runnerId out.");
+    if (p.threadId && p.starThreads) throw bad("starThreads is for a schedule that starts a new thread each time; star the thread itself instead.");
     const now = this.iso();
     const rec: ScheduleRecord = {
       id: crypto.randomUUID(),
@@ -904,6 +908,7 @@ export class Scheduler {
       if (p.model) rec.model = p.model;
       if (p.effort) rec.effort = p.effort;
       if (p.permissionMode) rec.permissionMode = p.permissionMode;
+      if (p.starThreads) rec.starThreads = true;
     } else {
       rec.cwd = this.checkedFolder(p.cwd);
       if (p.accountId) rec.accountId = this.checkedAccount(p.accountId);
@@ -912,6 +917,7 @@ export class Scheduler {
       if (p.model) rec.model = p.model;
       if (p.effort) rec.effort = p.effort;
       if (p.permissionMode) rec.permissionMode = p.permissionMode;
+      if (p.starThreads) rec.starThreads = true;
     }
     if (p.check?.trim()) rec.check = checkedCheck(p.check);
     if (p.checkTimeoutSecs !== undefined) rec.checkTimeoutSecs = checkedTimeout(p.checkTimeoutSecs);
@@ -1012,6 +1018,10 @@ export class Scheduler {
       }
       if (p.effort !== undefined) setOrDelete(rec, 'effort', p.effort);
       if (p.permissionMode !== undefined) rec.permissionMode = p.permissionMode;
+      if (p.starThreads === true) rec.starThreads = true;
+      else if (p.starThreads === false) delete rec.starThreads;
+    } else if (p.starThreads) {
+      throw bad("starThreads is for a schedule that starts a new thread each time; star the thread itself instead.");
     } else if ([p.cwd, p.accountId, p.poolId, p.provider, p.model, p.effort, p.permissionMode].some((x) => x !== undefined)) {
       throw bad("This schedule sends to a thread, so it has no folder, account or model of its own; change the thread's.");
     }
@@ -1850,7 +1860,7 @@ export class Scheduler {
         record('skipped', out.threadId, out.note);
         return { outcome: 'skipped', note: out.note };
       }
-      const r = this.runner.create({
+      const r = await this.runner.createAfterModelProbe({
         text,
         title: rec.title,
         // Made on another runner, the folder is as it was typed there.
@@ -1861,6 +1871,7 @@ export class Scheduler {
         model: rec.model,
         effort: rec.effort,
         permissionMode: rec.permissionMode,
+        ...(rec.starThreads ? { starred: true } : {}),
         origin: 'schedule',
         scheduleId: rec.id,
       });
@@ -2125,6 +2136,7 @@ export function scheduleMethods(s: Scheduler): Record<string, (p: Record<string,
         model: str(p, 'model'),
         effort: effort(p.effort) ?? undefined,
         permissionMode: mode(p.permissionMode),
+        starThreads: bool(p, 'starThreads'),
         check: str(p, 'check'),
         ...checkCardOf(p),
         checkTimeoutSecs: num(p, 'checkTimeoutSecs'),
@@ -2151,6 +2163,7 @@ export function scheduleMethods(s: Scheduler): Record<string, (p: Record<string,
       if (p.effort !== undefined) upd.effort = effort(p.effort);
       if (p.permissionMode !== undefined) upd.permissionMode = mode(p.permissionMode);
       if (p.paused !== undefined) upd.paused = bool(p, 'paused');
+      if (p.starThreads !== undefined) upd.starThreads = bool(p, 'starThreads');
       if (p.check !== undefined) upd.check = p.check === null ? null : str(p, 'check');
       Object.assign(upd, checkCardOf(p));
       // Like the card, it can only refuse.

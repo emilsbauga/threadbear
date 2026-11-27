@@ -68,7 +68,7 @@ import type {
   ToolApprovalAnswer,
   TurnResult,
 } from './adapters/types.ts';
-import { SessionNotFoundError } from './adapters/types.ts';
+import { MODEL_LIST_TIMEOUT_MS, SessionNotFoundError } from './adapters/types.ts';
 import type { UseResetOutcome } from './adapters/types.ts';
 import type { EventLog, ThreadRecord, ThreadStore, QueuedSend, SubagentRecord } from './store.ts';
 import { cutOut } from './store.ts';
@@ -81,7 +81,7 @@ import { LimitRecheck } from './limit-recheck.ts';
 import { threadEnv } from './restart.ts';
 import { worktreeInstructions } from './worktrees.ts';
 import { type AccountRegistry, type LearnedAccountInfo } from './accounts.ts';
-import type { SignInState } from './sign-in-state.ts';
+import { ACCESS_OFF_HOLD_MS, ACCESS_OFF_TEXT, type SignInState } from './sign-in-state.ts';
 import { decidingWindows, MIN_ROOM_PERCENT, pickAccount as pickByRoom, type UsageReading } from './usage.ts';
 import { FUNDED_DETAIL } from './adapters/acp/grok-billing.ts';
 import { RUNNER_VERSION, expandHome, paths, peekRunnerJson, type Config } from './config.ts';
@@ -123,7 +123,7 @@ export { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_NETWORK, CARRY_ON_RESTART, CARR
 import { recapText, TITLE_PROMPT, askedLine, checkImages, cleanTitle, fromMike, isAutomaticInput, matchAnswers, oneLine, scheduledMessageId, titleFrom, userMessage } from './runner/messages.ts';
 export { RECAP_BRIEF_CHARS, RECAP_PURPOSE_CHARS } from './runner/messages.ts';
 export { recapText, TITLE_PROMPT, askedLine, checkImages, cleanTitle, fromMike, isAutomaticInput, matchAnswers, oneLine, scheduledMessageId, titleFrom, userMessage };
-import { effortTitle, isClaudeModel, modelRow, modelTitle } from './runner/models.ts';
+import { effortTitle, explicitModelKind, modelAccounts, ModelListsPending, isClaudeModel, modelRow, modelTitle } from './runner/models.ts';
 export { effortTitle, isClaudeModel, modelRow, modelTitle };
 import { newRuntime } from './runner/runtime.ts';
 export { newRuntime };
@@ -166,6 +166,7 @@ import type { YearTokenAnswer, YearTokenParams } from './year-token-maker.ts';
 import { placeBucket, placeOf } from './place.ts';
 import { allowed as waitMoveAllowed, waitStateOf, type WaitState } from './wait-state.ts';
 import { archivedNote, hibernatedNote, scheduledNote, unarchivedNote, unscheduledNote, wokenNote } from './place-notes.ts';
+import type { Coordinators, CoordinatorView } from './coordinators.ts';
 
 export type Notification =
   | { method: 'thread.updated'; params: { thread: ThreadSummary } }
@@ -182,6 +183,7 @@ export type Notification =
   | { method: 'instructions.updated'; params: { instructions: import('./instructions.ts').StandingInstructions } }
   | { method: 'runner.updates'; params: { updates: RunnerUpdates } }
   | { method: 'projects.updated'; params: { projects: Project[] } }
+  | { method: 'coordinators.updated'; params: { coordinators: CoordinatorView[] } }
   | { method: 'librarian.updated'; params: { librarian: LibrarianStatus } }
   | { method: 'connectors.updated'; params: { connectors: ConnectorsStatus } }
   | { method: 'recipes.updated'; params: Record<string, never> }
@@ -323,6 +325,8 @@ export type Turn = {
   // A message in it was Mike's own: he's at the thread, so a check it does
   // or leaves owed needs no mark to tell him (completeTurn).
   byMike?: true;
+  // Already reminded this non-Mike wake turn about pending carry-on items.
+  nextReminded?: true;
   // It did the check a wake gave the thread (runner/hibernation.ts,
   // wakeToCheck), so how it ends says whether Mike is needed (completeTurn).
   wakeCheck?: true;
@@ -539,6 +543,13 @@ export type Runtime = {
   // it's in and opens none, so once the wake grace passes with no turn
   // (or the CLI exits) it finishes after all (settlePendingFinish).
   finishPending?: { seq: number; turnId: string; lastText?: string; next: boolean; owed?: { turnId: string; seq?: number; reply?: string } };
+  // A coordinator's helper whose turn ended with background work still
+  // going (a shell, a monitor, a subagent), which the CLI wakes for: the
+  // run isn't over, so its coordinator hears when the turn that wake opens
+  // ends, or this turn's result once nothing more is coming
+  // (settleHelperPending).
+  // Not evicted for room meanwhile (makeRoomForCli): that would end it.
+  helperPending?: { outcome: 'completed'; text: string; turnId: string };
   activeAt: number; // last turn start or end, for picking which CLI to release
   approvals: Map<string, PendingApproval>;
   // Calls the card reviewer is deciding on (runner/card-review.ts), which
@@ -795,6 +806,7 @@ export class Runner {
   models?: Pick<Models, 'generate'>;
   projects?: Projects;
   standingInstructions?: () => string;
+  coordinators?: Coordinators;
   activity = new Set<(a: ThreadActivity) => void>();
   patchCache: PatchCache = new Map();
   patchTrust: PatchTrustStore;
@@ -850,6 +862,7 @@ export class Runner {
   unvouchedSettled = false;
   // Accounts whose CLI has been asked for its models (or is being asked).
   probed = new Set<string>();
+  private modelProbes = new Map<string, Promise<void>>();
   rescanTimer?: TimerHandle;
   landRecheckAt = 0;
   liveTimer?: TimerHandle;
@@ -1033,10 +1046,11 @@ export class Runner {
     void this.settleLostCleanups();
     // A guess the last runner was still making when it stopped or let a
     // thread go (runner/inbox-guess.ts); it catches its own errors.
-    for (const st of this.threads.values()) this.catchUpInboxGuess(st, GUESS_CATCH_UP_MS);
+    for (const st of this.threads.values()) if (!st.rec.coordinatorHelperFor) this.catchUpInboxGuess(st, GUESS_CATCH_UP_MS);
     for (const st of this.threads.values()) {
       try {
-        if (st.rec.queue.some(q => q.reviewId) && this.bucket(st.rec) === 'inbox') this.kickQueue(st);
+        const coordinatorReady = this.coordinators?.forThread(st.rec.id) && !this.coordinators.dispatchRefusal(st.rec.id);
+        if (st.rec.queue.some(q => q.reviewId || (coordinatorReady && q.origin === 'runner')) && this.bucket(st.rec) === 'inbox') this.kickQueue(st);
       } catch (e) {
         this.recoveryFailed(st, e);
       }
@@ -1062,24 +1076,63 @@ export class Runner {
     this.armRescan();
   }
 
-  // Asks each account's CLI for its model list, one account at a time so
-  // startup doesn't spawn three CLIs at once. Clients hear through
-  // accounts.updated; a failure just leaves the list unknown. `only` picks
-  // some accounts: a login that has just appeared, or every Codex account
-  // after a Codex update (a new version can change the list).
-  async probeModels(only?: (a: Account) => boolean): Promise<void> {
+  // Each login has an independent, bounded read. Concurrent callers
+  // share the same in-flight read for that login.
+  async probeModels(only?: (a: Account) => boolean, refresh = false): Promise<void> {
     const targets = this.safeAccounts().filter((a) => !only || only(a));
-    for (const a of targets) this.probed.add(a.id);
-    for (const account of targets) {
-      if (this.stopping) return;
-      const adapter = this.adapters[account.provider];
-      if (!adapter?.models) continue;
+    await Promise.all(targets.map(async (account) => {
+      // A CLI upgrade still needs a fresh read if its old CLI was probing.
+      if (refresh) await this.modelProbes.get(account.id);
+      await this.probeModel(account);
+    }));
+  }
+
+  private probeModel(account: Account): Promise<void> {
+    const pending = this.modelProbes.get(account.id);
+    if (pending) return pending;
+    this.probed.add(account.id);
+    const adapter = this.adapters[account.provider];
+    const models = adapter?.models?.bind(adapter);
+    if (this.stopping || !models) return Promise.resolve();
+
+    const probe = Promise.resolve().then(async () => {
+      if (this.stopping) {
+        this.modelProbes.delete(account.id);
+        return;
+      }
+      const abort = new AbortController();
+      let timer: TimerHandle | undefined;
       try {
-        const models = await adapter.models(account);
-        this.learnAccount(account.id, { models });
+        const deadline = new Promise<never>((_, reject) => {
+          timer = this.clock.setTimeout(() => {
+            const error = new Error('the model probe timed out');
+            reject(error);
+            abort.abort(error);
+          }, MODEL_LIST_TIMEOUT_MS);
+        });
+        const list = await Promise.race([models(account, abort.signal), deadline]);
+        this.learnAccount(account.id, { models: list });
       } catch (e) {
         this.log.warn('could not read the model list', { accountId: account.id, error: String(e) });
+      } finally {
+        timer?.cancel();
+        this.modelProbes.delete(account.id);
       }
+    });
+    this.modelProbes.set(account.id, probe);
+    return probe;
+  }
+
+  // The routing exception comes from drafting, before a thread or its
+  // first turn exists. Re-read account and pool state after the probes.
+  async createAfterModelProbe(params: Parameters<NewThreadsPart['create']>[0]): Promise<ReturnType<NewThreadsPart['create']>> {
+    try {
+      return this.create(params);
+    } catch (e) {
+      if (!(e instanceof ModelListsPending)) throw e;
+      const pending = new Set(e.accountIds);
+      await this.probeModels((a) => pending.has(a.id) && a.models === undefined);
+      return this.create(params);
     }
   }
 
@@ -1268,6 +1321,9 @@ export class Runner {
   // one. Else Send again after New token… runs on the old token, and its
   // refusal marks the new one out (Codex's review, 17 Nov).
   private tokenKeys = new Map<string, string>();
+  // Told after each change to the login list goes out (a token made or
+  // renewed, a login added, hidden or noted): login-share.ts sends again.
+  onAccountsChanged?: () => void;
   renewTokens(accounts: Account[]): void {
     for (const a of accounts) {
       if (a.provider !== 'claude') continue;
@@ -1304,6 +1360,7 @@ export class Runner {
     this.accountsShown = key;
     this.accountsSentAt = this.clock.now();
     this.notify({ method: 'accounts.updated', params: { accounts } });
+    this.onAccountsChanged?.();
   }
 
   // A thread folder whose thread.json can't be read: rebuild what can be
@@ -1386,6 +1443,32 @@ export class Runner {
     const { rec } = st;
     // A sub-agent can't outlive the runner that started its CLI.
     this.stopSubagents(st);
+    // Hidden coordinator helpers are owned and reconciled by Coordinators.
+    if (rec.coordinatorHelperFor) {
+      const mid = rec.status === 'starting' || rec.status === 'running' || rec.status === 'waiting';
+      if (mid && rec.turnId) {
+        const ev = this.emit(st, { type: 'turn.completed', turnId: rec.turnId, outcome: 'interrupted', durationMs: 0, error: 'The runner stopped during this turn.' }, rec.turnId);
+        rec.lastTurnCompletedSeq = ev.seq;
+      }
+      if (mid) {
+        rec.turnId = undefined;
+        rec.status = 'stopped';
+      }
+      rec.pendingApprovals = [];
+      rec.queue = [];
+      // Its coordinator's registry carries it on (coordinators.ts,
+      // carryOnAfterRestart), so no carry-on of its own: not the network's,
+      // and not carryOnStopped's, which a clean stop's stopTurn asks for.
+      // That one ran outside the registry's run, and its result went nowhere
+      // (Codex's review, 26 Nov 2026).
+      delete rec.waitingForNetwork;
+      delete rec.netCarryOn;
+      delete rec.stoppedMidTurn;
+      // Nor tellStoppedWork's message: the carry-on says to check what's done.
+      delete rec.stoppedWork;
+      this.markDirty(st);
+      return false;
+    }
     // Waiting with no turn is only a subagent's card, and that subagent is
     // gone: there's no turn to pick up again.
     const onlyCards = rec.status === 'waiting' && !rec.turnId;
@@ -1445,8 +1528,11 @@ export class Runner {
       this.markDirty(st);
       return false;
     }
-    const reviewQueue = rec.queue.filter(q => q.reviewId);
-    rec.queue = rec.queue.filter(q => !q.reviewId);
+    const coordinatorInput = (q: QueuedSend) => Boolean(this.coordinators?.forThread(rec.id) && q.origin === 'runner');
+    const reviewQueue = rec.queue.filter(q => q.reviewId || (coordinatorInput(q) && !this.scheduledDelivery(st, q.turnId, 0, 'runner')?.started));
+    // A stale thread.json may still hold an input whose receipt is already
+    // in the log. It was delivered; neither replay it nor call it unsent.
+    rec.queue = rec.queue.filter(q => !q.reviewId && !coordinatorInput(q));
     if (rec.queue.length) {
       const texts = rec.queue.map((q) => q.text).filter(Boolean);
       this.emit(st, {
@@ -1602,7 +1688,9 @@ export class Runner {
     for (const st of this.threads.values()) if (this.scheduled(st.rec.id)) now.add(st.rec.id);
     // The first time, every thread a summary has said is scheduled counts
     // as before, so the first schedule removed after a start is sent too.
-    const before = this.scheduledThreads ?? new Set([...this.threads.values()].filter((st) => st.rt.waitState === 'scheduled').map((st) => st.rec.id));
+    // A thread adopted since (a handover) was never in the last list: what
+    // its summary said counts too.
+    const before = new Set([...(this.scheduledThreads ?? []), ...[...this.threads.values()].filter((st) => st.rt.waitState === 'scheduled').map((st) => st.rec.id)]);
     this.scheduledThreads = now;
     for (const id of new Set([...now, ...before])) {
       if (now.has(id) === before.has(id)) continue;
@@ -1614,30 +1702,45 @@ export class Runner {
   // The threads a schedule would message, as of the last schedules.updated.
   private scheduledThreads?: Set<string>;
 
-  private scheduled(threadId: string): boolean {
-    return (this.schedulesFor?.(threadId) ?? []).some((x) => x.threadId === threadId && !x.paused && !x.finishedAt && Boolean(x.nextRunAt));
+  // The soonest booked schedule that will message the thread.
+  nextSchedule(threadId: string): Schedule | undefined {
+    return (this.schedulesFor?.(threadId) ?? [])
+      .filter((x) => x.threadId === threadId && !x.paused && !x.finishedAt && x.nextRunAt && !Number.isNaN(Date.parse(x.nextRunAt)))
+      .sort((a, b) => Date.parse(a.nextRunAt!) - Date.parse(b.nextRunAt!))[0];
+  }
+
+  scheduled(threadId: string): boolean {
+    return this.nextSchedule(threadId) !== undefined;
   }
 
   // The line for a move into or out of Hibernating for a schedule, once
   // the summary that saw it is made. Checked again, as a turn may have
   // started in between.
-  private sayScheduled(st: ThreadState, into: boolean): void {
-    if (st.rt.deleted || this.stopping) return;
+  sayScheduled(st: ThreadState, into: boolean): void {
+    if (st.rt.deleted || this.stopping || this.refusing || this.draining) return;
     if ((st.rt.waitState === 'scheduled') !== into) return;
     const now = this.clock.now();
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (!into) {
+      // Out for news while its schedule is still booked (a turn's reply, a
+      // wake): that has its own line, and "no schedule is booked" would be
+      // wrong (25 Nov 2026).
+      if (this.scheduled(st.rec.id)) return;
       this.emit(st, { type: 'system.note', text: unscheduledNote({ now, timeZone }) });
       return;
     }
-    const next = (this.schedulesFor?.(st.rec.id) ?? [])
-      .filter((x) => x.threadId === st.rec.id && !x.paused && !x.finishedAt && x.nextRunAt)
-      .sort((a, b) => Date.parse(a.nextRunAt!) - Date.parse(b.nextRunAt!))[0];
+    const next = this.nextSchedule(st.rec.id);
     this.emit(st, { type: 'system.note', text: scheduledNote({ title: next?.title, next: next?.nextRunAt ? Date.parse(next.nextRunAt) : undefined, now, timeZone }) });
   }
 
   private waitState(st: ThreadState, sum: ThreadSummary): WaitState {
-    return waitStateOf(sum, { now: this.clock.now(), scheduled: this.scheduled(st.rec.id) });
+    // A message already taken and about to start a turn (a coordinator's
+    // wake waiting on the folder's settings look, rt.preLook) isn't
+    // "nothing needs you": without this the thread read as Hibernating, with
+    // its line, for the moment before the turn began (Gemini's review, 26 Nov
+    // 2026).
+    const starting = st.rec.queue.length > 0 && !st.rt.turn;
+    return waitStateOf(sum, { now: this.clock.now(), scheduled: this.scheduled(st.rec.id) && !starting, helpers: this.coordinators?.helpersWorking(st.rec.id) ?? 0 });
   }
 
   // Turn ends and folder moves, for the librarian.
@@ -1758,6 +1861,7 @@ export class Runner {
     const out: ThreadSummary[] = [];
     const states = ids ? [...new Set(ids)].flatMap((id) => this.threads.get(id) ?? []) : this.threads.values();
     for (const st of states) {
+      if (st.rec.coordinatorHelperFor) continue;
       if (want.has(this.bucket(st.rec))) out.push(this.summary(st));
     }
     return sortByActivity(out);
@@ -1770,6 +1874,7 @@ export class Runner {
   recipeRunsSince(since: number): ThreadSummary[] {
     const out: ThreadSummary[] = [];
     for (const st of this.threads.values()) {
+      if (st.rec.coordinatorHelperFor) continue;
       if ((st.rec.schedule || st.rec.startedBy?.kind === 'runner') && Date.parse(st.rec.createdAt) >= since) out.push(this.summary(st));
     }
     return out;
@@ -1783,6 +1888,7 @@ export class Runner {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     const out: ThreadSummary[] = [];
     for (const st of this.threads.values()) {
+      if (st.rec.coordinatorHelperFor) continue;
       const hay = `${st.rec.title}\n${st.rec.preview}\n${st.rec.keywords ?? ''}`.toLowerCase();
       if (words.every((w) => hay.includes(w))) out.push(this.summary(st));
     }
@@ -1876,11 +1982,18 @@ export class Runner {
     return this.summary(this.mustGet(threadId));
   }
 
-  // What a sub-agent has done so far, from the CLI's transcript of it.
+  // What a sub-agent has done so far, from the CLI's transcript of it or from
+  // a hidden runner-managed coordinator helper's persisted event log.
   subagent(threadId: string, subagentId: string): { subagent?: Subagent; events: PersistedEvent[] } {
     const st = this.mustGet(threadId);
     const { rec } = st;
     const known = rec.subagents?.find((a) => a.id === subagentId);
+    const helper = this.threads.get(subagentId);
+    if (helper?.rec.coordinatorHelperFor === threadId) {
+      const log = this.store.log(subagentId);
+      const events = (log.lastSeq > 0 ? log.read(1, log.lastSeq) : []).map((e) => ({ ...e, threadId }));
+      return known ? { subagent: publicSubagent(known), events } : { events };
+    }
     const cwd = known?.cwd ?? rec.cwd;
     const account = this.accounts.get(known?.accountId ?? rec.accountId);
     const sessionId = known?.sessionId ?? rec.nativeSessionId;
@@ -1979,13 +2092,14 @@ export class Runner {
     return delivery && 'seq' in delivery ? delivery : undefined;
   }
 
-  private scheduledDelivery(st: ThreadState, messageId: string, since: number): ScheduledDelivery | undefined {
+  private scheduledDelivery(st: ThreadState, messageId: string, since: number, origin: MessageOrigin = 'schedule'): ScheduledDelivery | undefined {
     // A schedule/request may have been timestamped by another runner.
     since = Math.max(0, since - 5 * 60_000);
     const log = this.store.log(st.rec.id);
     let index = this.scheduledMessages.get(log);
     if (!index) { index = new Map(); this.scheduledMessages.set(log, index); }
-    const cached = index.get(messageId);
+    const cacheKey = `${origin}:${messageId}`;
+    const cached = index.get(cacheKey);
     if (cached?.message?.started && cached.through <= log.lastSeq) return cached.message;
     if (cached?.through === log.lastSeq && cached.since <= since) return cached.message;
     const last = log.lastSeq;
@@ -1998,7 +2112,7 @@ export class Runner {
     let started = message?.started ?? false;
     const finish = () => {
       const found = message?.superseded ? message : message && { ...message, started };
-      index.set(messageId, { through: last, since, message: found });
+      index.set(cacheKey, { through: last, since, message: found });
       return found;
     };
     for (let to = last; to >= from; to -= 128) {
@@ -2015,7 +2129,7 @@ export class Runner {
             started = true;
             if (message) return finish();
           }
-          if (e.type === 'user.message' && e.origin === 'schedule') {
+          if (e.type === 'user.message' && e.origin === origin) {
             message = { seq: e.seq, started, text: e.text, images: e.images };
             return finish();
           }
@@ -2026,11 +2140,11 @@ export class Runner {
     return finish();
   }
 
-  findScheduledSend(threadId: string, scheduleId: string, run?: string, since = 0): { turnId: string } | undefined {
+  findScheduledSend(threadId: string, scheduleId: string, run?: string, since = 0, origin: MessageOrigin = 'schedule'): { turnId: string } | undefined {
     if (!run) return undefined;
     const st = this.mustGet(threadId);
     const turnId = scheduledMessageId(threadId, scheduleId, run);
-    if (st.rec.queue.some((q) => q.turnId === turnId) || this.scheduledDelivery(st, turnId, since)?.started) return { turnId };
+    if (st.rec.queue.some((q) => q.turnId === turnId) || this.scheduledDelivery(st, turnId, since, origin)?.started) return { turnId };
     return undefined;
   }
 
@@ -2086,12 +2200,15 @@ export class Runner {
       this.withholdMessage(st, { text, origin: opts.origin, scheduleId: opts.scheduleId });
       return opts.messageId ?? crypto.randomUUID();
     }
-    if (opts.answers?.length && fromMike(text, opts) && this.answered) {
-      const open = rec.needs?.needs === 'you' && rec.needs.seq === rec.lastTurnCompletedSeq ? rec.needs.asks : undefined;
-      try {
-        this.answered(rec.id, opts.answers, open);
-      } catch (e) {
-        this.log.warn('acting on an answer failed', { threadId: rec.id, error: String((e as Error)?.message ?? e) });
+    if (opts.answers?.length && fromMike(text, opts)) {
+      this.coordinators?.checkCardAnswers(rec, opts.answers);
+      if (this.answered) {
+        const open = rec.needs?.needs === 'you' && rec.needs.seq === rec.lastTurnCompletedSeq ? rec.needs.asks : undefined;
+        try {
+          this.answered(rec.id, opts.answers, open);
+        } catch (e) {
+          this.log.warn('acting on an answer failed', { threadId: rec.id, error: String((e as Error)?.message ?? e) });
+        }
       }
     }
     // He has had his say: a wait's checks at its latest time count from here
@@ -2147,7 +2264,17 @@ export class Runner {
     // message notes it came out of the archive, so the run can put it back
     // if it ends with nothing for Mike (the end of the turn, below).
     // Answering it from his phone without opening it counts as having seen
-    // it woke (place.ts, message).
+    // it woke (place.ts, message). Mike doing it is written down first, while
+    // the record still says who put it away (runner/inbox-guess.ts).
+    if (fromMike(text, opts)) {
+      this.noteRevive(st, text);
+      if (!this.commandPlan(st, text) && rec.needs?.next?.length) {
+        delete rec.needs.next;
+        delete rec.needs.nextPick;
+        delete rec.needs.nextSuggested;
+        this.markDirty(st);
+      }
+    }
     if (placeOf(rec).kind !== 'inbox') this.cli(st, { kind: 'stay' });
     this.park(st, { kind: 'message', fromSchedule: opts.origin === 'schedule', fromMike: fromMike(text, opts) });
     this.supersedeReviews(st, text, opts);
@@ -2500,10 +2627,13 @@ export class Runner {
     const messageSeq = reviewMessage?.seq ?? scheduledMessage?.seq ?? this.emit(st, userMessage(msg), msg.turnId).seq;
     try {
       this.emit(st, { type: 'turn.started', turnId: msg.turnId }, msg.turnId);
+      this.noteHelperStart(st, msg.turnId);
     } catch (e) {
       this.markDirty(st);
       throw e;
     }
+    // Started: how this turn ends says whether it wants Mike now.
+    delete rec.quietWake;
     rt.idleTimer?.cancel();
     rt.idleTimer = undefined;
     rt.turn = { turnId: msg.turnId, startedAt: this.clock.now(), interruptRequested: false, messages: [msg.turnId], edited: new Set(), access: rec.permissionMode };
@@ -2810,7 +2940,7 @@ export class Runner {
     const live = [...this.threads.values()].filter((t) => t !== starting && runningSession(t.rt));
     if (live.length < this.cfg.maxLive) return;
     const idle = live
-      .filter((t) => !t.rt.turn && t.rt.approvals.size === 0 && t.rec.queue.length === 0 && t.rt.tasks.length === 0)
+      .filter((t) => !t.rt.turn && t.rt.approvals.size === 0 && t.rec.queue.length === 0 && t.rt.tasks.length === 0 && !t.rt.helperPending)
       .sort((a, b) => a.rt.activeAt - b.rt.activeAt);
     for (const t of idle.slice(0, live.length - this.cfg.maxLive + 1)) {
       this.log.info('releasing the longest-idle CLI to stay under the cap', { threadId: t.rec.id, maxLive: this.cfg.maxLive });
@@ -2854,6 +2984,7 @@ export class Runner {
       // with a stand-in).
       runsAsCode: (file) => this.writeRunsAsCode(this.threads.get(id)?.rec ?? rec, file),
       ...(heldGrants ? { heldGrants: true } : {}),
+      ...(this.coordinators?.session(rec.id) ? { coordinator: this.coordinators.session(rec.id) } : {}),
     };
     return { opts, claude, claudeSkipped, heldGrants };
   }
@@ -2862,6 +2993,8 @@ export class Runner {
   // no wait since; without one, it looks here.
   startSession(st: ThreadState, account: Account, looks?: ClaudeLook[]): void {
     const { rec, rt } = st;
+    const held = this.coordinators?.dispatchRefusal(rec.id);
+    if (held) throw new Error(held);
     const adapter = this.adapters[rec.provider];
     if (!adapter) throw new Error(`This runner can't run ${providerName(rec.provider)} threads.`);
     // Checked here, where every way a thread runs (a send, a carry-on, a
@@ -3148,6 +3281,7 @@ export class Runner {
       }
       case 'subagent':
         this.updateSubagent(st, o.update);
+        this.coordinators?.subagent(rec.id, o.update);
         break;
       case 'wrote':
         // Patch files, and helpers a trusted patch may import, an edit the
@@ -3247,8 +3381,12 @@ export class Runner {
       rt.wakeTimer = undefined;
       rt.finished = [];
       this.markDirty(st);
-      // No turn came to read the result: a done card held back for one stands.
-      if (!rt.turn) this.settlePendingFinish(st);
+      // No turn came to read the result: a done card held back for one
+      // stands, and a helper's held turn ends its run.
+      if (!rt.turn) {
+        this.settlePendingFinish(st);
+        this.settleHelperPending(st);
+      }
       // Mike's turn is running: the CLI may read the result after it, so it
       // counts as ended in that turn, and the grace starts again at its end
       // (Codex's review, 22 Nov 2026).
@@ -3278,6 +3416,7 @@ export class Runner {
     }
     const turnId = crypto.randomUUID();
     this.emit(st, wokeBy.length ? { type: 'turn.started', turnId, wokeBy } : { type: 'turn.started', turnId }, turnId);
+    this.noteHelperStart(st, turnId);
     rt.idleTimer?.cancel();
     rt.idleTimer = undefined;
     rt.turn = { turnId, startedAt: this.clock.now(), interruptRequested: false, auto: true, messages: [], edited: new Set(), access: rec.permissionMode };
@@ -3335,11 +3474,23 @@ export class Runner {
     if (outcome === 'failed' && r.errorKind) body.errorKind = r.errorKind;
     // What it needs from Mike: its end_turn call, else its closing "What I
     // need from you". Only a turn it finished; a stopped one says nothing.
+    const prevNext =
+      rec.needs?.needs === 'nothing' && rec.needs.seq === rec.lastTurnCompletedSeq && rec.needs.next?.length
+        ? { next: rec.needs.next, ...(rec.needs.nextPick ? { nextPick: rec.needs.nextPick } : {}), ...(rec.needs.nextSuggested !== undefined ? { nextSuggested: rec.needs.nextSuggested } : {}) }
+        : undefined;
     const said = outcome === 'completed' ? turnNeeds(turn) : undefined;
+    const explicitNext = Boolean(turn.endTurn && typeof turn.endTurn === 'object' && 'next' in turn.endTurn && (turn.endTurn as Record<string, unknown>).next !== undefined);
+    if (outcome === 'completed' && !turn.local && !turn.byMike && said?.needs === 'nothing' && !said.next?.length && !explicitNext && prevNext) {
+      said.next = prevNext.next;
+      if (prevNext.nextPick) said.nextPick = prevNext.nextPick;
+      if (prevNext.nextSuggested !== undefined) said.nextSuggested = prevNext.nextSuggested;
+    }
     if (said) {
       body.needs = said.needs;
       if (said.asks) body.asks = said.asks;
       if (said.next) body.next = said.next;
+      if (said.nextPick) body.nextPick = said.nextPick;
+      if (said.nextSuggested !== undefined) body.nextSuggested = said.nextSuggested;
       body.needsFrom = said.from;
     }
     // Here rather than only in end_turn's handler: a refused end_turn
@@ -3372,7 +3523,17 @@ export class Runner {
     // Any completed turn replaces the last one's card; one that said
     // neither leaves no card, and counts as before.
     if (outcome === 'completed') {
-      if (said) rec.needs = { seq: ev.seq, needs: said.needs, ...(said.asks ? { asks: said.asks } : {}), ...this.afterJobs(st, said) };
+      if (said) {
+        rec.needs = {
+          seq: ev.seq,
+          needs: body.needs ?? said.needs,
+          ...(body.asks ? { asks: body.asks } : {}),
+          ...(said.next?.length ? { next: said.next } : {}),
+          ...(said.nextPick ? { nextPick: said.nextPick } : {}),
+          ...(said.nextSuggested !== undefined ? { nextSuggested: said.nextSuggested } : {}),
+          ...this.afterJobs(st, said),
+        };
+      }
       // Said nothing at all (no end_turn): asks held for a job and never
       // seen stay as the card, rather than going with a "Landed".
       else if (rec.needs?.afterJobs) rec.needs = { ...rec.needs, seq: ev.seq };
@@ -3389,7 +3550,8 @@ export class Runner {
     // A refused login counts as signed out, and a pool thread moves off it
     // (afterTurn); a turn that went through says it's signed in.
     const signedOut = outcome === 'failed' && r.errorKind === 'auth' ? turn.turnId : undefined;
-    if (signedOut) this.signIn?.noteRefused(rec.accountId);
+    // An org that turned Claude Code off holds the login out a day (sign-in-state.ts).
+    if (signedOut) this.signIn?.noteRefused(rec.accountId, ACCESS_OFF_TEXT.test(r.error ?? '') ? ACCESS_OFF_HOLD_MS : undefined);
     else if (outcome === 'completed') this.signIn?.noteWorked(rec.accountId);
     // A turn the CLI opened by itself during a wait (a background job
     // ended) that got through ends the wait: the agent has carried on.
@@ -3451,6 +3613,28 @@ export class Runner {
     const holdQueue = Boolean(rec.queue.length && (archive || snooze || waitFor || forApp));
     const loginBefore = rec.accountId;
     this.endTurn(st, ev.seq, outcome === 'failed' ? 'error' : 'idle', outcome, limitHit, netLost, holdQueue, signedOut);
+    if (rec.coordinatorHelperFor) {
+      const retrying = Boolean(rt.turn || rec.queue.length || rec.waitingForNetwork);
+      if (retrying) {
+        if (rt.turn) this.coordinators?.noteHelperTurn(rec.id, rt.turn.turnId);
+      } else {
+        if (rec.waitingForRoom) {
+          delete rec.waitingForRoom;
+          this.armRoomTimer();
+          this.markDirty(st);
+        }
+        // Background work the CLI will wake for: the helper said it's
+        // waiting on it, and finishing the run now refused every tool call
+        // of the turn that read its result, whose words never reached the
+        // coordinator (the Convex AI guidance coordinator, 26 Nov 2026).
+        if (outcome === 'completed' && this.wakes(st) && runningSession(rt) && !this.stopping && (rt.tasks.length > 0 || rt.wakeTimer)) {
+          rt.helperPending = { outcome, text: turn.lastText || r.error || '', turnId: turn.turnId };
+        } else {
+          this.coordinators?.onHelperTurn(rec.id, outcome, turn.lastText || r.error || '', turn.turnId);
+        }
+      }
+      return;
+    }
     // A pool thread refused as signed out that endTurn moved to another
     // login (afterTurn, onSignedOut) carries on there, like a limit or a
     // lost network. One that stayed put (pinned, a Codex login, nowhere to
@@ -3670,7 +3854,7 @@ export class Runner {
     const text = until === 'restart' ? 'Hibernating until the runner next starts, as the agent was asked to.'
       : until === 'release' ? 'Hibernating until the runner starts on a new release, as the agent was asked to.' : `Hibernating until ${localWhen(Date.parse(until), timeZone)}, as the agent was asked to.`;
     this.emit(st, { type: 'system.note', text });
-    this.update({ threadId: rec.id, snoozedUntil: until, noted: true });
+    this.update({ threadId: rec.id, snoozedUntil: until, noted: true, byAgent: true });
   }
 
   // A snooze its agent asked for that didn't take, after a check a wake
@@ -3726,6 +3910,30 @@ export class Runner {
   }
 
   // A turn that ended without a result from the CLI (spawn failure, crash).
+  // A coordinator's helper starting a turn: its coordinator follows that
+  // turn from now on, so the one that ends the run is the one it hears
+  // about. A carry-on after the network came back starts a turn the
+  // coordinator never dispatched, whose end it otherwise threw away as
+  // stale, leaving the run "running" for good (Codex's review, 26 Nov 2026).
+  private noteHelperStart(st: ThreadState, turnId: string): void {
+    if (!st.rec.coordinatorHelperFor) return;
+    // The turn its background work woke carries the run on.
+    st.rt.helperPending = undefined;
+    this.coordinators?.noteHelperTurn(st.rec.id, turnId);
+  }
+
+  // A helper turn held for its background work (helperPending): once no
+  // turn has come for it (the grace passed, or the CLI went), the run ends
+  // on that turn's result, as it would have then.
+  settleHelperPending(st: ThreadState): void {
+    const { rec, rt } = st;
+    const p = rt.helperPending;
+    if (!p || rt.turn || this.stopping) return;
+    if (runningSession(rt) && (rt.tasks.length > 0 || rt.wakeTimer)) return;
+    rt.helperPending = undefined;
+    this.coordinators?.onHelperTurn(rec.id, p.outcome, p.text, p.turnId);
+  }
+
   failTurn(st: ThreadState, message: string): void {
     const { rec, rt } = st;
     const turn = rt.turn;
@@ -3754,6 +3962,16 @@ export class Runner {
     if (!interrupted) body.error = message;
     const ev = this.emit(st, body, turn.turnId);
     this.endTurn(st, ev.seq, interrupted ? 'idle' : 'error');
+    // A coordinator's helper whose CLI died, wouldn't start or was stopped:
+    // its coordinator hears, as it does when a helper's turn ends
+    // (completeTurn). Before, the run stayed "running" for good: the
+    // coordinator never woke, read as waiting on it, and refused to start
+    // another helper (Codex's review, 26 Nov 2026). Not while the runner
+    // stops: the next runner reconciles interrupted helpers itself.
+    if (rec.coordinatorHelperFor && !this.stopping) {
+      if (rt.turn) this.coordinators?.noteHelperTurn(rec.id, rt.turn.turnId);
+      else if (!rec.queue.length && !rec.waitingForNetwork) this.coordinators?.onHelperTurn(rec.id, interrupted ? 'interrupted' : 'failed', turn.lastText || message, turn.turnId);
+    }
     // A review whose CLI died or wouldn't start: the thread it reviews
     // hears, rather than sleeping a day. Not one Mike stopped.
     if (!interrupted) this.releaseFailedReview(st, message, turn.lastText);
@@ -3795,13 +4013,16 @@ export class Runner {
     const pool = this.poolById(rec.poolId);
     if (!pool) return;
     const accounts = this.usableAccounts();
+    const eligible = this.poolTurnAccounts(rec, pool, accounts);
     const current = accounts.find((a) => a.id === rec.accountId);
     const inPool = pool.accountIds.includes(rec.accountId);
-    if (current && inPool && loginOk(current)) return;
+    if (current && eligible.includes(current) && inPool && loginOk(current)) return;
     const now = this.clock.now();
-    const next = nextLogin(pool, accounts, rec, now);
+    const next = nextLogin(pool, eligible, rec, now);
     if ('waitUntil' in next) return;
-    const why = !current ? `${rec.accountId} isn't on this Mac` : !inPool ? `${current.title} isn't in ${pool.title}` : current.planEnded ? `${current.title}'s plan has ended` : current.signedOut ? `${current.title} is signed out` : `${current.title} ${limitWhy(current, now)}`;
+    const why = !current ? `${rec.accountId} isn't on this Mac` : !inPool ? `${current.title} isn't in ${pool.title}`
+      : !eligible.includes(current) ? `${current.title} no longer lists the selected model`
+        : current.planEnded ? `${current.title}'s plan has ended` : current.signedOut ? `${current.title} is signed out` : `${current.title} ${limitWhy(current, now)}`;
     this.moveLogin(st, accounts.find((a) => a.id === next.accountId)!, why);
   }
 
@@ -3833,8 +4054,11 @@ export class Runner {
     rt.wakeTimer?.cancel();
     rt.wakeTimer = undefined;
     // No CLI to open a turn reading a background result: a done card held
-    // back for one stands.
-    if (!rt.turn) this.settlePendingFinish(st);
+    // back for one stands, and a helper's held turn ends its run.
+    if (!rt.turn) {
+      this.settlePendingFinish(st);
+      this.settleHelperPending(st);
+    }
     rt.idleTimer?.cancel();
     rt.idleTimer = undefined;
     this.log.info('session ended', { threadId: rec.id, error: err?.message });
@@ -3861,7 +4085,12 @@ export class Runner {
       // wrote the transcript but before its init reached the runner, so
       // sessionUsed never got set. Resume it instead, once (4 Nov 2026).
       const inUse = Boolean(err && !rt.resumed && /Session ID \S+ is already in use/i.test(err.message));
-      if (((notFound && rt.resumed) || inUse) && !rt.retriedFresh) {
+      // Not a coordinator's helper: a fresh session would have only the
+      // message resuming it (a restart's carry-on, a resumeHelper), not its
+      // brief. Its turn fails instead and its coordinator hears, to start a
+      // new helper from the checkpoint (Codex's review, 26 Nov 2026).
+      const freshOk = !(notFound && rec.coordinatorHelperFor);
+      if (((notFound && rt.resumed) || inUse) && freshOk && !rt.retriedFresh) {
         this.cli(st, { kind: 'retryFresh' });
         if (inUse) {
           rec.sessionUsed = true;
@@ -4047,6 +4276,9 @@ export class Runner {
         throw new RpcError(ErrorCode.badParams, 'Only idle Inbox threads can move to Backlog.');
       }
     }
+    if (this.coordinators?.forThread(rec.id)?.state === 'active' && (params.archived || params.snoozedUntil)) {
+      throw new RpcError(ErrorCode.badParams, 'Pause this project’s coordinator before archiving or hibernating its conversation.');
+    }
     // Checked before anything changes, so a refused rename changes nothing else either.
     if (params.title !== undefined && params.titleBy === 'agent' && rec.titleByMike && params.title.trim() !== rec.title) {
       throw new RpcError(ErrorCode.badParams, `The user named this thread "${rec.title}" themselves, so it keeps that title. Only rename it if they ask you to.`);
@@ -4063,23 +4295,27 @@ export class Runner {
     if (typeof params.poolId === 'string' && params.accountId === undefined && !pool) {
       throw new RpcError(ErrorCode.badParams, `No pool called ${params.poolId}. Pools: ${this.pools().map((p) => p.id).join(', ') || 'none'}`);
     }
-    // The login to move to: the one named (which pins), or one of the new
-    // pool's when the current one isn't in it.
+    // The login to move to: the one named (which pins), or one of the pool's
+    // when moving pools or picking a model from another provider in the same pool.
+    const activePool = pool ?? (params.accountId === undefined && params.poolId === undefined && rec.poolId ? this.poolById(rec.poolId) : undefined);
     let toAccountId = params.accountId;
-    // The provider the call asks for, when it says (or its model does): in
-    // a pool with both, a Codex model picked from the menu goes to a Codex
-    // login, even when the thread's Claude login is in that pool too.
-    const wanted = params.provider ?? (params.model ? this.modelProvider(params.model) : undefined);
-    const otherProvider = wanted !== undefined && wanted !== rec.provider && pool?.accountIds.some((id) => this.accounts.get(id)?.provider === wanted);
-    if (pool && (!pool.accountIds.includes(rec.accountId) || otherProvider)) {
-      const accounts = this.usableAccounts();
+    const accounts = activePool ? this.usableAccounts() : [];
+    const modelMembers = activePool && params.model
+      ? modelAccounts(poolAccounts(activePool, accounts).filter((a) => !params.provider || a.provider === params.provider), params.model)
+      : [];
+    const wanted = params.provider ?? modelMembers.find((a) => a.provider === rec.provider)?.provider ?? modelMembers[0]?.provider;
+    const otherProvider = wanted !== undefined && wanted !== rec.provider && activePool?.accountIds.some((id) => this.accounts.get(id)?.provider === wanted);
+    const needsModelLogin = modelMembers.length > 0 && !modelMembers.some((a) => a.id === rec.accountId);
+    if (activePool && (otherProvider || needsModelLogin || (pool && !pool.accountIds.includes(rec.accountId)))) {
       const provider = otherProvider ? wanted : rec.provider;
-      let id = pickInPool(pool, accounts, { provider });
-      if (!id) {
-        const next = nextLogin(pool, accounts, rec, this.clock.now());
+      const candidates = modelMembers.length ? modelMembers : accounts;
+      let id = pickInPool(activePool, candidates, { provider });
+      if (!id && !otherProvider && !modelMembers.length) {
+        const next = nextLogin(activePool, accounts, rec, this.clock.now());
         if (!('waitUntil' in next)) id = next.accountId;
       }
-      toAccountId = id ?? poolAccounts(pool, accounts)[0]?.id;
+      const members = poolAccounts(activePool, candidates);
+      toAccountId = id ?? members.find((a) => a.provider === provider)?.id ?? members[0]?.id;
     }
     const targetProvider = (toAccountId === undefined ? undefined : this.accounts.get(toAccountId))?.provider ?? rec.provider;
     if (targetProvider === 'pi' && (params.permissionMode ?? rec.permissionMode) === 'plan') throw new RpcError(ErrorCode.badParams, 'Plan first is not available for Pi threads. Leave Plan first before switching to Pi.');
@@ -4179,6 +4415,10 @@ export class Runner {
       effort = checked.effort;
       for (const text of checked.notes) this.emit(st, { type: 'system.note', text }, rt.turn?.turnId);
     }
+    if (params.model !== undefined || providerChanged || model !== rec.model) {
+      if (account && model && model === params.model) rec.explicitModel = explicitModelKind(account, model);
+      else delete rec.explicitModel;
+    }
     if (model !== rec.model) {
       if (model) rec.model = model;
       else delete rec.model;
@@ -4269,9 +4509,12 @@ export class Runner {
       if (params.archived && !rec.archivedAt) {
         // A verdict from the Archive menu says it already (ARCHIVE_NOTES).
         const verdict = (params.archivedBy ?? 'mike') === 'mike' && params.verdict && params.verdict !== 'shouldHaveShown';
-        if (!verdict) this.emit(st, { type: 'system.note', text: archivedNote({ by: params.archivedBy ?? 'mike', now: this.clock.now(), timeZone: noteZone, ...(params.why ? { why: params.why } : {}) }) });
-      } else if (!params.archived && rec.archivedAt && params.verdict !== 'shouldHaveShown') {
-        this.emit(st, { type: 'system.note', text: unarchivedNote({ who, now: this.clock.now(), timeZone: noteZone }) });
+        if (!verdict) this.emit(st, { type: 'system.note', text: archivedNote({ by: params.archivedBy ?? who, now: this.clock.now(), timeZone: noteZone, ...(params.why ? { why: params.why } : {}) }) });
+      } else if (!params.archived && rec.archivedAt) {
+        // "Should have shown me", from the archived row's menu or an agent's
+        // `tb unarchive --wrong-hide` (the quiet inbox's daily review).
+        const wrong = params.verdict === 'shouldHaveShown' ? { why: who === 'mike' ? "Quiet inbox shouldn't have hidden it" : "you said Quiet inbox shouldn't have hidden it" } : {};
+        this.emit(st, { type: 'system.note', text: unarchivedNote({ who, now: this.clock.now(), timeZone: noteZone, ...(params.why ? { why: params.why } : {}), ...wrong }) });
       }
     }
     if (params.snoozedUntil !== undefined) {
@@ -4286,7 +4529,7 @@ export class Runner {
       } else {
         const t = Date.parse(params.snoozedUntil);
         if (Number.isNaN(t)) throw new RpcError(ErrorCode.badParams, 'snoozedUntil must be an ISO time, "restart" or "release"');
-        this.park(st, { kind: 'snooze', until: { kind: 'time', at: new Date(t).toISOString() } });
+        this.park(st, { kind: 'snooze', until: { kind: 'time', at: new Date(t).toISOString(), ...(params.byAgent ? { by: 'agent' as const } : {}) } });
         stop = true;
       }
       this.armSnoozeTimer();
@@ -4308,11 +4551,8 @@ export class Runner {
         stop = true;
       } else {
         // "Should have shown me" on a thread the quiet inbox archived:
-        // written down beside the guesses, and said in the thread.
-        if (params.verdict === 'shouldHaveShown' && rec.archivedAt) {
-          this.noteWrongHide(st);
-          this.emit(st, { type: 'system.note', text: 'Brought back by you: you should have been shown this.' });
-        }
+        // written down beside the guesses (the line above says it).
+        if (params.verdict === 'shouldHaveShown' && rec.archivedAt) this.noteWrongHide(st);
         // Brought back out by hand: it stays out, however its next turn ends
         // (runner/quiet-inbox.ts).
         this.park(st, { kind: 'unarchive' });
@@ -4395,6 +4635,10 @@ export class Runner {
   // a mistake can be undone by hand) and forgets it.
   delete(threadId: string): Record<string, never> {
     const st = this.mustGet(threadId);
+    if (st.rec.coordinatorHelperFor && this.coordinators?.forThread(st.rec.coordinatorHelperFor)) {
+      throw new RpcError(ErrorCode.badParams, 'A coordinator helper session is managed by its project coordinator.');
+    }
+    this.coordinators?.forget(threadId);
     const { rec, rt } = st;
     rt.deleted = true;
     rt.trashed = true;
@@ -4432,9 +4676,12 @@ export class Runner {
     this.store.trash(threadId, this.clock.now());
     this.log.info('thread deleted', { threadId, title: rec.title });
     this.armSnoozeTimer();
-    this.notify({ method: 'thread.deleted', params: { threadId } });
+    if (!rec.coordinatorHelperFor) this.notify({ method: 'thread.deleted', params: { threadId } });
     return {};
   }
+
+  // Project identity cannot disappear while its coordinator is working.
+  beforeProjectRemoval(projectId: string): void { this.coordinators?.removeProject(projectId); }
 
   // Ticks one of the open card's asks. Nothing goes to the agent: ticks are
   // Mike's own list, and a reply is his to write.
@@ -4444,17 +4691,46 @@ export class Runner {
     const card = rec.needs;
     if (!card?.asks || card.seq !== asksSeq || card.seq !== rec.lastTurnCompletedSeq) throw new RpcError(ErrorCode.badParams, "That isn't the thread's open card of asks.");
     if (!Number.isInteger(index) || index < 0 || index >= card.asks.length) throw new RpcError(ErrorCode.badParams, 'No such ask.');
+    if (card.resolved?.includes(index)) throw new RpcError(ErrorCode.badParams, 'That decision was already handled on the task board.');
     const set = new Set(card.ticked);
     if (ticked) set.add(index);
     else set.delete(index);
     card.ticked = [...set].sort((a, b) => a - b);
-    // Ticking means Mike is looking at it, so the tick doesn't make the
-    // thread unread.
+    this.publishAskTicks(st, card);
+    return { thread: this.summary(st) };
+  }
+
+  resolveCoordinatorAsks(st: ThreadState, indexes: number[]): void {
+    const card = st.rec.needs;
+    if (!card?.asks || card.seq !== st.rec.lastTurnCompletedSeq) return;
+    const resolved = new Set(card.resolved);
+    const count = resolved.size;
+    for (const index of indexes) resolved.add(index);
+    if (resolved.size === count) return;
+    const previous = card.resolved;
+    card.resolved = [...resolved].sort((a, b) => a - b);
+    try {
+      this.publishAskTicks(st, card);
+    } catch (error) {
+      card.resolved = previous;
+      throw error;
+    }
+  }
+
+  private publishAskTicks(st: ThreadState, card: NonNullable<ThreadRecord['needs']>): void {
+    const { rec } = st;
+    const ticked = [...new Set([...(card.ticked ?? []), ...(card.resolved ?? [])])].sort((a, b) => a - b);
     const caughtUp = rec.lastSeenSeq >= rec.lastSeq;
-    const ev = this.emit(st, { type: 'asks.ticked', asksSeq, ticked: card.ticked });
+    const ev = this.emit(st, { type: 'asks.ticked', asksSeq: card.seq, ticked, ...(card.resolved?.length ? { resolved: card.resolved } : {}) });
     if (caughtUp) rec.lastSeenSeq = ev.seq;
     this.markDirty(st);
-    return { thread: this.summary(st) };
+  }
+
+  // A quiet wake (HibernationPart.wake) wants Mike once no schedule will
+  // bring the thread back: the same test as its wait state's, so the two
+  // agree, and schedules.updated looks at it again (recheckWaitStates).
+  quietWakeShows(rec: ThreadRecord): boolean {
+    return Boolean(rec.quietWake) && this.bucket(rec) === 'inbox' && !this.scheduled(rec.id);
   }
 
   saidNothing(rec: ThreadRecord): boolean {
@@ -4467,6 +4743,7 @@ export class Runner {
     const last = Math.max(rec.lastSeq, this.store.log(threadId).lastSeq);
     rec.lastSeenSeq = Math.max(rec.lastSeenSeq, Math.min(Math.floor(seq), last));
     rec.forceUnread = false;
+    delete rec.quietWake;
     this.park(st, { kind: 'seen' });
     this.markDirty(st);
     return { thread: this.summary(st) };
@@ -4738,6 +5015,11 @@ export class Runner {
   // one started. One that can't be written (disk full) stays at the front.
   kickQueue(st: ThreadState): boolean {
     if (this.stopping || st.rt.editing || st.rt.moving || st.rt.holds?.size) return false;
+    // A paused, stopping or turned-off coordinator (or its helper) keeps
+    // its queue: popping a message only to fail it at dispatch lost helper
+    // reports on a pause or handover (Gemini's review, 26 Nov 2026). Resume
+    // and turning coordinators back on kick it again.
+    if (this.coordinators?.dispatchRefusal(st.rec.id)) return false;
     try {
       this.prepareQueue(st);
     } catch (e) {
@@ -4871,6 +5153,17 @@ export class Runner {
     if (st.rt.deleted) throw new Error('The thread was deleted.');
     this.flushDeltas(st);
     const log = this.store.log(st.rec.id);
+    if (body.type === 'turn.completed' && body.outcome === 'completed' && this.coordinators) {
+      const pending = body.needs === 'you' ? body.asks ?? [] : [];
+      const asks = this.coordinators.bindAsks(st.rec.id, pending, log.lastSeq + 1);
+      if (pending.length) {
+        if (asks.length) body.asks = asks;
+        else {
+          delete body.asks;
+          body.needs = 'nothing';
+        }
+      }
+    }
     const event = { seq: log.lastSeq + 1, ts: this.isoNow(), threadId: st.rec.id, ...(turnId ? { turnId } : {}), ...body } as PersistedEvent;
     log.append(event);
     st.rec.lastSeq = event.seq;
@@ -4880,7 +5173,7 @@ export class Runner {
       if (asked) st.rec.asked = asked;
     }
     this.markDirty(st);
-    this.notify({ method: 'thread.event', params: { threadId: st.rec.id, event } });
+    if (!st.rec.coordinatorHelperFor) this.notify({ method: 'thread.event', params: { threadId: st.rec.id, event } });
     return event;
   }
 
@@ -4912,7 +5205,7 @@ export class Runner {
     const ts = this.isoNow();
     for (const [itemId, d] of rt.pendingDeltas) {
       const event = { seq, ts, threadId: rec.id, ...(rt.turn ? { turnId: rt.turn.turnId } : {}), type: d.type, itemId, text: d.text } as AnyEvent;
-      this.notify({ method: 'thread.event', params: { threadId: rec.id, event } });
+      if (!rec.coordinatorHelperFor) this.notify({ method: 'thread.event', params: { threadId: rec.id, event } });
     }
     rt.pendingDeltas.clear();
   }
@@ -5014,7 +5307,7 @@ export class Runner {
         this.log.error("couldn't make a thread's summary", { threadId: id, error: String(e) });
         continue;
       }
-      this.notify({ method: 'thread.updated', params: { thread } });
+      if (!st.rec.coordinatorHelperFor) this.notify({ method: 'thread.updated', params: { thread } });
     }
     if (failed && !this.stopping) this.saveRetryTimer = this.clock.setTimeout(() => this.flush(), SAVE_RETRY_MS);
   }
@@ -5027,7 +5320,12 @@ export class Runner {
     // phone push until they're done and the agent has had its say on them.
     // Asks the agent said wait for its shell jobs count them too.
     const afterJobs = this.asksHeld(st);
-    const unfinished = running || agentsStillWorking(background, afterJobs);
+    const unfinished = running || (this.coordinators?.forThread(rec.id) ? afterJobs : agentsStillWorking(background, afterJobs));
+    const card = rec.needs?.seq === rec.lastTurnCompletedSeq ? rec.needs : undefined;
+    const asks = card?.asks;
+    const active = card && asks && this.coordinators?.activeAsks(rec.id, asks, card.seq);
+    const cleared = Boolean(asks?.length && active?.length === 0);
+    const pendingReviews = rec.reviews?.filter((review) => review.status === 'pending' && this.coordinators?.reviewAskVisible(rec.id, review.id) !== false).length;
     const s: ThreadSummary = {
       id: rec.id,
       title: rec.title,
@@ -5041,7 +5339,7 @@ export class Runner {
       // (docs/protocol/needs-you.md, "Needs you"). A pending design review only
       // counts once the turn ends: show_options doesn't block, and Mike
       // didn't want a "Needs you" (or a phone push) mid-turn.
-      needsYou: (!unfinished && Boolean(rec.reviews?.some(r => r.status === 'pending'))) || rec.status === 'waiting' || Boolean(rec.forceUnread) || (!unfinished && rec.lastTurnCompletedSeq > rec.lastSeenSeq && !this.saidNothing(rec)),
+      needsYou: (!unfinished && Boolean(pendingReviews)) || rec.status === 'waiting' || Boolean(rec.forceUnread) || this.quietWakeShows(rec) || (!unfinished && rec.lastTurnCompletedSeq > rec.lastSeenSeq && !cleared && !this.saidNothing(rec)),
       createdAt: rec.createdAt,
       updatedAt: rec.updatedAt,
       lastActivityAt: rec.lastActivityAt,
@@ -5051,20 +5349,21 @@ export class Runner {
     };
     if (rec.backlogged) s.backlogged = true;
     if (rec.backlog) s.backlog = structuredClone(rec.backlog);
+    const coordinatorProjectId = this.coordinators?.projectForThread(rec.id);
+    if (coordinatorProjectId) s.coordinatorProjectId = coordinatorProjectId;
     if (rec.poolId) s.poolId = rec.poolId;
     if (rec.waitingForRoom) s.waitingForRoom = { ...rec.waitingForRoom };
     if (rec.carryOnAtReset === false) s.carryOnAtReset = false;
     if (rec.waitingForNetwork) s.waitingForNetwork = { since: rec.waitingForNetwork.since };
-    if (rec.needs && rec.needs.seq === rec.lastTurnCompletedSeq) {
-      s.needs = rec.needs.needs;
-      if (afterJobs) s.asksAfterJobs = true;
-      if (rec.needs.asks) {
-        const ticked = new Set(rec.needs.ticked);
-        s.asks = rec.needs.asks.map((a, i) => (ticked.has(i) ? { ...a, ticked: true as const } : a));
-        s.asksSeq = rec.needs.seq;
+    if (card) {
+      s.needs = cleared ? 'nothing' : card.needs;
+      if (afterJobs && !cleared) s.asksAfterJobs = true;
+      if (asks && !cleared) {
+        const ticked = new Set([...(card.ticked ?? []), ...(card.resolved ?? [])]);
+        s.asks = asks.map((a, i) => (ticked.has(i) || (active && !active.includes(a)) ? { ...a, ticked: true as const } : a));
+        s.asksSeq = card.seq;
       }
     }
-    const pendingReviews = rec.reviews?.filter(r => r.status === 'pending').length;
     if (pendingReviews) s.pendingReviews = pendingReviews;
     if (rec.model) s.model = rec.model;
     if (rec.effort) s.effort = rec.effort;
@@ -5086,7 +5385,7 @@ export class Runner {
     // lists them with whether the build on its way has their commit.
     const appWant = rec.archivedAt ? undefined : this.appRestartWant?.(rec.id);
     if (appWant) s.awaitingApp = appWant;
-    if (rec.woke && rec.forceUnread) s.woke = { ...rec.woke };
+    if (rec.woke && (rec.forceUnread || this.quietWakeShows(rec))) s.woke = { ...rec.woke };
     if (rec.archivedAt) {
       s.archivedAt = rec.archivedAt;
       // Archived before who did it was kept: nobody can say.
@@ -5434,7 +5733,19 @@ export class Runner {
     const pressed = this.takePressNews(st);
     const wokeBefore = structuredClone(rec.wakeNews);
     const woke = this.takeWakeNews(st, message.id);
-    const lead = [standing, woke, pressed].filter(Boolean).join('\n\n');
+    const prevNext =
+      !rt.turn?.byMike &&
+      !rt.turn?.nextReminded &&
+      rec.needs?.needs === 'nothing' &&
+      rec.needs.seq === rec.lastTurnCompletedSeq &&
+      rec.needs.next?.length
+        ? rec.needs
+        : undefined;
+    const nextNote = prevNext
+      ? `[Threadbear note: your previous turn left these carry-on items for the user (${prevNext.nextPick === 'one' ? 'pick one' : 'pick any'}): ${prevNext.next!.map((s, i) => `${i + 1}. "${s}"${prevNext.nextPick === 'one' && prevNext.nextSuggested === i ? ' (recommended)' : ''}`).join('; ')}. If you end with needs "nothing" and omit next, Threadbear will keep them; pass next: [...] to replace them or next: [] to clear them.]`
+      : '';
+    if (nextNote && rt.turn) rt.turn.nextReminded = true;
+    const lead = [standing, this.coordinators?.context(rec.id), woke, pressed, nextNote].filter(Boolean).join('\n\n');
     try {
       rt.session!.send(lead ? { ...message, text: `${lead}\n\n${message.text}` } : message);
     } catch (e) {
@@ -5442,6 +5753,7 @@ export class Runner {
       else rec.instructionsTold = before;
       rec.presses = presses;
       if (wokeBefore) rec.wakeNews = wokeBefore;
+      if (nextNote && rt.turn) delete rt.turn.nextReminded;
       throw e;
     }
     if (!standing) return;

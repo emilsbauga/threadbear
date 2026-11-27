@@ -1018,7 +1018,7 @@ test('with nothing queued, a newer token carries the thread on by itself, on a f
   assert.equal(sentTo(again, THREAD).at(-1), CARRY_ON_TOKEN);
 });
 
-test("the token watch, against the real backend on the box's key alone: it says the refusal, waits while the token is dead, then writes the newer one and lets the thread go", async () => {
+test("the token watch quarantines its own grant, then writes an owner-approved replacement and lets the thread go", async () => {
   const s = await boxBackend();
   const boxes = load('boxes');
   const got = await s.boot();
@@ -1036,12 +1036,14 @@ test("the token watch, against the real backend on the box's key alone: it says 
   const watch = new BoxTokenWatch({ home, claudeDir, key: got.boxKey, post, log: nullLogger, setTimeout: (fn, ms) => (timers.push({ fn, ms }), { cancel: () => {} }), held: () => held, waiting: () => waiting, markReported: () => void (waiting!.reported = true), replaced: () => void replaced++ });
   watch.refused();
   await watch.tick();
-  assert.equal(s.rows('cloudTokens')[0].tokenState.kind, 'dead', 'told: the card comes back on the Mac');
+  assert.equal(s.rows('cloudTokens')[0].tokenState.kind, 'valid', 'the report leaves the shared login available');
+  assert.equal(s.rows('boxTokenGrants')[0].grantState.kind, 'refused', 'only this box is quarantined');
   assert.equal(replaced, 0);
   assert.equal(timers.at(-1)!.ms, 30_000, 'asks again in 30 seconds');
   // A save holding the box: nothing fetched or written.
   const fresh = `sk-ant-oat01-${'F'.repeat(60)}`;
   await s.setToken(fresh);
+  await call(s.ctx, boxes.releaseForToken, { login: s.box().login });
   held = true;
   await watch.tick();
   assert.equal(replaced, 0);
@@ -1074,6 +1076,31 @@ function boxHome(tokenSetAt: number): string {
   writeBoxSecrets(home, { version: 1, bootHash: 'h', syncUrl: URL, boxKey: 'tbb_' + 'b'.repeat(64), runnerId: 'abcdef123456', threadId: THREAD, threadKey: 'k', repo: { origin: 'https://github.com/a/b.git', subfolder: '', baseBranch: 'main' }, save: null, tokenSetAt });
   return home;
 }
+
+test('a legacy wait retries the installed token without falsely reporting a fresh exchange', async () => {
+  for (const installed of [1000, 2000]) {
+    const calls: string[] = [];
+    const w = fakeWatch(boxHome(installed), () => ({ reported: true }), async (_kind, fn) => { calls.push(fn); return null; });
+    await w.watch.tick();
+    assert.equal(w.replaced(), 1, 'one retry establishes whether the installed token really fails');
+    assert.deepEqual(calls, [], 'a saved refusal without a version says nothing about this exchange');
+    w.watch.stop();
+  }
+});
+
+test('boot secrets without a token version fetch an approved snapshot before retrying a legacy wait', async () => {
+  const home = boxHome(0);
+  const calls: string[] = [];
+  const w = fakeWatch(home, () => ({ reported: true }), async (_kind, fn) => {
+    calls.push(fn);
+    return { token: `sk-ant-oat01-${'V'.repeat(60)}`, setAt: 2000 };
+  });
+  await w.watch.tick();
+  assert.deepEqual(calls, ['boxes:boxCloudToken']);
+  assert.equal(readBoxSecrets(home)?.tokenSetAt, 2000);
+  assert.equal(w.replaced(), 1);
+  w.watch.stop();
+});
 
 test('a hold restored from a save, on a box whose exchange already installed a newer token, lifts at start, and that token is never reported', async () => {
   const home = boxHome(2000);

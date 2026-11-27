@@ -35,6 +35,9 @@ impl Threadbear {
         let Some(project) = self.open_project().cloned() else {
             return div().into_any_element();
         };
+        if let Some(coordinator) = self.coordinator_for_project(&project.id).cloned() {
+            return self.render_coordinator_home(&project, &coordinator, window, cx);
+        }
         let threads: Vec<ThreadSummary> =
             rules::threads_in(&project.id, self.threads.values().map(|t| &**t))
                 .into_iter()
@@ -42,6 +45,9 @@ impl Threadbear {
                 .collect();
         let header = self.render_page_header(&project, threads.len(), window, cx);
         let mut column = v_flex().w_full().gap(px(30.)).child(header);
+        if let Some(add) = self.render_add_coordinator(&project, window, cx) {
+            column = column.child(add);
+        }
         if let Some(parts) = self.render_parts_section(&project, cx) {
             column = column.child(parts);
         }
@@ -338,7 +344,7 @@ impl Threadbear {
     /// `TextSection`: goals, state or notes, with Edit; while editing, the
     /// box with Cancel and Save. Empty, it says what it's for, and a double
     /// click starts editing.
-    fn render_text_section(
+    pub(crate) fn render_text_section(
         &mut self,
         project: &Project,
         field: TextField,
@@ -350,7 +356,7 @@ impl Threadbear {
             .editing
             .as_ref()
             .filter(|e| e.project == project.id && e.field == field)
-            .map(|e| e.input.clone());
+            .map(|e| (e.input.clone(), e.saving, e.baseline.clone()));
         let key = format!("text:{}", field.title());
         let hovering = self.projects.hovered.as_deref() == Some(key.as_str());
         let detail = field.detail(project, &local_now());
@@ -377,7 +383,8 @@ impl Threadbear {
             .on_hover(self.page_hover(key, cx))
             .child(page_heading(field.title(), detail, edit, cx));
         let text = field.text(project).to_owned();
-        if let Some(input) = editing {
+        if let Some((input, saving, baseline)) = editing {
+            let changed = text != baseline;
             let min = if field == TextField::Notes { 220. } else { 90. };
             let _ = window;
             section = section.child(
@@ -408,27 +415,37 @@ impl Threadbear {
                                     .line_height(px(19.)),
                             ),
                     )
+                    .when(changed && !saving, |s| {
+                        s.child(self.render_project_text_review(project, field, text.clone(), cx))
+                    })
                     .child(
                         h_flex()
                             .gap(px(8.))
-                            .child(small_push_button(
-                                "edit-cancel",
-                                "Cancel",
-                                "Put it back as it was (Esc)",
-                                cx,
-                                cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.finish_editing_project(false, window, cx)
-                                }),
-                            ))
-                            .child(small_push_button(
-                                "edit-save",
-                                "Save",
-                                "Save (⌘Return)",
-                                cx,
-                                cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.finish_editing_project(true, window, cx)
-                                }),
-                            )),
+                            .when(saving, |s| {
+                                s.child(Spinner::new().with_size(px(12.))).child("Saving…")
+                            })
+                            .when(!saving, |s| {
+                                s.child(small_push_button(
+                                    "edit-cancel",
+                                    "Cancel",
+                                    "Put it back as it was (Esc)",
+                                    cx,
+                                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.finish_editing_project(false, window, cx)
+                                    }),
+                                ))
+                                .when(!changed, |s| {
+                                    s.child(small_push_button(
+                                        "edit-save",
+                                        "Save",
+                                        "Save (⌘Return)",
+                                        cx,
+                                        cx.listener(|this, _: &ClickEvent, window, cx| {
+                                            this.finish_editing_project(true, window, cx)
+                                        }),
+                                    ))
+                                })
+                            }),
                     ),
             );
         } else if text.trim().is_empty() {
@@ -450,9 +467,16 @@ impl Threadbear {
             // Bold, code and links, with the line breaks kept, through the
             // open gate like every link in the app.
             let base = project.folders.first().cloned().unwrap_or_default();
+            let markdown = if field == TextField::Notes
+                && self.coordinator_for_project(&project.id).is_some()
+            {
+                text
+            } else {
+                keep_breaks(&text)
+            };
             let view = crate::open_gate::reading_markdown_view(
                 SharedString::from(format!("project-{}-{}", project.id, field.title())),
-                keep_breaks(&text),
+                markdown,
                 crate::open_gate::Origin::ThisMac,
                 &base,
             )
@@ -470,6 +494,53 @@ impl Threadbear {
             );
         }
         section.into_any_element()
+    }
+
+    fn render_project_text_review(
+        &self,
+        project: &Project,
+        field: TextField,
+        current: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = project.id.clone();
+        let text = if current.is_empty() {
+            "(empty)".to_owned()
+        } else {
+            current.clone()
+        };
+        let saved = div()
+            .id(SharedString::from(format!("review-{}", field.title())))
+            .w_full()
+            .max_h(px(220.))
+            .overflow_y_scroll()
+            .text_size(px(13.))
+            .line_height(px(19.))
+            .child(gpui_kit::base::SelectableText::new(
+                "saved-project-version",
+                text,
+            ));
+        let acknowledge = small_push_button(
+            "review-project-text",
+            "I've reviewed this version",
+            "Keep my draft and compare its next save against this saved version",
+            cx,
+            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.review_project_text(&id, field, current.clone(), window, cx)
+            }),
+        );
+        v_flex()
+            .w_full()
+            .gap(px(10.))
+            .p(px(12.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(div().text_size(px(13.)).font_semibold().child("Current saved version"))
+            .child(div().text_size(px(12.)).line_height(px(18.)).text_color(style::secondary_text(cx)).child("The saved text changed. Keep your draft above, and include any changes you want before saving."))
+            .child(saved)
+            .child(acknowledge)
+            .into_any_element()
     }
 
     /// `TasksSection`: the board read from the Notion page, a column per Status
@@ -855,7 +926,7 @@ impl Threadbear {
 
     /// `ThreadsSection`: its threads, put away ones too, newest first. A row
     /// opens its thread; its menu keeps it in the project or takes it out.
-    fn render_threads_section(
+    pub(crate) fn render_threads_section(
         &mut self,
         project: &Project,
         threads: &[ThreadSummary],
@@ -1162,6 +1233,7 @@ impl Threadbear {
                         .font_semibold()
                         .child(project.title.clone()),
                 )
+                .children(self.render_coordinator_bar_status(&project.id, cx))
                 .when(project.archived, |s| {
                     s.child(div().flex_none().text_color(faint).child("·  Archived"))
                 })

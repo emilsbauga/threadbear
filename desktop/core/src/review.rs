@@ -1355,26 +1355,19 @@ impl GalleryLayout {
     }
 }
 
-/// Where a review's window opens (`ReviewWindowController.frame`): 90% of
-/// the screen, centred, so a border of the desktop shows round it; no bigger
-/// than `REVIEW_WINDOW_MOST` on a huge display, where 90% would be a wall of
-/// image. Beside the thread as a tab the images were too small to compare
-/// (Mike, 30 Oct).
-pub const REVIEW_WINDOW_MOST: (f64, f64) = (2400., 1500.);
+/// Where a review's window opens: all of the screen's room (inside the menu
+/// bar and Dock), as an ordinary window you can still move, resize and dock,
+/// not a full-screen Space. It used to be 90% with the desktop showing round
+/// it, capped on huge displays; Mike wanted the most room to compare in
+/// (25 Nov). Beside the thread as a tab the images were too small (30 Oct).
 pub const REVIEW_WINDOW_LEAST: (f64, f64) = (780., 650.);
 
 pub fn window_frame(visible: Rect) -> Rect {
-    let width = (visible.width * 0.9).min(REVIEW_WINDOW_MOST.0);
-    let height = (visible.height * 0.9).min(REVIEW_WINDOW_MOST.1);
-    let (mid_x, mid_y) = (
-        visible.x + visible.width / 2.,
-        visible.y + visible.height / 2.,
-    );
     Rect {
-        x: (mid_x - width / 2.).round(),
-        y: (mid_y - height / 2.).round(),
-        width: width.round(),
-        height: height.round(),
+        x: visible.x.round(),
+        y: visible.y.round(),
+        width: visible.width.round(),
+        height: visible.height.round(),
     }
 }
 
@@ -2978,29 +2971,21 @@ mod tests {
     }
 
     #[test]
-    fn the_window_opens_on_ninety_percent_of_the_screen_centred_and_capped() {
-        let laptop = window_frame(Rect {
+    fn the_window_opens_filling_the_screens_room() {
+        let laptop = Rect {
             x: 0.,
-            y: 0.,
+            y: 25.,
             width: 1512.,
-            height: 944.,
-        });
-        assert_eq!((laptop.width, laptop.height), (1361., 850.));
-        assert!(
-            (laptop.x + laptop.width / 2. - 756.).abs() <= 1.
-                && (laptop.y + laptop.height / 2. - 472.).abs() <= 1.
-        );
-        let huge = window_frame(Rect {
+            height: 919.,
+        };
+        assert_eq!(window_frame(laptop), laptop);
+        let huge = Rect {
             x: -1000.,
             y: 200.,
             width: 5120.,
             height: 2160.,
-        });
-        assert_eq!((huge.width, huge.height), REVIEW_WINDOW_MOST);
-        assert!(
-            (huge.x + huge.width / 2. - 1560.).abs() <= 1.
-                && (huge.y + huge.height / 2. - 1280.).abs() <= 1.
-        );
+        };
+        assert_eq!(window_frame(huge), huge, "no cap on a big display");
     }
 
     // The shot zoomed in, after ReviewWindowTests' stage tests. A phone's

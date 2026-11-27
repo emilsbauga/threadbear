@@ -10,14 +10,18 @@
 // the window can be seen: asking has every runner report every 10 s, a write
 // each in the backend, and the panel stays docked all day (the Convex I/O
 // work, 5 Nov).
+use crate::a11y::A11yRole as _;
 use crate::activity_panels::{
     about_button, button_row, dot, icon_button, panel_column, push_button, small_heading,
     system_green, system_orange, text_button, text_line,
 };
 use crate::app::Threadbear;
 use crate::highlights::{tipped, tipped_as};
+use crate::mac_switch::MacSwitch;
 use crate::spinner::Spinner;
+use crate::tips::Tip as _;
 use crate::{call, icons, now_ms, shell, style};
+use gpui_kit::base::{A11yDisabledExt as _, TestSupportExt as _};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -27,6 +31,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use threadbear_core::inbox::{self, ThreadSummary};
+use threadbear_core::login_share::{self as share, Share};
 use threadbear_core::remote::{self, RunnerInfo};
 use threadbear_core::remote_tokens::{self as tokens, Step};
 use threadbear_core::runners::{self as rules, MachineStats, State};
@@ -64,6 +69,15 @@ pub(crate) struct RunnersPanelState {
     token_tasks: HashMap<(String, String), Task<()>>,
     /// The sign-in pages already opened, so a poll doesn't open one twice.
     token_pages: HashSet<String>,
+    /// Use this Mac's Claude logins (login_share.rs): each runner's switch
+    /// as this Mac's runner last said, by runner id.
+    pub(crate) shares: HashMap<String, Share>,
+    /// This Mac's runner can share its logins (it answered, and isn't on a
+    /// runner key): until then there's no switch.
+    pub(crate) shares_known: bool,
+    /// A click on its way, and which way: the switch shows it at once and
+    /// takes no more clicks until it lands.
+    pub(crate) share_going: HashMap<String, bool>,
 }
 
 /// A runner's card being dragged, and what it's called on the way.
@@ -256,9 +270,81 @@ impl Threadbear {
             .filter(|r| !r.is_self && open.contains(&r.id))
             .map(|r| r.id.clone())
             .collect();
+        if !ids.is_empty() {
+            self.load_login_shares(cx);
+        }
         for id in ids {
             self.load_remote_logins(id, cx);
         }
+    }
+
+    /// `runners.sharedLogins`: each runner's Use this Mac's Claude logins.
+    /// A runner older than it, or one that can't share, shows no switch.
+    pub(crate) fn load_login_shares(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let res = call(client, "runners.sharedLogins", json!({})).await;
+            this.update(cx, |t, cx| {
+                match res {
+                    Ok(v) => {
+                        let got = share::decode(&v);
+                        t.runners_panel.shares_known = got.blocked.is_none();
+                        t.runners_panel.shares = got
+                            .rows
+                            .into_iter()
+                            .map(|r| (r.runner_id.clone(), r))
+                            .collect();
+                    }
+                    Err(e) if e.code == -32601 => t.runners_panel.shares_known = false,
+                    Err(_) => return,
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The switch: shown flipped at once, and nothing more taken until this
+    /// Mac's runner says how the first send went. Refused, it flips back
+    /// and says why.
+    pub(crate) fn set_login_share(&mut self, runner: String, on: bool, cx: &mut Context<Self>) {
+        if self.runners_panel.share_going.contains_key(&runner) {
+            return;
+        }
+        self.runners_panel.share_going.insert(runner.clone(), on);
+        cx.notify();
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let res = call(
+                client,
+                "runners.shareLogins",
+                json!({ "runnerId": runner, "on": on }),
+            )
+            .await;
+            this.update(cx, |t, cx| {
+                t.runners_panel.share_going.remove(&runner);
+                match res {
+                    Ok(v) => {
+                        match serde_json::from_value::<Share>(v) {
+                            Ok(row) if row.on || row.state != "off" => {
+                                t.runners_panel.shares.insert(runner.clone(), row);
+                            }
+                            _ => {
+                                t.runners_panel.shares.remove(&runner);
+                            }
+                        }
+                        // Its logins as they are now, with the ones from here.
+                        t.remote.logins_at.remove(&runner);
+                        t.load_remote_logins(runner.clone(), cx);
+                    }
+                    Err(e) => t.show_error(e.message, cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The runners whose details are open, kept across launches
@@ -296,6 +382,7 @@ impl Threadbear {
                 .iter()
                 .any(|r| r.id == id && !r.is_self)
             {
+                self.load_login_shares(cx);
                 self.load_remote_logins(id.to_owned(), cx);
             }
         }
@@ -785,6 +872,9 @@ impl Threadbear {
             .pt(px(8.))
             .gap(px(6.))
             .child(small_heading(tokens::HEADING, cx));
+        if self.runners_panel.shares_known {
+            list = list.child(self.render_login_share(r, cx));
+        }
         let Some(logins) = self.remote.logins.get(&r.id) else {
             return list
                 .child(text_line(tokens::LOADING, 11., tertiary))
@@ -885,16 +975,101 @@ impl Threadbear {
         list.into_any_element()
     }
 
+    /// Use this Mac's Claude logins: the switch, a spinner while a click is
+    /// on its way, then what's there from this Mac.
+    fn render_login_share(&self, r: &RunnerInfo, cx: &mut Context<Self>) -> AnyElement {
+        let (fg, tertiary) = (style::label_text(cx), style::tertiary_label(cx));
+        let row = self.runners_panel.shares.get(&r.id);
+        let going = self.runners_panel.share_going.get(&r.id).copied();
+        let on = share::shown_on(row, going);
+        let busy = going.is_some() || row.is_some_and(|s| s.state == "sending");
+        let tip = share::tip(on, &r.name);
+        let runner = r.id.clone();
+        let switch = div()
+            .id(SharedString::from(format!("runner-share-{}", r.id)))
+            .test_support()
+            .a11y_role(Role::GenericContainer)
+            .aria_label(tip.clone())
+            .tip(tip)
+            .child(
+                MacSwitch::new(
+                    SharedString::from(format!("runner-share-switch-{}", r.id)),
+                    on,
+                )
+                .disabled(busy)
+                .on_change({
+                    let me = cx.entity().downgrade();
+                    move |next, _, cx| {
+                        let runner = runner.clone();
+                        me.update(cx, |t, cx| t.set_login_share(runner, next, cx))
+                            .ok();
+                    }
+                }),
+            )
+            .a11y_disabled(busy);
+        let mut head = h_flex().gap(px(8.)).items_center().child(
+            text_line(share::SWITCH, 11., fg)
+                .flex_1()
+                .min_w_0()
+                .truncate(),
+        );
+        if busy {
+            head = head.child(
+                div().flex_none().size(px(11.)).child(
+                    Spinner::new()
+                        .icon(gpui_kit::assets::IconName::LoaderCircle)
+                        .color(tertiary)
+                        .with_size(px(11.)),
+                ),
+            );
+        }
+        head = head.child(switch);
+        v_flex()
+            .gap(px(2.))
+            .child(head)
+            .children(
+                share::lines(row, going)
+                    .into_iter()
+                    .map(|l| text_line(l, 10.5, tertiary).line_clamp(3)),
+            )
+            .into_any_element()
+    }
+
+    /// The switch's lines for the dump: its state, then what's under it.
+    fn login_share_lines(&self, r: &RunnerInfo) -> Vec<String> {
+        if !self.runners_panel.shares_known {
+            return Vec::new();
+        }
+        let row = self.runners_panel.shares.get(&r.id);
+        let going = self.runners_panel.share_going.get(&r.id).copied();
+        let on = share::shown_on(row, going);
+        let busy = going.is_some() || row.is_some_and(|s| s.state == "sending");
+        let mut lines = vec![format!(
+            "{}: {}{}",
+            share::SWITCH,
+            if on { "on" } else { "off" },
+            if busy { " (busy)" } else { "" }
+        )];
+        lines.extend(
+            share::lines(row, going)
+                .into_iter()
+                .map(|l| format!("  {l}")),
+        );
+        lines
+    }
+
     /// The section's lines for the dump.
     fn runner_login_lines(&self, r: &RunnerInfo, now: i64) -> Vec<String> {
+        let shared = self.login_share_lines(r);
         let Some(logins) = self.remote.logins.get(&r.id) else {
-            return vec![tokens::LOADING.to_owned()];
+            return [shared, vec![tokens::LOADING.to_owned()]].concat();
         };
         let accounts = tokens::claude_logins(logins);
         if accounts.is_empty() {
-            return vec![tokens::NO_LOGINS.to_owned()];
+            return [shared, vec![tokens::NO_LOGINS.to_owned()]].concat();
         }
-        let mut lines = vec![tokens::HEADING.to_owned()];
+        let mut lines = shared;
+        lines.push(tokens::HEADING.to_owned());
         for a in accounts {
             let status = tokens::status(a, now, &threadbear_core::chrono::Local)
                 .map_or_else(String::new, |s| format!(", {s}"));

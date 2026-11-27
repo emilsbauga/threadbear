@@ -130,9 +130,12 @@ impl Composer {
                     &text,
                     text_services::check(&text, paragraph..caret, &checks, true),
                 );
+                // Pictures' chips, and links' addresses (the # picker's
+                // `[Title](thread:<id>)`), aren't words to correct.
                 let chips: Vec<Range<usize>> = Self::chips_in(&input, cx)
                     .into_iter()
                     .map(|(r, _)| r)
+                    .chain(spelling::link_targets(&text))
                     .collect();
                 let subs: Vec<_> = spelling::substitutions(&found, caret, typed)
                     .into_iter()
@@ -256,9 +259,12 @@ impl Composer {
                 &text,
                 text_services::check(&text, 0..text.len(), &asked, false),
             );
+            // Pictures' chips, and links' addresses (the # picker's
+            // `[Title](thread:<id>)`), aren't words to mark.
             let chips: Vec<Range<usize>> = Self::chips_in(&input, cx)
                 .into_iter()
                 .map(|(r, _)| r)
+                .chain(spelling::link_targets(&text))
                 .collect();
             // The word being typed waits until it's finished.
             let caret = (selection.is_empty() && typing && !now).then_some(selection.end);

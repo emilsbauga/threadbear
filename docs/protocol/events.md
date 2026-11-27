@@ -144,7 +144,7 @@ is the same answer. The saved draft names those copies, and the window
 takes them in place of its own. Pictures alone are an answer. The agent's
 message carries them as its `images`.
 
-#### Marks: the canvas (the `reviewCanvas` experiment)
+#### Marks: the canvas
 
 Mike, 22 Nov 2026: after an audit of how other apps show options with
 several pictures, he asked for the review as a canvas you drag and zoom
@@ -175,9 +175,9 @@ type ReviewShot = { title?: string, image: ImageRef, media?: ImageRef, marks?: A
 Limits: at most 6 marks a shot and 30 a review; `box` is four numbers in
 0..1 with x0 <= x1 and y0 <= y1; a note is at most 80 characters. An
 option's own `marks` need its `path`; with only `shots`, they go on a shot.
-`ink` is stored only when given. With the experiment off, `show_options`
-doesn't offer marks and the runner drops any it's given, unread. A moved
-or recovered review keeps the marks that pass, notes cut to 80 characters.
+`ink` is stored only when given. `show_options` always offers marks, and
+the runner validates them. A moved or recovered review keeps the marks
+that pass, notes cut to 80 characters.
 
 Mike's marks ride on the draft. Each is numbered from 1 in the order he
 made it, and `reply` places each with a `[Mark N]` marker where he was
@@ -477,7 +477,7 @@ Persisted event types (stored in `events.ndjson`, returned by `threads.events`):
 | `plan.resolved` | `itemId`, `decision` (`go` \| `revise`): it was approved, or sent back for another go |
 | `turn.started` | `turnId`, `wokeBy?: {kind, description}[]`. A turn the agent starts by itself (a background task finished) has no `user.message` before it. `wokeBy` is on such a turn when background work finishing started it: each task that had finished since the last turn, `kind` as in `BackgroundTask` (`agent` \| `shell` \| `monitor` \| `other`), its `description` possibly empty. Clients mark the time between that turn and the one before it in the transcript (a "6 min later" divider, Mike 3 Nov). A `user.message` after `turn.started` was sent while the turn ran and went into it |
 | `turn.completed` | `turnId`, `outcome` (`completed` \| `interrupted` \| `failed`), `durationMs`, `costUsd?` (Codex turns have none), `usage?` (Claude: `{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}`; Codex: `{inputTokens, cachedInputTokens, cacheWriteTokens?, outputTokens, reasoningTokens}`), `error?`, `errorKind?` (`usageLimit` \| `contextWindow` \| `auth` \| `network`, when a failed turn's cause is known, so a client can offer the fix without reading `error`), `needs?` (`you` \| `nothing`), `asks?: Ask[]`, `next?: string[]` (with `nothing`: suggested follow-ups), `needsFrom?` (`tool` \| `text`): what a completed turn said it needs from Mike (Needs you), `review?: LabReviewLedger` (on the turn that answered a review by another lab's findings: see that) |
-| `asks.ticked` | `asksSeq`, `ticked: number[]` (indexes into that turn's `asks`, the whole set now ticked). Outside any turn. The latest one for an `asksSeq` is that card's ticks |
+| `asks.ticked` | `asksSeq`, `ticked: number[]` (indexes into that turn's `asks`, the whole set now ticked) and optional `resolved: number[]` (asks retired by the coordinator's task board). Outside any turn. The latest event for an `asksSeq` gives that card's ticks. Resolved indexes stay resolved for that card |
 | `system.note` | `text` (e.g. "Resumed session", "Compacted the conversation", "Patch reseed added: action Reseed dev DB."), `wake?: true` on a background task's notification that went into the running turn, which the agent reads at its next step (see "Once a turn, or once a message"), `login?: true` on a note about the thread's login running out: its move to another one, its wait for room, or that wait being called off (Pools, "Moves in the transcript"), `savedMessage?: true` when an early Stop saved a message for the next send. Login and saved-message notes go up to the backend (Sync, "Messages"), so other Macs, the phone and the website show them |
 | `error` | `message` |
 | `action.run` | `actionId`, `patch`, `title`, `command`, `ok`, `exitCode?`, `text` (what it printed, truncated to 64 KB), `truncated`, `durationMs`, `trigger?` (`"turn.end"` when a hook ran it, `"worktree.setup"` for a new worktree's `setup`, `"worktree.teardown"` for an archived thread's worktree `teardown` (see Worktrees); absent for a chip or `tb run`). A command that `actions.run` or a hook ran; outside any turn unless one was running, in which case it carries that `turnId` |

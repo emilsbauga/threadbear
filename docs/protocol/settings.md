@@ -178,19 +178,38 @@ older runner's `openRouterKey`, `dailyBudgetUsd`, `spentTodayUsd` and
 
 - **Consent.** A call sends thread text to Anthropic on Mike's own login,
   as the thread itself does.
-- **The pool.** `models.pool` in `runner.json` is a pool id, `"claude"`
-  when it isn't set, or `null` for none, which turns titles and the
-  librarian off. Only its Claude logins are used. A call runs on the one
-  it ran on last while that's OK to run on (see Pools), else the one with
-  the most room. The CLI runs as `claude -p` at low effort in an empty
-  folder (`models/cli` in the data dir), with no tools, MCP servers,
-  settings, hooks, CLAUDE.md, skills or saved session (`--tools ""
-  --strict-mcp-config --setting-sources "" --disable-slash-commands
-  --no-session-persistence`), the job's own system prompt, and
-  `--json-schema` for classify and extract. A login that answers that
-  it's out of room counts as run dry, as it does for a turn, and the next
-  one is tried. At most 2 calls run at once, and each times out after 60
-  seconds.
+- **The pool and provider order.** `models.pool` in `runner.json` is a
+  pool id, `"claude"` when it isn't set, or `null` for none, which turns
+  titles and the librarian off. `models.providers` is an optional ordered
+  list of `smallJobs`-capable providers (`claude`, `codex`, `grok`,
+  `opencode`), or `null` / absent for the default order: Claude first (on
+  the login it ran on last while that's OK to run on, see Pools, else the
+  one whose weekly window resets soonest / has the most room), then Codex,
+  then any other `smallJobs`-capable logins in that same pool in pool
+  order. When `models.providers` is set, only the listed providers are
+  tried, in that exact order, and the next provider takes over whenever
+  every login of the current one is out of room or fails. Spillover never
+  leaves the chosen pool, so separate pools (such as a work pool) stay
+  isolated, and providers without `smallJobs` (Cursor, Gemini) are never
+  used.
+  - On Claude, the CLI runs as `claude -p` at low effort in an empty
+    folder (`models/cli` in the data dir), with no tools, MCP servers,
+    settings, hooks, CLAUDE.md, skills or saved session (`--tools ""
+    --strict-mcp-config --setting-sources "" --disable-slash-commands
+    --no-session-persistence`), the job's own system prompt, and
+    `--json-schema` for classify and extract.
+  - On Codex (`runner/src/models/codex-oneshot.ts`), `codex exec` runs in
+    the same empty folder with `--ephemeral --ignore-user-config
+    --ignore-rules --skip-git-repo-check --sandbox read-only`, low
+    reasoning effort, `approval_policy="never"`, `web_search="disabled"`,
+    `mcp_servers={}`, tool features disabled, `--output-schema` (in a
+    temporary file outside the empty folder, removed afterwards) for
+    structured output, and the prompt over stdin (`-`); stdout JSONL is
+    also watched so any tool-execution item kills the process and fails
+    closed.
+  - A login that answers that it's out of room counts as run dry, as it
+    does for a turn, and the next one is tried. At most 2 calls run at
+    once, and each times out after 60 seconds.
 - **Private folders.** `models.privateFolders` in `runner.json` lists
   folders whose threads are never sent anywhere, for client work and the
   like. A call for a thread in one of them, or anywhere under one,
@@ -207,10 +226,10 @@ older runner's `openRouterKey`, `dailyBudgetUsd`, `spentTodayUsd` and
   names them too. Later, the librarian renames a thread whose title no
   longer says what it's about (see Projects).
 - **Failures.** A call never throws: it says why it didn't answer
-  (`no-pool`: no pool, or none of its logins is a Claude one; `no-room`:
-  every login is out of room; `off`: this runner makes no model calls;
-  private folder, timed out, error), and the feature falls back to what
-  it did before there was a model to ask.
+  (`no-pool`: no pool, or none of its logins can run small jobs under
+  `models.providers`; `no-room`: every login is out of room; `off`: this
+  runner makes no model calls; private folder, timed out, error), and the
+  feature falls back to what it did before there was a model to ask.
 
 ## Standing instructions
 
@@ -347,13 +366,19 @@ model call.
 ## Hibernate in words
 
 Besides the presets and a picked time, Mike can say when a thread should
-come back in his own words: "at the weekend", "in a few weeks", "next
-time I talk about woodworking". `threads.hibernateWhen` hibernates it
-straight away (`snoozedUntil` 9999-12-31, `wakeWhen: { said, pending:
-true }`), then asks Opus (job `decide`: Opus on the pool; feature
-`wake-when`) with the local time and time zone, the
-thread's title, first message and brief, and his words. It answers with a
-time, a topic, or both:
+come back in his own words: "tomorrow morning", "Friday 9am", "at the
+weekend", "in a few weeks", "next time I talk about woodworking". Plain
+time expressions (relative durations like "2h" or "in 2 weeks", times of
+day, "tomorrow", "tonight", "at the weekend", weekdays, calendar dates
+and ISO timestamps) are worked out locally right away (`parseWakeTime` in
+`wake-when.ts`), with no model call, so they still work when every login
+is out of room or models are off. Topics, events and fuzzy phrases
+hibernate the thread straight away (`snoozedUntil` 9999-12-31,
+`wakeWhen: { said, pending: true }`), then ask the pool's strong model
+(job `decide`: Opus on Claude first, spilling over to other small-job
+providers in the pool if Claude is out of room; feature `wake-when`) with
+the local time and time zone, the thread's title, first message and
+brief, and his words. It answers with a time, a topic, or both:
 
 - **A time** becomes `snoozedUntil`, and the thread wakes as any snooze
   does.
@@ -583,10 +608,26 @@ thread to another login when the one it's on runs out of room.
   `poolId` if given, else the pool whose `folders` holds `cwd` (the
   longest match), else `defaults.poolId` (`runner.json`'s, the pool last
   named in a `threads.create`; failing that, the pool holding
-  `defaults.accountId`). Then, if a `model` is named whose provider has no
-  login in that pool (and no `poolId` was given), the first pool that has
-  one. The thread's provider is its model's, or the pool's first provider;
-  its login is the pool's pick of that provider (below, "Which login"). A dev
+  `defaults.accountId`). When a `model` is named, the runner looks for
+  logins listing that model. With a named pool it looks inside that pool,
+  using `provider` if given. Otherwise it tries the preferred pool first,
+  then the other pools in order, looking for a matching login with room.
+  If every match is out of room, the first matching pool and login are
+  used. If the matching logins are all outside the pools, an unnamed
+  pool lets the thread pin to a signed-in login with no account note.
+  A picker id takes precedence over a resolved alias. When several
+  eligible providers list the same picker id, the runner gives Claude
+  and Codex priority in that order, as the website and iPhone do in
+  their pickers. If no list has the picker id and a candidate ACP
+  login's list is still unknown, the runner waits for its model probe.
+  Probes run independently. If the needed catalog stays unknown after
+  an error or deadline, the request can be retried. A known empty list
+  counts as loaded. With no unresolved ACP login, a native Claude or
+  Codex id can use a login of that provider whose list is unknown. If
+  there is still no match, the usual pool
+  fallback checks the model against its chosen login and explains any
+  replacement.
+  Without a model the pool's provider and room rules apply as usual. A dev
   runner's `keepAccount` pins new threads to its account instead, unless
   that login's plan has ended (`planEnded`).
   `defaults.poolId` in `hello` is folder-blind: the app applies folders
@@ -639,6 +680,111 @@ thread to another login when the one it's on runs out of room.
   backend keeps a `call`'s args only until it's finished. Through
   Convex it's the owner key's alone (`relay:queueCommand`), so a runner
   key can't start one. Needs `python3` and a Mac or Linux runner.
+- **This Mac's logins on another runner** (backend API 105,
+  `runner/src/login-share.ts`). A token works on any machine, so rather
+  than signing in to each login on each runner, the Runners panel's
+  details for another runner have a switch, Use this Mac's Claude logins
+  (`runners.shareLogins`). Only the main Mac's runner (the owner key)
+  does this; the switches are kept in its data folder's
+  `login-share.json` (runner ids, and for each what last went: when, how
+  it went, and a SHA-256 digest of what was sent, never a token).
+  - **Which logins.** This Mac's Claude logins with a year-long token and
+    an email, that aren't hidden (`hiddenLogins`), have no note
+    (`accountNotes`, like "Convex work only"), haven't a lapsed plan, and
+    aren't only in pools tied to folders (a work pool like `convex`). The
+    rest stay on this Mac.
+  - **Sending.** The main Mac asks that runner for its sealing key, a
+    `call` of `logins.sealKey` (`{}`, answering `{ key }`: the public half
+    of the X25519 key in its `secrets/`, the one the phone seals secret
+    answers to). Only that runner's key can finish a command queued for
+    it, so the answer is that runner's. Then it seals each login's
+    `{ token, madeAt?, oauthAccount }` to that key (`sealBytes`: a fresh
+    X25519 key, HKDF-SHA256 with the info `threadbear shared login v1
+    <runnerId> <email>`, AES-256-GCM), and sends the whole set in one
+    `call` of `logins.share`: `{ logins: [{ email, box }] }`, `box` the
+    sealed bytes in base64, at most 20 logins and 2,800 characters a box
+    (so 20 fit the backend's 64 KB of args): `oauthAccount` is trimmed to
+    short plain values, 1,200 bytes of JSON at most. Convex only
+    ever holds ciphertext, and only until the command is finished
+    (finished args are dropped). Both calls are the owner key's alone
+    (`relay:queueCommand`, and the command carries `from: "mac"`, which
+    the runner checks again), so a runner key can't push logins to
+    another runner. A box (virtual runner) refuses them. The runner refuses
+    either call once it's over 5 minutes old (by the command's
+    `createdAt`): one left waiting in the backend while it was away could
+    otherwise put back logins switched off since.
+  - **On that runner.** It opens each box with its private key (one that
+    doesn't open, or isn't what it should be, is `failed` and the rest
+    go on; the error never quotes it), tells the scrubber the token at
+    once, and for each email:
+    - a login folder it made this way for that email (its marker file,
+      `threadbear-shared.json`, `{ email, sharedAt }`): the token file is
+      rewritten if it differs (`updated`), else `same`;
+    - another Claude login there with that email: if its
+      `threadbear-token.json` holds exactly this token (copied by hand),
+      it gets the marker and is taken on (`adopted`); otherwise it was
+      signed in there by hand and is left alone (`here`);
+    - none: a new `claude-<n>` in the data folder's `accounts/` (`n` the
+      first number no login folder there or in Token Stats' folder has),
+      made as a hidden temp folder and renamed into place, holding
+      `threadbear-token.json` (0600, the folder made private first on
+      Windows), `.claude.json` (that runner's own claude-main
+      `.claude.json` with `oauthAccount` replaced by this Mac's, `{}`
+      when it has none; the runner reads the email from it), links named
+      `CLAUDE.md`, `settings.json` and `skills` to claude-main's folder
+      (`~/.claude` on a Mac and Linux, `%USERPROFILE%\.claude` on
+      Windows) where those exist, and the marker (`added`). On Windows a
+      folder link is a junction; a file it can't link (no Developer Mode)
+      is left out and said in the login's `message`; the login still runs.
+    - Every marked folder whose email isn't in the set is removed: its
+      token file deleted, then the folder moved to `accounts/.removed/
+      <id>-<time>` (kept for its sessions). A folder without the marker
+      is never touched, nor one that's a link or junction to a folder
+      elsewhere (only real folders directly in `accounts/` are taken on,
+      renewed or removed). On Windows a folder is made private (the
+      helper's `privateDir`) when it's made, before any link goes in, and
+      when it's taken on; one the helper refuses (it holds links) is left
+      as it is (`here`, with why). A renewal doesn't ask again, as the
+      links it made would fail that check. A half-made temp folder left by
+      a runner that stopped partway is cleared, token first, and so is any
+      token (or a cut-short copy of one) left in `accounts/.removed/`.
+    The runner reads its logins again and answers `{ logins: [{ email,
+    state, accountId?, message? }], removed: [{ email, accountId }] }`.
+  - **Its shared list.** Then the main Mac adds `claude:<email>` to that
+    runner's shared logins (Runner keys, "Shared logins") for each login
+    `added`, `updated`, `same` or `adopted`, and takes out each removed,
+    leaving the rest of the list as it was. Not for a runner on the main
+    key, which needs none. Emails removed there that the list update
+    missed are kept in `login-share.json` (`unlisted`) and taken off at
+    the next try, and so are emails this listed before (`listed`) that
+    aren't there now, in case a removal's answer was lost. A switch
+    flipped is saved before anything is sent, or refused. A `failed` line
+    comes through for any email (a removal there that didn't go keeps the
+    switch trying); every other line only for an email this sent. A
+    runner the backend no longer has (`sync:runnersList`) can still be
+    switched off: it's just forgotten. One the backend has but the
+    sidebar's list doesn't yet (just after a start) can be switched off,
+    sent by the timer, but not on until the list says it isn't a box. Each email
+    is recorded in `listed` before it's put on the list.
+  - **Again by itself.** While the switch is on, what would be sent is
+    worked out again on every accounts change (a token made or renewed,
+    a login hidden or noted) and every 10 minutes, and sent when its
+    digest differs from the last that landed, or the last try failed
+    (that runner offline, say: it goes when it's back). Whether a runner
+    is online is asked of the backend then (`sync:runnersList`, heard from
+    in the last 3 minutes), as the sidebar's list stops updating while no
+    app is open; nothing is queued for one that isn't, including a switch
+    flipped while it's offline. The main Mac takes from the answer only
+    lines for emails it sent (a runner key could name any). A runner
+    handing over to a new release stops sending and takes no switch.
+  - **Off.** `logins.share` with no logins: that runner removes every
+    login it got this way and the main Mac takes them off its list.
+  - **For the app.** `runners.sharedLogins` lists each runner's switch
+    and how it went, with `blocked` when this runner can't share at all
+    (the app then shows no switch); `runners.shareLogins { runnerId, on }`
+    sets one and answers once the first send has landed or failed. A
+    thread's key can't call `runners.shareLogins` (rpc-gate.ts): it's
+    Mike's to switch.
 - **Which login.** Of the pool's logins of a provider that are OK to run
   on, the one whose weekly window resets soonest, since whatever is left
   in it then is lost; the most room breaks a tie. Logins with no weekly
@@ -651,9 +797,15 @@ thread to another login when the one it's on runs out of room.
   login isn't OK, or isn't in its pool any more, it moves first. A thread
   stays on one login as long as it can, since every move costs a cold
   prompt cache.
-- **Where it moves.** The pool's pick of the thread's provider (Which
-  login), leaving out the one it's on. If none has room, the first other provider in pool order that
-  has a login with room: a cross-provider move, a handoff like any
+- **Where it moves.** A thread whose request chose a specific model moves
+  automatically only to logins of the same provider that list that model.
+  This applies before a turn, after a limit or sign-out, and while waiting
+  for room. A native choice made before its list arrived matches picker
+  ids first, then resolved ids. A thread using the default model takes
+  the pool's pick of its provider (Which login), leaving out the one
+  it's on. If none has room,
+  it uses the first other provider in pool order with a login with room:
+  a cross-provider move, a handoff like any
   provider change, onto that provider's default model
   (`defaults.models[provider]`, else the account's own) and effort. A
   thread that spilled over stays there; it doesn't move back by itself. If
@@ -678,7 +830,7 @@ thread to another login when the one it's on runs out of room.
   hours after, on an access token it can't renew), or for an hour after a
   turn on it was refused, unless a new sign-in (another `loginExpiresAt`)
   or a working turn is seen first. The hour is so a one-off refusal
-  doesn't keep a good login out until its end date. `loginEndsAt` is that `loginExpiresAt`. Pools and
+  doesn't keep a good login out until its end date. A turn refused with "Your organization has disabled Claude subscription access for Claude Code" or "Claude Code can't use your Claude subscription, usually because a payment is past due" (org access or billing: nothing in the profile or `auth status` shows it) holds a day instead. Refusals still held are kept in the data dir's `sign-in-refusals.json` across restarts, and the dev runner's login (`runner/src/test-login.ts`) skips them. `loginEndsAt` is that `loginExpiresAt`. Pools and
   new threads skip a signed-out login whatever its room. A pool thread
   whose turn on a Claude login is refused moves like one at its limit
   (only Claude: a Codex refusal isn't remembered, so moving on it could
@@ -729,6 +881,28 @@ thread to another login when the one it's on runs out of room.
   (`account/rateLimitResetCredit/consume`, one idempotency key per click),
   then reads the login's limits again. That reading lifts the block like
   any other, so a thread waiting for room carries on by itself.
+  A subscription is one limit wherever it's signed in, so the count travels
+  with the shared readings (backend API 104): each runner keeps the newest
+  read of a login's resets by its `readAt`, its own or another runner's, so
+  a reset used on one machine shows as one fewer on every machine.
+- **Telling Mike about resets** (since 26 Nov 2026). On 26 Nov Mike's gmail
+  Codex login sat at 0% on every machine for days with 2 resets unused,
+  and only the limit box of a stopped thread would have said so. So the
+  runner works out `resetHint` on each login (`runner/src/reset-hint.ts`,
+  the one place the rule lives) and every client draws it where Mike looks
+  anyway: the Usage panel's row with Use a reset, the Usage button's dot
+  and tooltip, the login's line in the composer's login lists, and `tb
+  accounts`. A login gets one when it has a reset left (one that hasn't
+  expired) and isn't signed out or plan ended, and either it's out of room
+  (`why: "out"`: blocked, or under 1% in its 5-hour or weekly window) or the
+  soonest reset expires within 3 days while its week is under 70% left
+  (`why: "expiring"`: a reset used then still buys back at least 30% of a
+  week, and unused it's lost). Room unknown is neither. No notification and
+  no thread: Mike finds them annoying, and the hint stays until he uses the
+  reset, the login's room comes back, or the reset expires. Threadbear
+  still never spends one by itself. The hint changes on its own at the
+  moment a reset comes within 3 days of expiring and when it expires, so the
+  usage store wakes then and clients get `accounts.updated`.
 - **Rechecking a login that's out** (since 17 Nov 2026). Readings only
   come from turns, and pools skip a login that reads as out, so a login
   reset outside Threadbear (a reset used in Codex) read 0% until its old

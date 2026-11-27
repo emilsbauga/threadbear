@@ -214,6 +214,10 @@ fn summary(row: &Value) -> Option<ThreadSummary> {
         title: text("title"),
         cwd: text("cwd"),
         account_id: text("accountId"),
+        pool_id: row["poolId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         provider,
         model: row["model"]
             .as_str()
@@ -228,6 +232,10 @@ fn summary(row: &Value) -> Option<ThreadSummary> {
         archived_at: row["archivedAt"]
             .as_str()
             .filter(|s| parse_ms(s).is_some())
+            .map(str::to_owned),
+        coordinator_project_id: row["coordinatorProjectId"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
             .map(str::to_owned),
         starred_at: row["starredAt"]
             .as_str()
@@ -641,6 +649,23 @@ mod tests {
 
     // The relay puts a watched thread's done-card loose ends on its row
     // (relay.ts `overlay`): they reach the done card, for the seq it's on.
+    #[test]
+    fn remote_coordinator_metadata_needs_no_local_registry() {
+        let rows = decode_remote_threads(&json!({"threads":[
+            {"runnerId":"r", "threadId":"t1", "coordinatorProjectId":"p_remote"},
+            {"runnerId":"r", "threadId":"t2", "coordinatorProjectId":5},
+            {"runnerId":"r", "threadId":"t3", "coordinatorProjectId":"  "}
+        ]}));
+        assert_eq!(rows.threads.len(), 3);
+        assert_eq!(
+            rows.threads[0].coordinator_project_id.as_deref(),
+            Some("p_remote")
+        );
+        assert!(rows.threads[0].is_coordinator());
+        assert!(!rows.threads[1].is_coordinator());
+        assert!(!rows.threads[2].is_coordinator());
+    }
+
     #[test]
     fn a_rows_loose_ends_reach_the_summary() {
         let list = decode_remote_threads(&json!({

@@ -724,9 +724,13 @@ impl Threadbear {
         if !Self::is_pane_section(panel) {
             return true;
         }
-        // A project's page has no Highlights or Files (they're a thread's),
-        // and only the panels its folders give (`pane_thread`).
-        let project_page = self.projects.open.is_some();
+        // An ordinary project page has only its folders' panels. A
+        // coordinator home has a real thread and its living Highlights.
+        let project_page = self.projects.open.is_some()
+            && self
+                .open_project()
+                .and_then(|p| self.coordinator_for_project(&p.id))
+                .is_none();
         let Some(thread) = self.pane_thread() else {
             return !project_page;
         };
@@ -967,10 +971,11 @@ impl Threadbear {
         self.save_settings_soon(cx);
     }
 
-    /// Folds and the Inbox's sort, saved as they change.
+    /// Folds, section order and the Inbox's sort, saved as they change.
     pub(crate) fn sidebar_settings_changed(&mut self, cx: &mut Context<Self>) {
         self.settings.saved.collapsed_sections =
             Some(self.folded.iter().map(|k| k.to_string()).collect());
+        self.settings.set_section_order(&self.sidebar.section_order);
         self.settings.set_inbox_order(self.sidebar.order);
         self.save_settings_soon(cx);
     }
@@ -1217,8 +1222,6 @@ impl Threadbear {
     /// The Scheduled, Projects and Librarian buttons open their page in the
     /// main panel too (`showSchedules`); picking a thread puts the thread back.
     pub(crate) fn set_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
-        // Any view of the rail's in place of the Canvas page (thread_canvas.rs).
-        self.hide_thread_canvas();
         let home = mode != SidebarMode::Inbox;
         // A page of the activity bar's takes a project's page's place
         // (`showProjects`); the Inbox leaves it where it is.
@@ -2110,12 +2113,7 @@ impl Threadbear {
         // On a project's page, the panels it borrows from one of its threads.
         // What the tour and the intros watch for (tour.rs).
         self.tour_watch(window, cx);
-        // The Canvas page, in place of the list and the thread (thread_canvas.rs).
-        let canvas = self
-            .thread_canvas
-            .showing
-            .then(|| self.render_thread_canvas(window, cx));
-        let has_rail = canvas.is_none() && self.pane_thread().is_some();
+        let has_rail = self.pane_thread().is_some();
         let rail = has_rail.then(|| self.render_right_rail(cx));
         let root = div()
             .id("threadbear-shell")
@@ -2135,15 +2133,17 @@ impl Threadbear {
             // the list) can't take the start of a swipe from them.
             .child(self.page_swipe_watch(cx))
             .child(self.row_press_watch(cx))
+            .child(self.section_drag_watch(cx))
             .child(self.render_activity_bar(window, cx))
-            .child(div().relative().flex_1().min_w_0().h_full().map(|d| {
-                match canvas {
-                    Some(canvas) => d.child(canvas),
-                    None => d
-                        .child(self.dock_view.clone())
-                        .child(crate::tour::dock_origin_mark()),
-                }
-            }))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(self.dock_view.clone())
+                    .child(crate::tour::dock_origin_mark()),
+            )
             .when_some(rail, |s, r| s.child(r))
             // An archived or hibernated thread's page on its way to its
             // heading, over the sidebar and the panel alike (archive_flight.rs).
@@ -2158,6 +2158,7 @@ impl Threadbear {
                     .child(arc_layer),
             )
             .child(self.flight.overlay(cx))
+            .children(self.render_section_drag_overlay(cx))
             // Confetti for the rare wins (confetti.rs).
             .child(self.confetti.overlay(cx))
             .children(
@@ -2235,15 +2236,29 @@ impl Threadbear {
                     .cached(StyleRefinement::default().size_full())
                     .into_any_element()
             }
-            MAIN if ghost => self.render_main_panel(window, cx).into_any_element(),
+            MAIN if ghost => {
+                use crate::web_panels::{main_panel_mark, MainMark};
+                div()
+                    .relative()
+                    .size_full()
+                    .child(main_panel_mark(MainMark::GhostStart))
+                    .child(self.render_main_panel(window, cx))
+                    .child(main_panel_mark(MainMark::GhostEnd))
+                    .into_any_element()
+            }
             MAIN => {
                 let app = cx.entity();
                 let view = self
                     .main_view
                     .get_or_insert_with(|| cx.new(|cx| MainPanelView::new(&app, cx)))
                     .clone();
-                AnyView::from(view)
-                    .cached(StyleRefinement::default().size_full())
+                div()
+                    .relative()
+                    .size_full()
+                    .child(AnyView::from(view).cached(StyleRefinement::default().size_full()))
+                    .child(crate::web_panels::main_panel_mark(
+                        crate::web_panels::MainMark::Drawn,
+                    ))
                     .into_any_element()
             }
             RUNNERS => self.activity_panel_view(RUNNERS, ghost, window, cx),
@@ -2409,6 +2424,29 @@ impl Threadbear {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if section == HIGHLIGHTS {
+            if let Some(project) = self.open_project().cloned() {
+                if let Some(coordinator) = self.coordinator_for_project(&project.id).cloned() {
+                    let previewing = self
+                        .side
+                        .read(cx)
+                        .previews
+                        .get(&coordinator.thread_id)
+                        .is_some_and(|preview| preview.from == section);
+                    if !previewing {
+                        self.side.update(cx, |side, _| {
+                            side.drawn.insert(section.to_owned(), "project".to_owned());
+                        });
+                        return self.render_coordinator_document(
+                            &project,
+                            &coordinator,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            }
+        }
         let side = self.side.clone();
         let view = self
             .side_views
@@ -2623,7 +2661,14 @@ impl Render for MainPanelView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.app.upgrade() {
             Some(app) => app.update(cx, |t, cx| {
-                t.render_main_panel(window, cx).into_any_element()
+                use crate::web_panels::{main_panel_mark, MainMark};
+                div()
+                    .relative()
+                    .size_full()
+                    .child(main_panel_mark(MainMark::Start))
+                    .child(t.render_main_panel(window, cx))
+                    .child(main_panel_mark(MainMark::End))
+                    .into_any_element()
             }),
             None => div().into_any_element(),
         }

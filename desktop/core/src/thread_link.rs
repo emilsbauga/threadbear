@@ -55,6 +55,47 @@ pub fn is_thread_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
+/// A `threadbear://new?text=…&project=…&folder=…` link: another app (Earshot's
+/// Ask Claude, say) asking for a new thread with words already in its message
+/// box. It only fills the box: nothing is sent until Mike presses Send, so a
+/// link from anywhere can't start work. `project` is a project's id and
+/// `folder` one of its folders; the app checks both against what it has.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NewThreadLink {
+    pub text: String,
+    pub project: Option<String>,
+    pub folder: Option<String>,
+}
+
+/// The longest message a link may put in the box.
+pub const NEW_THREAD_TEXT_MAX: usize = 20_000;
+
+/// The new thread a link asks for, or None for any other link.
+pub fn new_thread(url: &str) -> Option<NewThreadLink> {
+    let (scheme, rest) = url.split_once(':')?;
+    if !scheme.eq_ignore_ascii_case(SCHEME) {
+        return None;
+    }
+    let rest = rest.strip_prefix("//")?;
+    let rest = &rest[..rest.find('#').unwrap_or(rest.len())];
+    let (authority, query) = rest.split_once('?').unwrap_or((rest, ""));
+    if !authority.trim_end_matches('/').eq_ignore_ascii_case("new") {
+        return None;
+    }
+    let mut link = NewThreadLink::default();
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = crate::open_policy::percent_decode(&value.replace('+', " "));
+        match key {
+            "text" => link.text = value.chars().take(NEW_THREAD_TEXT_MAX).collect(),
+            "project" if is_thread_id(&value) => link.project = Some(value),
+            "folder" if !value.is_empty() => link.folder = Some(value),
+            _ => {}
+        }
+    }
+    Some(link)
+}
+
 /// The last thread among links the system handed over at once, as the Swift
 /// app's `application(_:open:)` takes the last of them.
 pub fn last_thread<'a>(urls: impl IntoIterator<Item = &'a str>) -> Option<String> {
@@ -75,6 +116,31 @@ pub fn unopened_link_message(matches: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_thread_link_fills_the_box() {
+        let link = new_thread("threadbear://new?project=p_d7b98e86&folder=~%2Fdev%2Fme%2Fearshot&text=Who%20was%20this%3F%0Aa+b%2Bc%20%E2%9C%B3").unwrap();
+        assert_eq!(link.text, "Who was this?\na b+c \u{2733}");
+        assert_eq!(link.project.as_deref(), Some("p_d7b98e86"));
+        assert_eq!(link.folder.as_deref(), Some("~/dev/me/earshot"));
+        assert_eq!(new_thread("THREADBEAR://New/?text=hi").unwrap().text, "hi");
+        // A project id that isn't one is dropped, not passed on.
+        assert_eq!(
+            new_thread("threadbear://new?project=..%2Fx&text=hi")
+                .unwrap()
+                .project,
+            None
+        );
+        assert_eq!(new_thread("threadbear://thread/abc"), None);
+        assert_eq!(new_thread("https://new?text=hi"), None);
+        // Not a thread link either.
+        assert_eq!(thread_id("threadbear://new?text=hi"), None);
+        let long = format!(
+            "threadbear://new?text={}",
+            "a".repeat(NEW_THREAD_TEXT_MAX + 5)
+        );
+        assert_eq!(new_thread(&long).unwrap().text.len(), NEW_THREAD_TEXT_MAX);
+    }
 
     #[test]
     fn a_link_that_opens_nothing_says_why() {

@@ -306,7 +306,7 @@ function dropMovedReplyImages(rec: Record<string, any>): boolean {
   rec.queue = rec.queue.map((q: any) => {
     if (!q || typeof q !== 'object' || q.reviewId === undefined) return q;
     const hasResponseImages = q.reviewResponse && typeof q.reviewResponse === 'object' && 'images' in q.reviewResponse;
-    // A mark's cut-out (reviewCanvas) is one of the reply's pictures too.
+    // A mark's cut-out is one of the reply's pictures too.
     const markImages = q.reviewResponse && typeof q.reviewResponse === 'object' && Array.isArray(q.reviewResponse.marks) && q.reviewResponse.marks.some((m: unknown) => Boolean(m && typeof m === 'object' && 'image' in m));
     if (Array.isArray(q.images) && q.images.length === 0 && !hasResponseImages && !markImages) return q;
     changed = true;
@@ -795,6 +795,7 @@ export const movesPart = {
   },
 
   async describeForMove(this: Runner, threadId: string, schedules: number): Promise<MoveInfo | undefined> {
+    if (this.coordinators?.forThread(threadId) || this.coordinators?.helperOwner(threadId)) throw new Error('Project coordinators stay on their owning runner in this experiment.');
     const st = this.threads.get(threadId);
     if (!st) return undefined;
     const { rec } = st;
@@ -846,6 +847,7 @@ export const movesPart = {
   // Releases the CLI and gathers what goes: the thread's folder, its
   // Claude transcript, and its worktree's git work.
   async packForMove(this: Runner, threadId: string, row: MoveRow): Promise<{ entries: PackEntry[]; leftBehind: string[] }> {
+    if (this.coordinators?.forThread(threadId) || this.coordinators?.helperOwner(threadId)) throw new Error('Project coordinators stay on their owning runner in this experiment.');
     const st = this.threads.get(threadId);
     if (!st) throw new Error("The thread isn't here any more.");
     const { rec, rt } = st;
@@ -1143,6 +1145,7 @@ export const movesPart = {
       if (account.provider !== rec.provider) {
         rec.provider = account.provider;
         delete rec.model;
+        delete rec.explicitModel;
         delete rec.effort;
       }
       // Nothing that runs or approves anything comes (dropMovedPowers),

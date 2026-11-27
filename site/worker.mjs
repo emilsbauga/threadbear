@@ -14,8 +14,10 @@ export default {
     if (url.pathname.startsWith("/media/")) return media(request, env, url.pathname);
     const response = await env.ASSETS.fetch(request);
     const headers = new Headers(response.headers);
-    const extra = headersFor(new URL(request.url).pathname, headers.get("Content-Type") ?? "");
+    const extra = headersFor(url.pathname, headers.get("Content-Type") ?? "");
     for (const [name, value] of Object.entries(extra)) headers.set(name, value);
+    // Static Assets uses 307 for its HTML aliases. The canonical addresses are permanent.
+    if (response.status === 307) return new Response(response.body, { status: 308, headers });
     // Static assets answer a Range request with the whole file, and Safari on an iPhone won't
     // play a <video> without byte ranges. The hero's clips are a few hundred KB, so cut the
     // range out here.

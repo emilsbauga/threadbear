@@ -21,7 +21,7 @@ import path from 'node:path';
 test('phone reads review previews and submits a revision-checked answer through Convex', phoneReviewScenario);
 
 type Route = 'relay' | 'phone';
-type Field = 'recap' | 'needs' | 'asks' | 'next' | 'looseEnds' | 'review' | 'plans' | 'messages' | 'notes' | 'pictures' | 'failed' | 'origins' | 'waitState';
+type Field = 'recap' | 'needs' | 'asks' | 'next' | 'nextPick' | 'nextSuggested' | 'looseEnds' | 'review' | 'plans' | 'messages' | 'notes' | 'pictures' | 'failed' | 'origins' | 'waitState' | 'coordinatorProjectId';
 
 // Differences that are meant, each with why. A test below fails once one
 // of these stops being a difference, so the list can't outlive its reason.
@@ -39,10 +39,10 @@ function pick(v: View, field: Field): unknown {
     case 'origins':
       return v.messages.map((m) => m.origin ?? null);
     default:
-      return field === 'recap' || field === 'needs' || field === 'review' || field === 'waitState' ? (v[field] ?? null) : v[field];
+      return field === 'recap' || field === 'needs' || field === 'nextPick' || field === 'nextSuggested' || field === 'review' || field === 'waitState' || field === 'coordinatorProjectId' ? (v[field] ?? null) : v[field];
   }
 }
-const FIELDS: Field[] = ['recap', 'needs', 'asks', 'next', 'looseEnds', 'review', 'plans', 'messages', 'notes', 'pictures', 'failed', 'origins', 'waitState'];
+const FIELDS: Field[] = ['recap', 'needs', 'asks', 'next', 'nextPick', 'nextSuggested', 'looseEnds', 'review', 'plans', 'messages', 'notes', 'pictures', 'failed', 'origins', 'waitState', 'coordinatorProjectId'];
 const known = (route: Route, field: Field) => KNOWN.find((k) => k.route === route && k.field === field);
 
 for (const s of SCENARIOS) {
@@ -130,4 +130,32 @@ test("another Mac gets a message's pictures, and each file from the backend", as
   }
   // Nothing else on that Mac is read this way.
   await assert.rejects(relay.readFile(runnerId, path.join(dir, 'other.png')), /kept there for now/);
+});
+
+
+test('a coordinator and its questions, reads and replies are the same on every route', async () => {
+  for (const read of [false, true]) {
+    const { views, refused } = await threeWays((p) => {
+      p.coordinate('p_threadbear');
+      p.say('The project state is ready.');
+      p.endTurn({ needs: 'you', asks: [{ question: 'Start the first task?', options: [{ label: 'Start it' }, { label: 'Wait' }] }] });
+      p.sendFromPhone('Start it.');
+      p.say('The helper finished. Should I land the change?');
+      p.endTurn({ needs: 'you', asks: [{ question: 'Land the change?', taskId: 'landing-decision', options: [{ label: 'Land it' }, { label: 'Not now' }], suggested: 0 }] });
+      if (read) p.read();
+    });
+    assert.deepEqual(refused, []);
+    assert.equal(views.here.asks[0]?.taskId, 'landing-decision');
+    const mirroredAsks = views.here.asks.map(({ taskId: _taskId, ...ask }) => ask);
+    for (const route of ['here', 'relay', 'phone'] as const) {
+      const view = views[route];
+      assert.equal(view.coordinatorProjectId, 'p_threadbear', route);
+      assert.equal(view.unread, !read, route);
+      assert.equal(view.needs, 'you', 'reading does not answer the coordinator');
+      assert.deepEqual(view.asks, route === 'here' ? views.here.asks : mirroredAsks);
+      assert.deepEqual(view.asks[0]?.options, ['Land it', 'Not now']);
+      assert.deepEqual(view.messages, views.here.messages);
+      assert.ok(view.messages.some((m) => m.role === 'user' && m.text === 'Start it.' && m.origin === 'phone'));
+    }
+  }
 });

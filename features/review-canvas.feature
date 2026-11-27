@@ -3,8 +3,8 @@ Feature: The review as a canvas
   I want them laid out on a board I can drag and zoom, with the agent's notes on the pictures
   So I can see what it means, mark the parts I want to talk about, and say so
 
-  # The reviewCanvas experiment (runner/src/experiments/reviewCanvas.md), GPUI
-  # only: the Swift app is frozen. Mike, 22 Nov 2026, after an audit of how
+  # The standard GPUI review board; the Swift app is frozen.
+  # Mike, 22 Nov 2026, after an audit of how
   # other apps show options with several pictures, picked the board with the
   # agent's tour from three mockups, the agent's notes in the Convex Explained
   # doodle style with a switch to hide them, and tools to circle, highlight or
@@ -74,3 +74,30 @@ Feature: The review as a canvas
     Then the board plays a sound in place
     When I press "Stop B. One picker, shot 3" on the board
     Then nothing plays on the board
+
+  @review.canvas @review.nav @swift-pending
+  Scenario: The board visits every page before the next option
+    Given the agent shows options with several shots each
+    When I open that review
+    And the board flies to option "A"
+    Then the board frames option "A", shot 1
+    When I press "Next (→)" in the review
+    Then the board frames option "A", shot 2
+    When I press "Next (→)" in the review
+    Then the board frames option "A", shot 3
+    When I press "Next (→)" in the review
+    Then the board frames option "B", shot 1
+    When I press "Back (←)" in the review
+    Then the board frames option "A", shot 3
+
+  @review.canvas @review.nav @swift-pending
+  Scenario: Arrow keys move between pages and options on the board
+    Given the agent shows options with several shots each
+    When I open that review
+    And the board flies to option "A"
+    And I press the "right" key in the review
+    Then the board frames option "A", shot 2
+    When I press the "down" key in the review
+    Then the board frames option "B", shot 1
+    When I press the "escape" key in the review
+    Then the review is a board on stop 11 of 11

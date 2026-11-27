@@ -9,6 +9,7 @@ import java.time.Instant
 private val InboxSections.placements: Map<String, PhoneSection>
     get() {
         val all = HashMap<String, PhoneSection>()
+        coordinators.forEach { all[it.threadId] = PhoneSection.COORDINATORS }
         starred.forEach { all[it.threadId] = PhoneSection.STARRED }
         inbox.forEach { all[it.threadId] = PhoneSection.INBOX }
         running.forEach { all[it.threadId] = PhoneSection.RUNNING }

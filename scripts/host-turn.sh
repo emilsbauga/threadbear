@@ -37,7 +37,9 @@ kind="${1:?first or after}" when="${2:?now or wait}" base="${3:?check folder}" i
 first="$base/first" gate="$base/gate" lock="$base/lock"
 mkdir -p "$first" || exit 1
 if [ "$(uname -s)" = Darwin ]; then
-  HOLD=(/usr/bin/lockf -k) TRY=(/usr/bin/lockf -t 0 -k)
+  # -s quiets contention while a waiter retries. Bad paths and other lock
+  # errors still print; the wait itself is explained once below.
+  HOLD=(/usr/bin/lockf -k) TRY=(/usr/bin/lockf -s -t 0 -k)
 else
   HOLD=(flock) TRY=(flock -n -E 75)
 fi

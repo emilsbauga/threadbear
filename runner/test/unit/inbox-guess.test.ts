@@ -14,6 +14,7 @@ import { nullLogger } from '../../src/log.ts';
 import { PATIENCE_MS } from '../helpers/patience.ts';
 import type { GenerateParams, ModelResult } from '../../src/models/index.ts';
 import { GUESS_CATCH_UP_MS, INBOX_GUESS_FILE, readGuess } from '../../src/runner/inbox-guess.ts';
+import { AGENT_MESSAGE_PREFIX } from '../../src/protocol.ts';
 
 const END_TURN = 'mcp__threadbear__end_turn';
 
@@ -403,7 +404,8 @@ test("Opus's skip archives his finished thread quietly, says why, and marks it",
   assert.equal(t.archivedBy, 'threadbear');
   assert.equal(t.quietlyArchived?.why, 'A receipt for what he asked.');
   assert.equal(typeof t.quietlyArchived?.at, 'string');
-  assert.ok(notes(h, id).some((n) => n.startsWith('Archived quietly: it finished with nothing for you') && n.endsWith('A receipt for what he asked.')));
+  // Named, so the app can say what Quiet inbox is, with the model's reason.
+  assert.ok(notes(h, id).some((n) => /^Archived by Quiet inbox on \w{3} \d+ \w{3}, \d+:\d\d [ap]m: it finished with nothing for you/.test(n) && n.endsWith('A receipt for what he asked.')), notes(h, id).join('\n'));
   const [guess, quiet] = h.lines();
   assert.equal(guess.kind, 'guess');
   assert.deepEqual({ ...quiet, at: undefined }, { at: undefined, kind: 'quiet', threadId: id, seq: guess.seq, why: 'A receipt for what he asked.' });
@@ -482,6 +484,42 @@ test("one he's already looked at, starred, or once brought back is his to put aw
   assert.deepEqual(quietLines(h), []);
 });
 
+test("a thread he asked for as its own stays, even when Opus says skip", async () => {
+  const h = setup({ quiet: true, strong: '{"guess":"skip","why":"A report from another thread that went normally."}' });
+  const parent = mine(h, 'The morning brief');
+  // create_thread's nested: false. helperNobodyTouched leaves it for this
+  // path; Quiet inbox for his own threads must not hide the answer.
+  const own = h.runner.create({
+    text: 'Where can I get perpetual spinach?',
+    accountId: 'claude-main',
+    startedBy: { kind: 'thread', label: 'Agent', threadId: parent },
+    detached: true,
+  }).thread.id;
+  finish(h, own, { needs: 'nothing' }, 'It is leaf beet. Buy the Fothergill packet at Bunnings.');
+  await until(() => h.lines().some((l) => l.threadId === own && l.kind === 'guess'), 'the guess written down');
+  await settle();
+  assert.equal(h.runner.get(own).archivedAt, undefined, 'a detached thread stays');
+  assert.equal(quietLines(h).some((l) => l.threadId === own), false);
+  // His own thread still goes, so the experiment is what would have archived it.
+  const his = mine(h, 'Land the panel');
+  finish(h, his);
+  await until(() => Boolean(h.runner.get(his).archivedAt), 'his own thread archived');
+});
+
+test('a reminder he set himself (an X bookmark) stays in the inbox, though its guess is still written down', async () => {
+  const h = setup({ quiet: true, strong: '{"guess":"skip","why":"A routine note on a post."}' });
+  const bookmark = h.runner.create({ text: 'I bookmarked this X post. Write me a short note on it.', accountId: 'claude-main', startedBy: { kind: 'tool', label: 'X bookmarks', icon: 'bookmark' } }).thread.id;
+  finish(h, bookmark);
+  await until(() => h.lines().length === 1, 'the guess written down');
+  await settle();
+  assert.equal(h.runner.get(bookmark).archivedAt, undefined);
+  assert.deepEqual(quietLines(h), []);
+  // Another tool's thread is the model's to judge, as before.
+  const other = h.runner.create({ text: 'Triage this Sentry issue', accountId: 'claude-main', startedBy: { kind: 'tool', label: 'Sentry' } }).thread.id;
+  finish(h, other);
+  await until(() => Boolean(h.runner.get(other).archivedAt), 'the other tool thread archived');
+});
+
 test('"Should have shown me" brings it back, writes the wrong hide down, and clears the mark', async () => {
   const h = setup({ quiet: true });
   const id = mine(h);
@@ -492,7 +530,10 @@ test('"Should have shown me" brings it back, writes the wrong hide down, and cle
   assert.equal(t.archivedAt, undefined);
   assert.equal(t.quietlyArchived, undefined);
   assert.equal(h.runner.threads.get(id)!.rec.quietlyArchived, undefined);
-  assert.ok(notes(h, id).includes('Brought back by you: you should have been shown this.'));
+  // One line, saying who and why (place-notes.ts), not a second.
+  const back = notes(h, id).filter((n) => n.startsWith('Brought back'));
+  assert.equal(back.length, 1, back.join('\n'));
+  assert.match(back[0], /^Brought back from the archive by you on .+: Quiet inbox shouldn't have hidden it\.$/);
   const line = h.lines().at(-1)!;
   assert.equal(line.kind, 'wrongHide');
   assert.equal(line.threadId, id);
@@ -557,4 +598,32 @@ test('an edit under way while the models think archives nothing', async () => {
   await until(() => h.lines().length === 1, 'the guess written down');
   await settle();
   assert.equal(h.runner.get(id).archivedAt, undefined);
+});
+
+test('Mike writing to a quietly archived thread writes a revive line, and an agent’s send_message nothing', async () => {
+  const h = setup({ quiet: true, strong: '{"guess":"skip","why":"A receipt for what he asked."}' });
+  const id = mine(h);
+  finish(h, id);
+  await until(() => Boolean(h.runner.get(id).quietlyArchived), 'quietly archived');
+  const archivedAt = h.runner.get(id).archivedAt;
+  const agent = mine(h, 'Rename the panel');
+  finish(h, agent);
+  await until(() => Boolean(h.runner.get(agent).quietlyArchived), 'the other quietly archived');
+  h.runner.send(agent, `${AGENT_MESSAGE_PREFIX}"Another thread" (abcd1234)]\n\nIt's done over here.`);
+  h.runner.send(id, 'Wait, did that land on main? '.repeat(20));
+  await until(() => h.lines().some((l) => l.kind === 'revive'), 'the revive line');
+  await settle();
+  const revives = h.lines().filter((l) => l.kind === 'revive');
+  assert.equal(revives.length, 1);
+  const { at, ...line } = revives[0];
+  assert.equal(typeof at, 'string');
+  assert.deepEqual(line, { kind: 'revive', threadId: id, from: 'archived', putAwayBy: 'quiet', putAwayAt: archivedAt, putAwayWhy: 'A receipt for what he asked.', text: 'Wait, did that land on main? '.repeat(20).slice(0, 300) });
+  // One he hibernated himself: its why is the grey line that said so.
+  h.runner.update({ threadId: agent, snoozedUntil: 'restart' });
+  h.runner.send(agent, 'Back to this one');
+  await until(() => h.lines().filter((l) => l.kind === 'revive').length === 2, 'the second revive line');
+  const second = h.lines().filter((l) => l.kind === 'revive')[1];
+  assert.equal(second.from, 'hibernated');
+  assert.equal(second.putAwayBy, 'user');
+  assert.match(String(second.putAwayWhy), /^Hibernated by you on .*, until the runner next starts\.$/);
 });

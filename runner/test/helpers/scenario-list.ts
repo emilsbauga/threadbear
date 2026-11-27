@@ -126,6 +126,14 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: 'a done card with pick-one follow-ups and a recommendation',
+    shows: ['Ready for the next move.', 'Ship the quick fix now', 'Refactor the store first'],
+    play: (p) => {
+      p.say('Ready for the next move.');
+      p.endTurn({ needs: 'nothing', next: ['Ship the quick fix now', 'Refactor the store first'], nextPick: 'one', nextSuggested: 0 });
+    },
+  },
+  {
     // The done card's loose ends (experiment looseEnds): a check-in it
     // booked, under "Coming back" with its time (API 73 for the phone).
     name: 'a done card with a check-in booked',

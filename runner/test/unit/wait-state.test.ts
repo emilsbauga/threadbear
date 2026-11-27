@@ -50,6 +50,16 @@ test('a few moves the table refuses', () => {
   assert.equal(allowed('hibernating', 'job'), false);
 });
 
+test('a coordinator\'s helper keeps it busy, after anything asked of Mike', () => {
+  const idle: WaitInputs = { status: 'idle', needsYou: false, needs: 'nothing' };
+  assert.equal(waitStateOf(idle, { now, scheduled: true }), 'scheduled');
+  assert.equal(waitStateOf(idle, { now, scheduled: true, helpers: 1 }), 'job');
+  assert.equal(waitStateOf({ ...idle, needs: 'you', asks: [{}] }, { now, scheduled: true, helpers: 1 }), 'needsYou');
+  assert.equal(waitStateOf({ ...idle, pendingReviews: 1 }, { now, scheduled: false, helpers: 1 }), 'review');
+  assert.equal(waitStateOf({ ...idle, snoozedUntil: '2999-01-01T00:00:00Z' }, { now, scheduled: false, helpers: 1 }), 'hibernating');
+  for (const from of ['done', 'scheduled', 'needsYou', 'review'] as WaitState[]) assert.ok(allowed(from, 'job'), from);
+});
+
 // ------------------------------------------------------------ on a real runner
 
 const END_TURN = 'mcp__threadbear__end_turn';

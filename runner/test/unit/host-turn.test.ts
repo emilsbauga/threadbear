@@ -37,11 +37,11 @@ function host(t: { after: (f: () => void) => void }) {
   // A run whose command, like --on-host, drops its first/ mark once it has
   // the host, then says it started and holds the host until its end file is
   // there.
-  const turn = (kind: string, when: string, id: string): Run => {
+  const turn = (kind: string, when: string, id: string, env?: NodeJS.ProcessEnv): Run => {
     const cmd = `rm -f first/${id}; echo ${id} >>order; while [ ! -e end-${id} ]; do sleep 0.05; done`;
     // The command runs where host-turn.sh was started (ssh's $HOME on a host),
     // here the check folder, so its paths are from there.
-    const child = spawn('/bin/bash', [SCRIPT, kind, when, base, id, 'testhost', cmd], { cwd: base, stdio: ['ignore', 'pipe', 'pipe'] }) as Run;
+    const child = spawn('/bin/bash', [SCRIPT, kind, when, base, id, 'testhost', cmd], { cwd: base, env, stdio: ['ignore', 'pipe', 'pipe'] }) as Run;
     child.output = '';
     child.stdout!.on('data', (s) => { child.output += s; });
     child.stderr!.on('data', (s) => { child.output += s; });
@@ -125,6 +125,37 @@ test("a check already through the gate, waiting for builds to finish, still lets
   await until(() => h.said().length === 2, 'the other check did not start after the landing');
   h.end('other');
   assert.equal(await other.done, 0, other.output);
+});
+
+test('waiting for the check lock says why once without printing every failed lock attempt', { skip }, async (t) => {
+  const h = host(t);
+  const bin = path.join(h.base, 'bin');
+  const retries = path.join(h.base, 'retries');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\nif [ "$1" = 1 ]; then printf x >>"$THREADBEAR_TEST_RETRIES"; fi\nexec /bin/sleep "$@"\n', { mode: 0o755 });
+  const busy = await h.hold('lock');
+  const waits = h.turn('after', 'wait', 'waits', { ...process.env, PATH: `${bin}:${process.env.PATH}`, THREADBEAR_TEST_RETRIES: retries });
+  await until(() => waits.output.includes('Waiting for another check on testhost'), 'the check never explained its wait');
+  await until(() => h.held('gate'), 'the check never started waiting on the check lock');
+  await until(() => fs.existsSync(retries) && fs.readFileSync(retries, 'utf8').length >= 2, 'the lock was not tried twice');
+  assert.doesNotMatch(waits.output, /already locked/);
+  assert.equal(waits.output.match(/Waiting for another check/g)?.length, 1);
+  assert.deepEqual(h.said(), []);
+  busy.kill('SIGKILL');
+  await until(() => h.said().includes('waits'), 'the waiting check did not run once the lock was free');
+  h.end('waits');
+  assert.equal(await waits.done, 0, waits.output);
+});
+
+test('a broken lock path still reports its error rather than looking like a busy host', { skip }, async (t) => {
+  const h = host(t);
+  fs.symlinkSync(path.join(h.base, 'missing', 'lock'), path.join(h.base, 'lock'));
+  const run = h.turn('first', 'now', 'broken');
+  const code = await run.done;
+  assert.notEqual(code, 0);
+  assert.notEqual(code, 75);
+  assert.match(run.output, /cannot open|failed to open|No such file/i);
+  assert.deepEqual(h.said(), []);
 });
 
 test('the command runs in the folder it was started from, not the check folder', { skip }, async (t) => {

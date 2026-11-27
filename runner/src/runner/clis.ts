@@ -210,7 +210,7 @@ export const clisPart = {
     if (version && version !== this.codexVersion) {
       const changed = this.codexVersion !== undefined || this.codexMissing;
       this.codexVersion = version;
-      if (changed && !this.stopping) void this.probeModels((a) => a.provider === 'codex');
+      if (changed && !this.stopping) void this.probeModels((a) => a.provider === 'codex', true);
     }
     this.codexMissing = codex?.status === 'missing';
   },

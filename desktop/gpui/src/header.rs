@@ -546,6 +546,12 @@ impl Threadbear {
             .open_thread()
             .cloned()
             .filter(|_| self.home_page().is_none() && self.projects.open.is_none());
+        let coordinator = self
+            .projects
+            .open
+            .is_some()
+            .then(|| self.render_coordinator_bar(cx))
+            .flatten();
         let back = self.render_history_button(true, cx);
         let forward = self.render_history_button(false, cx);
         let share = thread
@@ -559,6 +565,7 @@ impl Threadbear {
         h_flex()
             .flex_none()
             .items_center()
+            .children(coordinator)
             .child(back)
             .child(forward)
             .children(share)
@@ -1644,24 +1651,57 @@ impl Threadbear {
     /// again until the runner answers; the runner's reading after the reset
     /// lifts the block, and a thread waiting for room carries on by itself.
     pub(crate) fn use_reset(&mut self, account: String, cx: &mut Context<Self>) {
-        if !self.resetting.insert(account.clone()) {
+        self.use_reset_on(None, account, cx);
+    }
+
+    /// Use a reset for one of `runner`'s logins (a remote thread's login
+    /// list), or this Mac's with None. This Mac's runner spends it on its own
+    /// login of the same email if it has one (one subscription), else on
+    /// that runner through Convex. The key it spins under is
+    /// `reset_key`'s.
+    pub(crate) fn use_reset_on(
+        &mut self,
+        runner: Option<String>,
+        account: String,
+        cx: &mut Context<Self>,
+    ) {
+        let key = reset_key(runner.as_deref(), &account);
+        if !self.resetting.insert(key.clone()) {
             return;
         }
         cx.notify();
         let client = self.client.clone();
+        let mut params = json!({ "accountId": account });
+        if let Some(runner) = &runner {
+            params["runnerId"] = json!(runner);
+        }
         cx.spawn(async move |this, cx| {
-            let res = call(client, "accounts.useReset", json!({ "accountId": account })).await;
+            let res = call(client, "accounts.useReset", params).await;
             this.update(cx, |t, cx| {
-                t.resetting.remove(&account);
-                let name =
-                    threadbear_core::logins::short_account_name(&account, &t.logins.accounts);
+                t.resetting.remove(&key);
+                let logins = match runner.as_deref() {
+                    Some(r) => t.remote.logins.get(r).unwrap_or(&t.logins),
+                    None => &t.logins,
+                };
+                let name = threadbear_core::logins::short_account_name(&account, &logins.accounts);
                 match res {
                     Ok(v) => {
                         // The login as the runner has it after the reset, so
                         // the box goes now rather than with the next
-                        // accounts.updated (up to 5 s later).
-                        if v["account"].is_object() {
-                            t.logins.replace_account(&v["account"]);
+                        // accounts.updated (up to 5 s later). Another
+                        // runner's list is read again instead: the answer
+                        // may be this Mac's twin of that login.
+                        match runner.clone() {
+                            Some(r) => {
+                                if v["account"].is_object() {
+                                    t.logins.replace_same_login(&v["account"]);
+                                }
+                                t.load_remote_logins(r, cx);
+                            }
+                            None if v["account"].is_object() => {
+                                t.logins.replace_account(&v["account"]);
+                            }
+                            None => {}
                         }
                         match v["outcome"].as_str() {
                             Some("reset") | Some("alreadyRedeemed") => {
@@ -1688,6 +1728,11 @@ impl Threadbear {
             .ok();
         })
         .detach();
+    }
+
+    /// Whether a Use a reset is on its way for this login (`use_reset_on`).
+    pub(crate) fn resetting_login(&self, runner: Option<&str>, account: &str) -> bool {
+        self.resetting.contains(&reset_key(runner, account))
     }
 
     /// The Usage panel's Find work for it (`accounts.findWork`): the runner
@@ -2730,6 +2775,15 @@ fn send_failed_text(what: &str, title: &str, unanswered: bool) -> String {
         format!("{what} Your message to {name} hasn't shown up there, so it's back in its box. It may still arrive: look before sending it again.")
     } else {
         format!("{what} Your message to {name} wasn't sent. It's back in its box.")
+    }
+}
+
+/// What a Use a reset spins under: the login's id on this Mac's runner,
+/// `runner/id` on another's, as the same id there is another login.
+pub(crate) fn reset_key(runner: Option<&str>, account: &str) -> String {
+    match runner {
+        Some(runner) => format!("{runner}/{account}"),
+        None => account.to_owned(),
     }
 }
 

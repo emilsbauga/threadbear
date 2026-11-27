@@ -1,10 +1,11 @@
-// threadbear://thread/<id> links from outside the app: BrowserBear's Open
+// threadbear://thread/<id> and threadbear://new?text= links from outside the app: BrowserBear's Open
 // thread pill on an agent's Chrome tab runs `open` on one, and the thread comes
 // up in the window as it does from a notification (the Swift app's
 // `application(_:open:)`). The bundle claims the scheme in its Info.plist
 // (desktop/scripts/install-app.sh, which also says which of the two apps gets
 // the links while both are installed). A link is input from outside the app,
-// so all it can do is name a thread to show (threadbear_core::thread_link);
+// so all it can do is name a thread to show, or fill in the new-thread box
+// for Mike to send (threadbear_core::thread_link);
 // anything else under the scheme is left alone.
 use crate::app::Threadbear;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver};
@@ -33,6 +34,12 @@ pub(crate) fn listen(
 ) {
     cx.spawn(async move |cx| {
         while let Some(urls) = links.next().await {
+            // A new thread to start (Earshot's Ask Claude): the box, filled in.
+            if let Some(link) = urls.iter().rev().find_map(|u| thread_link::new_thread(u)) {
+                let app = app.clone();
+                cx.update(|cx| compose(&app, window, link, true, cx));
+                continue;
+            }
             let Some(id) = thread_link::last_thread(urls.iter().map(String::as_str)) else {
                 continue;
             };
@@ -65,6 +72,73 @@ pub(crate) fn show(
             .ok();
         })
         .ok();
+}
+
+/// A `threadbear://new` link: the new-thread box, in its project and folder
+/// when this Mac has them, with the link's words in it. Nothing is sent: Mike
+/// reads it and presses Send.
+pub(crate) fn compose(
+    app: &WeakEntity<Threadbear>,
+    window: AnyWindowHandle,
+    link: thread_link::NewThreadLink,
+    activate: bool,
+    cx: &mut App,
+) {
+    if activate {
+        cx.activate(true);
+    }
+    window
+        .update(cx, |_, window, cx| {
+            if activate {
+                window.activate_window();
+            }
+            app.update(cx, |this, cx| this.compose_from_link(link, window, cx))
+                .ok();
+        })
+        .ok();
+}
+
+/// `~/x` as this user's `/Users/me/x`, as project folders are kept.
+fn expand_home(path: &str) -> String {
+    match (path.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{}/{rest}", home.trim_end_matches('/')),
+        _ => path.to_owned(),
+    }
+}
+
+impl Threadbear {
+    /// The new-thread box from a link. A project this Mac doesn't have, or a
+    /// folder that isn't one of the project's, is left out rather than
+    /// trusted: the link can come from any app.
+    pub(crate) fn compose_from_link(
+        &mut self,
+        link: thread_link::NewThreadLink,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let project = link
+            .project
+            .as_deref()
+            .and_then(|id| self.project(id))
+            .cloned();
+        match &project {
+            Some(p) => self.new_thread_in_project(&p.id, cx),
+            None => {
+                self.set_mode(crate::shell::SidebarMode::Inbox, cx);
+                self.new_thread(cx);
+                self.choose_new_thread_runner(None, true, cx);
+            }
+        }
+        if let (Some(p), Some(folder)) = (&project, link.folder.as_deref()) {
+            let folder = expand_home(folder);
+            if let Some(f) = p.folders.iter().find(|f| expand_home(f) == folder) {
+                self.new_thread.picks.cwd = Some(f.clone());
+            }
+        }
+        let composer = self.ensure_new_composer(window, cx);
+        composer.update(cx, |c, cx| c.replace_text(link.text, cx));
+        cx.notify();
+    }
 }
 
 impl Threadbear {
@@ -155,6 +229,11 @@ pub(crate) fn automation(
     cx: &mut App,
 ) -> Result<serde_json::Value, String> {
     let url = cmd["url"].as_str().ok_or("url is the link")?;
+    if let Some(link) = thread_link::new_thread(url) {
+        let weak = app.downgrade();
+        cx.defer(move |cx| compose(&weak, window, link, false, cx));
+        return Ok(serde_json::json!("ok"));
+    }
     match thread_link::thread_id(url) {
         Some(id) => {
             // After this command's own update of the window is over.

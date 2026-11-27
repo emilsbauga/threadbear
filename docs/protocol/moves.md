@@ -482,7 +482,9 @@ the mirror back as state. The Mac app doesn't use it.
   and permission mode; `Account` as `id, provider, title, note?, email?,
   plan?, defaultModel?, usage?`, never `configDir`; from backend API 90
   also `loginEndsAt?`, `signedOut?` and `yearToken?` (`{ madeAt? }`), for
-  the Runners panel's logins; from backend API 20
+  the Runners panel's logins; from backend API 104 also `resetHint?` and
+  `usage.resets` (with its `readAt`), so another runner, the phone and the
+  website see a Codex login's resets and the hint to use one; from backend API 20
   also `models?` (each `id, title, effortLevels?, defaultEffort?`) and
   `defaultEffort?`, for the phone's new thread pickers). The same at start,
   and the accounts again once a heartbeat first says the backend is at 20.

@@ -325,6 +325,8 @@ test('a refused login fails the turn as auth, and its made-up reply is dropped',
   // The words alone are enough.
   const [byText] = normalizer().handle({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login', duration_ms: 5 });
   assert.equal((byText as any).result.errorKind, 'auth');
+  const [pastDue] = normalizer().handle({ type: 'result', subtype: 'success', is_error: true, result: "Claude Code can't use your Claude subscription, usually because a payment is past due · Pay or renew at https://claude.ai/settings/billing (if you just paid, try again shortly), or use an Anthropic API key instead", duration_ms: 5 });
+  assert.equal(pastDue && 'result' in pastDue ? pastDue.result.errorKind : undefined, 'auth');
 });
 
 test("a turn that couldn't reach the API fails as network; an answer from the API doesn't", () => {
@@ -664,7 +666,8 @@ test("a Codex login's usage resets: kept from its reading, dropped once one has 
   store.onChange((ids) => told.push(ids));
   const expires = new Date(s.clock.now() + 60 * 60_000).toISOString();
   store.record('codex-2', { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 0 }], blocked: true, resets: { available: 2, nextExpiresAt: expires } });
-  assert.deepEqual(store.usageFor(codex)?.resets, { available: 2, nextExpiresAt: expires });
+  // Stamped with when it was read, so the newest read wins on every runner.
+  assert.deepEqual(store.usageFor(codex)?.resets, { available: 2, nextExpiresAt: expires, readAt: new Date(s.clock.now()).toISOString() });
   // A reading without a count (an update, not a read) keeps it.
   store.record('codex-2', { windows: [{ kind: 'weekly', title: 'Weekly', remainingPercent: 0 }] });
   assert.equal(store.usageFor(codex)?.resets?.available, 2);

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { tmpDir } from '../helpers/fakes.ts';
 import { key } from '../helpers/upstream-harness.ts';
 import { signersPath } from '../../src/upstream.ts';
-import { buildCheckup, checkupOff, countErrors, landingChecks, failingPatches, formatCheckup, parseLogLine, postDraft, readState, releasesOnMain, saveDraft, scrubForPosting, skipped, type Checkup } from '../../src/checkup.ts';
+import { buildCheckup, BURST_GAP_MS, checkupOff, countErrors, landingChecks, failingPatches, formatCheckup, parseLogLine, postDraft, readState, releasesOnMain, safeErrorCause, saveDraft, scrubForPosting, skipped, topStackSourceFile, type Checkup } from '../../src/checkup.ts';
 
 const DAY = 86_400_000;
 const NOW = Date.parse('2026-11-19T12:00:00Z');
@@ -270,4 +270,154 @@ test('a skipped check-up still moves where the next one counts from', () => {
   const home = tmpDir('tb-checkup-home-');
   skipped(home, NOW);
   assert.equal(readState(home).lastAt, new Date(NOW).toISOString());
+});
+
+test('safeErrorCause and topStackSourceFile extract only allowlisted causes and runner src frames', () => {
+  assert.equal(safeErrorCause("Error: ENOSPC: no space left on device, write '/Users/alice/secret'"), 'ENOSPC');
+  assert.equal(safeErrorCause('TypeError: Cannot read properties of undefined'), 'TypeError');
+  assert.equal(safeErrorCause('TypeError: connect ECONNREFUSED 127.0.0.1:4444'), 'TypeError (ECONNREFUSED)');
+  assert.equal(safeErrorCause('AcpExitedError: process died in /Users/alice/private'), 'AcpExitedError');
+  assert.equal(safeErrorCause('Error: something private with MYSECRETWORD'), undefined);
+  assert.equal(safeErrorCause(undefined), undefined);
+
+  const stack = [
+    'Error: secret text at /fake/src/main.ts:1:1',
+    '    at node:internal/timers:512:7',
+    '    at foo (/Users/alice/app/node_modules/pkg/src/index.js:10:2)',
+    '    at bar (/Users/alice/Library/Application Support/Threadbear/runner/releases/r1/src/runner/worktrees.ts:42:9)',
+    '    at baz (/Users/alice/Library/Application Support/Threadbear/runner/releases/r1/src/main.ts:10:1)',
+  ].join('\n');
+  assert.equal(topStackSourceFile(stack), 'runner/worktrees.ts');
+  assert.equal(topStackSourceFile('TypeError: boom\n    at check (C:\\Users\\bob\\runner\\src\\task-reminders.ts:12:3)'), 'task-reminders.ts');
+  assert.equal(topStackSourceFile('Error: at /Users/alice/runner/src/main.ts:1:1'), undefined, 'line 0 never counts as a stack frame');
+  assert.equal(topStackSourceFile('Error: x\n    at /Users/alice/runner/src/../secret.ts:1:1'), undefined, 'dot-dot rejected');
+});
+
+test('countErrors: safe causes, burst collapsing, fork attribution, reinstall code and non-bug filtering', () => {
+  const MIN = 60_000;
+  const t0 = NOW - DAY;
+  const lines = [
+    // 5 ENOSPC save errors in a single 40-minute burst (each < 15 min apart)
+    logLine(t0, 'ERROR', 'could not save thread', { error: "Error: ENOSPC: no space left, open '/Users/alice/t1'" }),
+    logLine(t0 + 10 * MIN, 'ERROR', 'could not save thread', { error: 'Error: ENOSPC: no space left' }),
+    logLine(t0 + 20 * MIN, 'ERROR', 'could not save thread', { error: 'Error: ENOSPC: no space left' }),
+    logLine(t0 + 30 * MIN, 'ERROR', 'could not save thread', { error: 'Error: ENOSPC: no space left' }),
+    logLine(t0 + 40 * MIN, 'ERROR', 'could not save thread', { error: 'Error: ENOSPC: no space left' }),
+    // 2 separate incidents (> BURST_GAP_MS apart) of a Threadbear RPC method
+    logLine(t0, 'ERROR', 'request failed', { method: 'threads.send', error: 'TypeError: boom' }),
+    logLine(t0 + BURST_GAP_MS + 60_000, 'ERROR', 'request failed', { method: 'threads.send', error: 'TypeError: boom' }),
+    // Fork-only RPC method -> goes to otherErrors, never named
+    logLine(t0, 'ERROR', 'request failed', { method: 'reminders.sync', error: 'TypeError: offline' }),
+    // Fork-only unhandled rejection (top frame not in Mike's release) -> goes to otherErrors, never named
+    logLine(t0, 'ERROR', 'unhandled rejection', { error: 'TypeError: fetch failed\n    at tick (/Users/wayne/runner/src/task-reminders.ts:44:5)\n    at main (/Users/wayne/runner/src/main.ts:10:1)' }),
+    // Threadbear unhandled rejection (top frame in Mike's release) -> named with file & cause
+    logLine(t0, 'ERROR', 'unhandled rejection', { error: 'TypeError: bad\n    at take (/Users/alice/runner/src/handover.ts:88:3)' }),
+    // Reinstall finished carries integer exit code, never raw reason text
+    logLine(t0, 'ERROR', 'reinstall finished', { code: 1, reason: 'failed at /Users/alice/secret' }),
+    // Known non-bugs are skipped
+    logLine(t0, 'ERROR', 'model call failed', { error: 'rate limit' }),
+    logLine(t0, 'ERROR', 'convex sync failed; will retry', { error: 'TypeError: fetch failed' }),
+  ];
+
+  const r = countErrors(
+    lines,
+    NOW - 14 * DAY,
+    () => true,
+    {
+      knownMethod: (m) => m === 'threads.send',
+      knownSourceFile: (f) => f === 'handover.ts' || f === 'main.ts',
+    },
+  );
+
+  assert.equal(r.otherErrors, 2, 'fork RPC method + fork unhandled rejection counted as other');
+  assert.deepEqual(r.errors, [
+    { message: 'request failed', count: 2, cause: 'threads.send, TypeError' },
+    { message: 'could not save thread', count: 5, cause: 'ENOSPC', bursts: 1, spanSeconds: 2400 },
+    { message: 'reinstall finished', count: 1, cause: 'exit 1' },
+    { message: 'unhandled rejection in handover.ts', count: 1, cause: 'TypeError' },
+  ]);
+
+  const formatted = formatCheckup({
+    sinceDays: 3,
+    errors: r.errors,
+    otherErrors: r.otherErrors,
+    updateFailing: false,
+    patches: [],
+    otherPatchesFailing: 0,
+    health: { rolledBack: true, restartGuardTripped: true, lowDiskGb: 0.6 },
+  });
+  assert.match(formatted, /- 2x request failed \(threads\.send, TypeError\)/);
+  assert.match(formatted, /- 5x could not save thread \(ENOSPC\), 1 burst over 40 min/);
+  assert.match(formatted, /- 1x reinstall finished \(exit 1\)/);
+  assert.match(formatted, /- 1x unhandled rejection in handover\.ts \(TypeError\)/);
+  assert.match(formatted, /A runner release rolled back after crashing in the last 3 days\./);
+  assert.match(formatted, /The error-restart guard tripped in the last 3 days\./);
+  assert.match(formatted, /Disk space is low right now \(0\.6 GB free\)\./);
+  assert.doesNotMatch(formatted, /reminders|task-reminders|alice|wayne|secret/);
+});
+
+test('buildCheckup verifies RPC methods, stack files and health state against the release and home dir', async () => {
+  const dir = tmpDir('tb-checkup-sig-');
+  const g = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+  g('init', '-q', '-b', 'main');
+  g('remote', 'add', 'origin', 'https://github.com/someone/threadbear.git');
+  fs.mkdirSync(path.join(dir, 'runner', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'runner', 'src', 'rpc.ts'), "case 'threads.send': log.error('request failed');\n");
+  fs.writeFileSync(path.join(dir, 'runner', 'src', 'main.ts'), "log.error('unhandled rejection');\n");
+  fs.writeFileSync(path.join(dir, 'runner', 'src', 'handover.ts'), 'export const ok = true;\n');
+  g('add', '.');
+  g('commit', '-q', '-m', 'init');
+  g('tag', 'release/2026-11-25');
+
+  const home = tmpDir('tb-checkup-health-');
+  fs.mkdirSync(path.join(home, 'runner'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'run'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'runner', 'state.json'), JSON.stringify({
+    current: 'r1',
+    previous: null,
+    lastGood: 'r1',
+    boots: [],
+    rolledBack: { from: 'r2', to: 'r1', at: new Date(NOW - DAY).toISOString() },
+  }));
+  fs.writeFileSync(path.join(home, 'run', 'error-exits.json'), JSON.stringify({
+    release: 'r2',
+    exits: [],
+    tripped: { at: new Date(NOW - DAY).toISOString(), lastErrorAt: new Date(NOW - DAY).toISOString(), errors: 4 },
+  }));
+
+  const lines = [
+    logLine(NOW - DAY, 'ERROR', 'request failed', { method: 'threads.send', error: 'Error: EACCES: denied' }),
+    logLine(NOW - DAY, 'ERROR', 'request failed', { method: 'custom.forkMethod', error: 'Error: boom' }),
+    logLine(NOW - DAY, 'ERROR', 'unhandled rejection', { error: 'TypeError: x\n    at fn (/x/runner/src/handover.ts:10:1)' }),
+    logLine(NOW - DAY, 'ERROR', 'unhandled rejection', { error: 'TypeError: x\n    at fn (/x/runner/src/fork-only.ts:10:1)' }),
+  ];
+
+  const c = await buildCheckup({
+    home,
+    checkout: dir,
+    logLines: lines,
+    patches: [],
+    updateFailing: false,
+    now: NOW,
+    freeBytes: Math.round(2.4 * 1024 ** 3),
+  });
+
+  assert.deepEqual(c.errors, [
+    { message: 'request failed', count: 1, cause: 'threads.send, EACCES' },
+    { message: 'unhandled rejection in handover.ts', count: 1, cause: 'TypeError' },
+  ]);
+  assert.equal(c.otherErrors, 2);
+  assert.deepEqual(c.health, { rolledBack: true, restartGuardTripped: true, lowDiskGb: 2.4 });
+
+  // Healthy free disk omits lowDiskGb
+  const healthy = await buildCheckup({
+    home: tmpDir('tb-checkup-ok-'),
+    checkout: dir,
+    logLines: [],
+    patches: [],
+    updateFailing: false,
+    now: NOW,
+    freeBytes: 50 * 1024 ** 3,
+  });
+  assert.equal(healthy.health, undefined);
 });

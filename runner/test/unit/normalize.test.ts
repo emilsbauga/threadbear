@@ -542,6 +542,7 @@ test('sub-agents: started, progress and finish become subagent updates (recorded
   const first = ups.filter((u) => u.id === 'ab1373fe8b7475ff5');
   assert.deepEqual(first[0], {
     id: 'ab1373fe8b7475ff5',
+    runId: '0mvq9jtf0-7c8d0b07',
     started: true,
     status: 'running',
     background: true,
@@ -575,6 +576,20 @@ test('sub-agents: failed and killed, nested, and one a resumed CLI reports', () 
     { id: 'old', activity: 'Reading the router', toolUses: 4 },
   ]);
   assert.deepEqual(ups(sys('task_notification', { task_id: 'old', status: 'stopped', summary: '' })), [{ id: 'old', status: 'stopped' }]);
+});
+
+test('sub-agents: resumed task generations survive normalization and late old completions are ignored', () => {
+  const n = new ClaudeNormalizer(ctx());
+  const ups = (msg: Record<string, unknown>) => n.handle(msg).filter((o): o is Extract<AdapterOutput, { kind: 'subagent' }> => o.kind === 'subagent').map((o) => o.update);
+  const started = (runId: string, toolUseId: string) => sys('task_started', { task_id: 'worker', run_id: runId, task_type: 'local_agent', subagent_type: 'coordinator-worker', tool_use_id: toolUseId, description: 'Read marker' });
+  assert.equal(ups(started('run-001', 'first'))[0].runId, 'run-001');
+  const resumed = ups(started('run-002', 'resume'))[0];
+  assert.equal(resumed.runId, 'run-002');
+  assert.equal(resumed.itemId, 'resume');
+  assert.deepEqual(n.handle(sys('task_notification', { task_id: 'worker', run_id: 'run-001', status: 'completed', summary: 'Old result' })), [], 'a late result also creates no stale wake note');
+  assert.deepEqual(ups(sys('task_updated', { task_id: 'worker', run_id: 'run-001', patch: { status: 'completed' } })), []);
+  assert.deepEqual(ups(sys('task_updated', { task_id: 'worker', run_id: 'run-002', patch: { status: 'running' } })), [{ id: 'worker', runId: 'run-002', status: 'running' }]);
+  assert.deepEqual(ups(sys('task_notification', { task_id: 'worker', run_id: 'run-002', status: 'completed', summary: 'New result' })), [{ id: 'worker', runId: 'run-002', status: 'completed', summary: 'New result' }]);
 });
 
 test("sub-agents: the model comes from its own replies, and a change of model is reported", () => {

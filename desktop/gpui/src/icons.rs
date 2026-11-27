@@ -26,10 +26,6 @@ const BUBBLE_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox
 /// title), so at 16.5 px it covers what the Swift one does.
 const HAND_RAISED_FILLED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="black"><rect x="4" y="5.2" width="3" height="10.4" rx="1.5"/><rect x="7.4" y="2.2" width="3" height="12" rx="1.5"/><rect x="10.8" y="1" width="3" height="13" rx="1.5"/><rect x="14.2" y="2.6" width="3" height="11.6" rx="1.5"/><path d="M4 12h13.2v1.4l1.2-2.6c.5-1 1.5-1.3 2.2-.8.6.4.7 1.2.4 1.9l-2.6 6.6c-.9 2.4-3 4.1-5.8 4.1h-2.2C6.8 22.6 4 19.9 4 16.4z"/></g></svg>"#;
 
-/// The Canvas page's mark (thread_canvas.rs): three windows joined by
-/// arrows, in Lucide's line style.
-const CANVAS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="8" width="6" height="8" rx="1.5"/><rect x="15.5" y="2.5" width="6" height="7" rx="1.5"/><rect x="15.5" y="14.5" width="6" height="7" rx="1.5"/><path d="M8.5 11c3 0 3.5-5 7-5"/><path d="M8.5 13c3 0 3.5 5 7 5"/></svg>"#;
-
 /// `lock.open`, Full access's mark: SF's has the shackle swung up and out to
 /// the right of the body, where Lucide's stands over it, so it read as a
 /// closed lock beside the Swift one. An outline in the text colour, about as
@@ -116,7 +112,6 @@ pub fn try_symbol(name: &str) -> Option<Icon> {
         "star.fill" => return Some(Icon::default().data(STAR_FILLED)),
         "bear.plus" => return Some(Icon::default().data(BEAR_PLUS)),
         "bubble.left.fill" => return Some(Icon::default().data(BUBBLE_FILLED)),
-        "rectangle.3.group" => return Some(Icon::default().data(CANVAS)),
         "star.slash" => IconName::StarOff,
         "tray" | "tray.full" => IconName::Inbox,
         "tray.and.arrow.up" => IconName::ArchiveRestore,

@@ -5,6 +5,9 @@
 // 24 Nov 2026: the Omi thread sat under Hibernating with nothing in it to
 // say a check-in booked for 9:45 pm had put it there).
 //
+// The app never folds these into a turn's work (RowContent::is_place_note
+// in desktop/core, which knows them by how they start: keep it in step).
+//
 // The moves an agent's own end_turn makes (snooze, waitFor, archive) and the
 // ones Threadbear makes by itself (the quiet inbox, a wake) already write
 // their own line with more detail; these cover the rest.
@@ -40,8 +43,15 @@ export function archivedNote(o: { by: ArchivedBy; now: number; timeZone: string;
   return `Archived ${byWho(o.by)} on ${shortWhen(o.now, o.timeZone)}${o.why ? `: ${o.why}` : ''}.`;
 }
 
-export function unarchivedNote(o: { who: Who; now: number; timeZone: string }): string {
-  return `Brought back from the archive ${byWho(o.who)} on ${shortWhen(o.now, o.timeZone)}.`;
+export function unarchivedNote(o: { who: Who; now: number; timeZone: string; why?: string }): string {
+  return `Brought back from the archive ${byWho(o.who)} on ${shortWhen(o.now, o.timeZone)}${o.why ? `: ${o.why}` : ''}.`;
+}
+
+// The quiet inbox's own (experiment quietInboxMine, runner/inbox-guess.ts):
+// named, so Mike knows what moved it, with the model's reason. Hovering a
+// line naming Quiet inbox says what it is (the app's QUIET_INBOX_TIP).
+export function quietArchivedNote(o: { why: string; now: number; timeZone: string }): string {
+  return `Archived by Quiet inbox on ${shortWhen(o.now, o.timeZone)}: it finished with nothing for you, and Opus judged you didn't need to see it. ${o.why}`;
 }
 
 // Idle with nothing for Mike and a schedule booked: the sidebar puts it

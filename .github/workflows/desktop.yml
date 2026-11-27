@@ -29,6 +29,7 @@ on:
       - runner/src/rpc-auth.ts
       - runner/src/reviews.ts
       - runner/src/samples.ts
+      - runner/src/well-formed-json.ts
       - web/src/sections.ts
       - web/src/format.ts
       - mock-runner/**
@@ -44,6 +45,7 @@ on:
       - runner/src/rpc-auth.ts
       - runner/src/reviews.ts
       - runner/src/samples.ts
+      - runner/src/well-formed-json.ts
       - web/src/sections.ts
       - web/src/format.ts
       - mock-runner/**
@@ -181,6 +183,13 @@ jobs:
       - name: GIF regression tests
         if: ${{ !matrix.specsOnly }}
         run: cargo test --locked --manifest-path desktop/Cargo.toml -p threadbear-gpui --features automation --test gif_frames
+      # The vendored Windows platform's own tests (desktop/vendor/gpui-pre-windows),
+      # which the workspace's cargo test doesn't reach: where GPUI is told the
+      # pointer went when it leaves the window, so hover and tooltips clear
+      # (25 Nov).
+      - name: Windows pointer-leave tests
+        if: runner.os == 'Windows' && !matrix.specsOnly
+        run: cargo test --locked --manifest-path desktop/Cargo.toml -p gpui-pre-windows --lib pointer_left
       - name: Loader repaint and lifetime regressions
         if: ${{ !matrix.specsOnly }}
         run: |

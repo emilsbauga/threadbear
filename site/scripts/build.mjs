@@ -130,10 +130,10 @@ function showcase() {
   // a bar along its foot that fills for as long as its clip runs. Clicking one jumps to its clip.
   const features = SLIDES.map(([, iconName, title, text], i) =>
     `          <li class="feat${i === 0 ? " on" : ""}"><button type="button"${i === 0 ? ' aria-current="true"' : ""}><span class="feat-icon">${icon(iconName)}</span><span class="feat-title">${title}</span><span class="feat-text">${text}</span><span class="feat-bar"></span></button></li>`);
-  // Muted and playsinline, so phones play them in place without asking. Only the first loads
-  // straight away; site.js loads each next one while the one before plays.
+  // Muted and playsinline, so phones play them in place. The posters show until the player
+  // comes into view and site.js starts playback.
   const clips = SLIDES.map(([name, , , , alt], i) =>
-    `            <video class="slide${i === 0 ? " on" : ""}" src="/clips/${name}.mp4" poster="/clips/${name}.webp" width="1600" height="1058" muted playsinline preload="${i === 0 ? "auto" : "none"}" aria-label="${escape(alt)}"${i === 0 ? "" : ' aria-hidden="true"'}></video>`);
+    `            <video class="slide${i === 0 ? " on" : ""}" src="/clips/${name}.mp4" poster="/clips/${name}.webp" width="1600" height="1058" muted playsinline preload="none" aria-label="${escape(alt)}"${i === 0 ? "" : ' aria-hidden="true"'}></video>`);
   return `<div class="player" aria-label="What Threadbear does">
         <ol class="feats">
 ${features.join("\n")}
@@ -321,8 +321,14 @@ function faq() {
   return `<div class="faq-list">\n${items.join("\n")}\n      </div>`;
 }
 
-/** schema.org data for the home page, so search engines know what Threadbear is. */
+/** Schema.org data for the home page, including the site's preferred name in search. */
 function structuredData() {
+  const website = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: "Threadbear",
+    url: `${SITE_URL}/`,
+  };
   const app = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -342,7 +348,7 @@ function structuredData() {
     "@type": "FAQPage",
     mainEntity: FAQ.map(([q, a]) => ({ "@type": "Question", name: q, acceptedAnswer: { "@type": "Answer", text: a.replace(/<[^>]+>/g, "") } })),
   };
-  const json = JSON.stringify([app, faqPage]).replace(/</g, "\\u003c");
+  const json = JSON.stringify([website, app, faqPage]).replace(/</g, "\\u003c");
   return `<script type="application/ld+json">${json}</script>`;
 }
 

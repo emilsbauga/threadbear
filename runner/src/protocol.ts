@@ -129,7 +129,15 @@ export type AccountUsage = {
 
 // A Codex login's free "Full reset" credits, each of which restores its
 // 5-hour and weekly limits at once. nextExpiresAt: the soonest one to expire.
-export type UsageResets = { available: number; nextExpiresAt?: string };
+// readAt: when this count was read, on whichever runner read it, so the
+// newest read wins wherever the login is signed in.
+export type UsageResets = { available: number; nextExpiresAt?: string; readAt?: string };
+
+// A usage reset worth using now (docs/protocol/settings.md, "Telling Mike
+// about resets"), worked out by reset-hint.ts alone. out: the login is out
+// of room. expiring: the soonest reset expires within 3 days and the week
+// is used enough that a reset buys something back.
+export type ResetHint = { why: 'out' | 'expiring'; available: number; nextExpiresAt?: string };
 
 export type Account = {
   piProfileId?: string;
@@ -164,6 +172,9 @@ export type Account = {
   // not its 28-day sign-in. madeAt, when known, is when; loginEndsAt is
   // then a year on. The token itself never leaves the runner.
   yearToken?: { madeAt?: string };
+  // A usage reset worth using now (reset-hint.ts); absent when there's
+  // nothing to say.
+  resetHint?: ResetHint;
 };
 
 export type CliPolicy = 'auto' | 'notify' | 'off';
@@ -322,6 +333,8 @@ export type ThreadSummary = {
   // it's still archived by Threadbear (docs/protocol/threads.md, "Inbox guess").
   quietlyArchived?: { at: string; why: string };
   starredAt?: string; // in the Starred section above the Inbox, unless archived
+  /** This thread coordinates the project; absent for ordinary threads. */
+  coordinatorProjectId?: string;
   preview: string;
   lastSeq: number;
   lastSeenSeq: number;
@@ -843,11 +856,11 @@ export type CodexTurnUsage = {
 // images: pictures pasted into the reply, each placed by a [Picture N] marker
 // in reply, as a message's are (Mike, 17 Nov: a picture pasted in the review
 // window went in as its file path).
-// marks: Mike's own marks on the pictures (the reviewCanvas experiment),
+// marks: Mike's own marks on the pictures,
 // each placed by a [Mark N] marker in reply.
 export type ReviewDraft = { pickedId?: string; pickedIds?: string[]; notes: Record<string, string>; reply?: string; images?: ImageRef[]; none?: true; marks?: ReviewUserMark[] };
 
-// Marks on a picture (the reviewCanvas experiment, docs/protocol/events.md
+// Marks on a picture (docs/protocol/events.md
 // "Marks: the canvas"). box: x0, y0, x1, y1 as fractions of the picture
 // from its top left. An agent's mark rides on its shot; Mike's on the draft,
 // naming its option and shot (0-based), with the stroke he drew and a
@@ -863,7 +876,7 @@ export type ReviewUserMark = { n: number; kind: ReviewUserMarkKind; optionId: st
 // media: a video (video/mp4, video/quicktime), sound (audio/mpeg, audio/mp4,
 // audio/aac, audio/wav) or page (text/html) the window plays or shows in
 // place of image, which is then its still (a sound's waveform).
-// marks: the agent's marks on it (the reviewCanvas experiment).
+// marks: the agent's marks on it.
 export type ReviewShot = { title?: string; image: ImageRef; media?: ImageRef; marks?: AgentMark[] };
 
 export type DesignReview = {
@@ -983,6 +996,10 @@ export type EventBody =
       asks?: Ask[];
       // With needs "nothing": end_turn's suggested follow-ups.
       next?: string[];
+      // "one" when the follow-ups are mutually exclusive directions to choose between; absent means "any" (multi-pick).
+      nextPick?: 'one';
+      // Index into `next` of the agent's recommendation when nextPick is "one".
+      nextSuggested?: number;
       needsFrom?: 'tool' | 'text';
       // Review by another lab: what the reviewer found so far and what the
       // agent did about each, on the turn that answered them
@@ -990,7 +1007,7 @@ export type EventBody =
       review?: LabReviewLedger;
     }
   // The ticks on a card of asks, the whole set each time. Outside any turn.
-  | { type: 'asks.ticked'; asksSeq: number; ticked: number[] }
+  | { type: 'asks.ticked'; asksSeq: number; ticked: number[]; resolved?: number[] }
   // wake: a background task's notification that went into the running
   // turn, which opens a turn that's had its end_turn again (needs.ts,
   // takenEndTurn).
@@ -1042,7 +1059,7 @@ export type NeedsWho = 'you' | 'nothing';
 // (suggested, an index into options) marked; he can always write his own.
 // optionNotes: with one reply, what each option does if Mike picks it, in
 // the options' order ("" for none); the card draws them under the labels.
-export type Ask = { action: string; where?: string; reply?: string; why?: string; options?: string[]; optionNotes?: string[]; suggested?: number; links?: AskLink[] };
+export type Ask = { action: string; taskId?: string; where?: string; reply?: string; why?: string; options?: string[]; optionNotes?: string[]; suggested?: number; links?: AskLink[] };
 // Somewhere to go to do or judge an ask: a web page, or a file or folder
 // on this Mac (an absolute or ~ path). The app shows each as a button.
 export type AskLink = { title: string; url: string };
@@ -1109,6 +1126,9 @@ export type Schedule = {
   model?: string;
   effort?: EffortLevel;
   permissionMode?: PermissionMode;
+  // Each thread it starts begins starred (the Starred section above the
+  // Inbox). Only for one that starts a new thread each time.
+  starThreads?: boolean;
   // Set by the runner when there's no permissionMode: the mode its runs start
   // with, this runner's default (runner.json's defaults.permissionMode, else
   // full). Absent for another runner's schedule, whose default isn't known

@@ -15,6 +15,8 @@ export type ToolGateDeps = {
   // "Always allow" rules: a tool's full name, as for Claude.
   rules(): Iterable<string>;
   addRules(rules: string[]): void;
+  // Coordinator/helper boundary, checked before Full access or allow rules.
+  checkCoordinator?(fullName: string, args: Record<string, unknown>): string | undefined;
 };
 
 export type ToolGateCall = {
@@ -28,6 +30,8 @@ export type ToolGateCall = {
 // { allowed: false, message } is said to the agent as the tool's result.
 export async function gateThreadbearTool(deps: ToolGateDeps, call: ToolGateCall): Promise<{ allowed: true } | { allowed: false; message: string }> {
   const { fullName, args } = call;
+  const refused = deps.checkCoordinator?.(fullName, args);
+  if (refused) return { allowed: false, message: refused };
   const alwaysAsk = ALWAYS_ASK_TOOLS.has(fullName);
   const readOnly = NEVER_ASK_TOOLS.has(fullName) || call.readOnlyHint === true;
   const allowed = !alwaysAsk && [...deps.rules()].includes(fullName);

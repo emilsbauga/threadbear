@@ -73,6 +73,15 @@ export type StartSessionOptions<Identity = Account> = {
   // the session must be able to stop them applying if the thread leaves
   // Full (askBeforeEveryTool).
   heldGrants?: boolean;
+  // The coordinator's boundary is checked by the adapter before any native
+  // allow rule, including Full access. Helper identity comes from the SDK's
+  // hook envelope, never tool arguments. The host owns pause and run records.
+  coordinator?: {
+    role: 'coordinator' | 'helper';
+    context?: () => string | undefined;
+    checkTool(call: { name: string; input: Record<string, unknown>; agentId?: string; toolUseId?: string }): string | undefined;
+    helperQuestion?(agentId: string, questions: Question[]): void;
+  };
 };
 
 export type TurnResult = {
@@ -170,6 +179,9 @@ export type BackgroundTask = { id: string; type: string; kind: BackgroundKind; d
 
 export type SubagentUpdate = {
   id: string;
+  // The native task's current execution. A resumed task keeps its id but
+  // gets a new runId; late events from an older run must not finish it.
+  runId?: string;
   started?: boolean; // the first report of it
   itemId?: string;
   parentId?: string;
@@ -327,6 +339,8 @@ export class RewindRefusedError extends Error {
 export type UseResetOutcome = 'reset' | 'nothingToReset' | 'noCredit' | 'alreadyRedeemed';
 export type UseResetResult = { outcome: UseResetOutcome; limits?: Extract<AdapterOutput, { kind: 'limits' }> };
 
+export const MODEL_LIST_TIMEOUT_MS = 25_000;
+
 export type SkillChoice = { name: string; title?: string; description: string; path: string; scope: string };
 export type SkillList = { skills: SkillChoice[]; errors: string[] };
 
@@ -335,7 +349,7 @@ export interface AgentAdapter<Identity = Account> {
   start(opts: StartSessionOptions<Identity>, sink: SessionSink): AgentSession;
   // What the account's CLI offers as models, without starting a turn.
   // Optional: a provider without a picker leaves it out.
-  models?(account: Identity): Promise<ModelChoice[]>;
+  models?(account: Identity, signal?: AbortSignal): Promise<ModelChoice[]>;
   skills?(account: Identity, cwd: string): Promise<SkillList>;
   // Codex: spends one of the login's usage-limit resets (Mike's click on
   // the limit box, never by itself) and reads its limits after.

@@ -21,6 +21,7 @@ use threadbear_core::composer::{effort_porridge, effort_title, ContextMeter};
 use threadbear_core::inbox::ThreadSummary;
 use threadbear_core::logins::{
     permission_help, permission_title, ChipSettings, PickerRow, PickerSection, RunnerLogins,
+    UNPOOLED_COLUMN,
 };
 
 /// What a chip row needs to know, read when it's drawn.
@@ -31,6 +32,8 @@ pub(crate) struct ChipData {
     pub(crate) is_new: bool,
     /// Another runner's thread, or a new one for another runner.
     pub(crate) away: Option<AwayRunner>,
+    /// That runner's id, None for this Mac's: where a Use a reset goes.
+    pub(crate) runner: Option<String>,
 }
 
 /// The other runner a box's thread (or new draft) is on (`ComposerControls`).
@@ -82,6 +85,7 @@ impl Composer {
                 logins: RunnerLogins::default(),
                 is_new: self.thread_id.is_none(),
                 away: None,
+                runner: None,
             };
         };
         let t = app.read(cx);
@@ -98,6 +102,7 @@ impl Composer {
                 logins: t.draft_logins(),
                 is_new: true,
                 away,
+                runner: t.new_thread.picks.runner.clone(),
             };
         }
         let summary = self
@@ -105,7 +110,8 @@ impl Composer {
             .as_ref()
             .and_then(|id| t.threads.get(id).map(|t| ThreadSummary::clone(t)))
             .or_else(|| self.pane.upgrade().map(|p| p.read(cx).summary.clone()));
-        let (logins, away) = match summary.as_ref().and_then(|s| s.runner_id.clone()) {
+        let runner = summary.as_ref().and_then(|s| s.runner_id.clone());
+        let (logins, away) = match runner.clone() {
             None => (t.logins.clone(), None),
             // Another runner's thread: its Mac's logins, once they've come.
             Some(runner) => {
@@ -125,6 +131,7 @@ impl Composer {
             logins,
             is_new: false,
             away,
+            runner,
         }
     }
 
@@ -225,6 +232,46 @@ impl Composer {
         };
         let model = (!row.is_default).then(|| row.id.clone());
         if settings.uses_pools() {
+            if column == UNPOOLED_COLUMN {
+                if settings.is_pinned_to_unpooled() && provider == settings.provider {
+                    return self.set_model(model, cx);
+                }
+                let Some(account_id) = threadbear_core::new_thread::pick_unpooled_login(
+                    &data.logins.pools,
+                    &data.logins.accounts,
+                    provider,
+                    None,
+                ) else {
+                    return;
+                };
+                // Name the row's model explicitly on a move so the star
+                // (runner's default for that provider) isn't cleared onto the
+                // login's own default.
+                let model = Some(row.id.clone());
+                if data.is_new {
+                    return self.change_thread(
+                        |_| {},
+                        json!({ "accountId": account_id, "model": model }),
+                        cx,
+                    );
+                }
+                let switched = (provider != settings.provider)
+                    .then(|| provider_defaults(&data.logins, provider.to_owned()));
+                let (guess_id, guess_model) = (account_id.clone(), model.clone());
+                self.change_thread(
+                    move |t| {
+                        t.account_id = guess_id;
+                        t.pool_id = None;
+                        if let Some(to) = switched {
+                            switch_provider(t, to);
+                        }
+                        t.model = guess_model;
+                    },
+                    json!({ "accountId": account_id, "model": model }),
+                    cx,
+                );
+                return;
+            }
             // The thread's own pool and provider, or its pinned login: just
             // the model (ThreadSettings.pick).
             if column == PINNED_COLUMN
@@ -426,6 +473,109 @@ impl Composer {
     }
 
     // ---- The row ----
+
+    /// The ordinary pool/model menu rendered as dialog form fields. Project
+    /// coordinators belong to this runner and always use its permissions.
+    pub(crate) fn render_coordinator_picker(
+        &mut self,
+        busy: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let data = self.chip_data(cx);
+        let Some(settings) = data.settings() else {
+            return div().into_any_element();
+        };
+        let uses_pools = settings.uses_pools();
+        let field_busy = busy || self.chips_busy(cx).0;
+        let label_color = style::secondary_text(cx);
+        let label = move |text: &'static str| {
+            div()
+                .w(px(48.))
+                .flex_none()
+                .text_right()
+                .text_size(px(size::LABEL))
+                .text_color(label_color)
+                .child(text)
+        };
+        let mut rows = v_flex().w_full().gap(px(10.));
+        if !uses_pools {
+            let composer = cx.entity().downgrade();
+            let trigger = CoordinatorFieldTrigger {
+                id: "coordinator-account-field".into(),
+                title: settings.account_chip_title().into(),
+                icon: Icon::from(IconName::CircleUser),
+                accent_icon: false,
+                tip: settings.account_chip_help().into(),
+                badge: settings.account_badge(),
+                busy: field_busy,
+                selected: false,
+            };
+            let field = if field_busy {
+                trigger.into_any_element()
+            } else {
+                Popover::new("coordinator-account")
+                    .trigger_style(StyleRefinement::default().w_full().min_w_0())
+                    .anchor(Anchor::BottomCenter)
+                    .trigger(trigger)
+                    .content(move |_, window, cx| {
+                        crate::composer_account::picker(composer.clone(), window, cx)
+                    })
+                    .into_any_element()
+            };
+            rows = rows.child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(label("Login"))
+                    .child(div().flex_1().min_w_0().child(field)),
+            );
+        }
+        let model_trigger = CoordinatorFieldTrigger {
+            id: "coordinator-model-field".into(),
+            title: settings.model_chip_title().into(),
+            icon: model_chip_icon(&settings),
+            accent_icon: uses_pools && settings.pool().is_some(),
+            tip: settings.model_chip_help().into(),
+            badge: settings.model_chip_badge(),
+            busy: field_busy,
+            selected: false,
+        };
+        let model_field = if field_busy {
+            model_trigger.into_any_element()
+        } else {
+            let picker = self.picker_state(window, cx);
+            Popover::new("coordinator-model")
+                .trigger_style(StyleRefinement::default().w_full().min_w_0())
+                .anchor(Anchor::BottomCenter)
+                .trigger(model_trigger)
+                .content(move |_, _, _| div().m(gpui_kit::px(-12.)).child(picker.clone()))
+                .into_any_element()
+        };
+        rows = rows
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(label("Model"))
+                    .child(div().flex_1().min_w_0().child(model_field)),
+            )
+            .child(
+                div()
+                    .pl(px(60.))
+                    .text_size(px(size::DETAIL))
+                    .line_height(px(17.))
+                    .text_color(style::quiet_text(cx))
+                    .child(if uses_pools {
+                        "Runs on this Mac \u{00B7} Uses the same pool and model picker as a normal thread."
+                    } else {
+                        "Runs on this Mac \u{00B7} Uses the same login and model picker as a normal thread."
+                    }),
+            );
+        rows.into_any_element()
+    }
 
     pub(crate) fn render_controls(
         &mut self,
@@ -882,27 +1032,13 @@ impl Composer {
         };
         let title = settings.model_chip_title();
         let tip = settings.model_chip_help();
-        // The pool's own icon when one was picked for it, a pinned login's
-        // person, else the provider's logo (`modelChipLogo`, `modelChipIcon`).
-        let icon: Icon = if !settings.uses_pools() {
-            crate::icons::provider_mark(&settings.provider)
-        } else {
-            match settings.pool() {
-                None => Icon::from(IconName::CircleUser),
-                Some(pool) => match pool.icon.as_deref().filter(|i| !i.is_empty()) {
-                    Some(symbol) => crate::icons::try_symbol(symbol)
-                        .unwrap_or_else(|| Icon::from(IconName::Layers)),
-                    None => crate::icons::provider_mark(&settings.provider),
-                },
-            }
-        };
         let trigger = ChipTrigger {
             busy: self.chips_busy(cx).0,
             badge: settings.model_chip_badge(),
             id: "composer-model-chip".into(),
             kind: TriggerKind::Chip,
             title: title.into(),
-            icon: Some(icon),
+            icon: Some(model_chip_icon(&settings)),
             tip: tip.into(),
             selected: false,
         };
@@ -1179,14 +1315,6 @@ impl Composer {
 
 const PINNED_COLUMN: &str = "@pinned";
 
-/// A pool's button in the picker's rail: its logos' size and the gap
-/// between them, the button's inset from the rail's edges and its own
-/// padding inside its highlight.
-const POOL_LOGO: f32 = 15.;
-const POOL_LOGO_GAP: f32 = 5.;
-const POOL_BUTTON_INSET: f32 = 6.;
-const POOL_BUTTON_PAD: f32 = 10.;
-
 /// A quiet menu chip: icon, short label and a small chevron in secondary
 /// colours (ComposerChip).
 enum TriggerKind {
@@ -1344,6 +1472,154 @@ impl RenderOnce for ChipTrigger {
     }
 }
 
+/// The pool's own icon when one was picked for it, a pinned login's person,
+/// else the provider's logo (`modelChipLogo`, `modelChipIcon`).
+fn model_chip_icon(settings: &ChipSettings<'_>) -> Icon {
+    if !settings.uses_pools() {
+        return crate::icons::provider_mark(&settings.provider);
+    }
+    match settings.pool() {
+        None => Icon::from(IconName::CircleUser),
+        Some(pool) => match pool.icon.as_deref().filter(|i| !i.is_empty()) {
+            Some(symbol) => {
+                crate::icons::try_symbol(symbol).unwrap_or_else(|| Icon::from(IconName::Layers))
+            }
+            None => crate::icons::provider_mark(&settings.provider),
+        },
+    }
+}
+
+/// Full-width dropdown field trigger used inside the Add a coordinator dialog,
+/// opening the ordinary pool/model or login popover.
+#[derive(IntoElement)]
+struct CoordinatorFieldTrigger {
+    id: ElementId,
+    title: SharedString,
+    icon: Icon,
+    accent_icon: bool,
+    tip: SharedString,
+    badge: Option<ChipBadge>,
+    busy: bool,
+    selected: bool,
+}
+
+impl Selectable for CoordinatorFieldTrigger {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl RenderOnce for CoordinatorFieldTrigger {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let label: SharedString = if self.title.is_empty() {
+            self.tip.clone()
+        } else {
+            self.title.clone()
+        };
+        let fill = if cx.theme().mode.is_dark() {
+            style::primary_opacity(cx, 0.05)
+        } else {
+            style::button_fill(cx)
+        };
+        let icon_color = if self.accent_icon {
+            style::accent(cx)
+        } else {
+            style::faint_icon(cx)
+        };
+        let title_el = if let Some((pool, model)) = self.title.split_once(" \u{00B7} ") {
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap(px(5.))
+                .text_size(px(size::LABEL))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(cx.theme().foreground)
+                        .child(pool.to_owned()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(style::secondary_text(cx))
+                        .child(format!("\u{00B7} {model}")),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(size::LABEL))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(cx.theme().foreground)
+                .child(self.title)
+                .into_any_element()
+        };
+        h_flex()
+            .id(self.id)
+            .w_full()
+            .min_w_0()
+            .h(px(34.))
+            .px(px(10.))
+            .gap(px(8.))
+            .items_center()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(style::hairline(cx))
+            .bg(fill)
+            .when(!self.busy, |s| {
+                s.cursor_pointer()
+                    .hover(|h| h.bg(style::primary_opacity(cx, 0.09)))
+            })
+            .test_support()
+            .role(Role::Button)
+            .aria_label(label)
+            .tip(self.tip)
+            .child(div().flex_none().flex().child(if self.busy {
+                crate::spinner::Spinner::new()
+                    .color(style::secondary_text(cx))
+                    .with_size(px(13.))
+                    .into_any_element()
+            } else {
+                self.icon
+                    .with_size(px(14.))
+                    .text_color(icon_color)
+                    .into_any_element()
+            }))
+            .child(title_el)
+            .when_some(self.badge, |s, badge| {
+                let color = if badge.is_stop() {
+                    cx.theme().danger
+                } else {
+                    style::needs_you(cx)
+                };
+                s.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(size::DETAIL))
+                        .text_color(color)
+                        .whitespace_nowrap()
+                        .child(badge_words(&badge)),
+                )
+            })
+            .child(
+                div().flex_none().flex().child(
+                    Icon::from(IconName::ChevronDown)
+                        .with_size(px(12.))
+                        .text_color(style::faint_icon(cx)),
+                ),
+            )
+    }
+}
+
 /// How readily the machine chip shrinks against the other chips' 1: a
 /// machine's name is short and says where the thread is, so "laptop" stays
 /// whole while "Claude · Opus 5.5" gives way to "Claude · Op…" (Mike's
@@ -1471,15 +1747,30 @@ fn menu_row(
         .when(checked, |s| s.child(style::menu::tick(cx)))
 }
 
-/// The model picker's popover (ModelPickerView): search, rail, the column's
-/// models and the effort levels, on the `Composer` it picks for.
+/// The model picker's popover (ModelPickerView): Pool strip at the top (when
+/// pools are in use), Provider icon rail down the left, then search, the
+/// active provider's models, effort levels and Login line on the right.
 pub(crate) struct ModelPickerView {
     composer: WeakEntity<Composer>,
     search: Entity<InputState>,
-    column: Option<String>,
+    /// Selected pool id (or PINNED_COLUMN), None for the thread's own.
+    pool: Option<String>,
+    /// Selected provider id in the left rail, None for the thread's own / first.
+    provider: Option<String>,
     /// The Login line's list is open.
     login_open: bool,
     _subs: Vec<Subscription>,
+}
+
+struct PickerListing {
+    /// Selected pool id (or PINNED_COLUMN) when pools are on, empty otherwise.
+    pool: String,
+    /// Providers shown down the left rail.
+    providers: Vec<String>,
+    /// Active provider in the left rail, if any.
+    active_provider: Option<String>,
+    /// Model sections shown in the list, older rows sorted last in each.
+    sections: Vec<PickerSection>,
 }
 
 impl ModelPickerView {
@@ -1499,31 +1790,35 @@ impl ModelPickerView {
         ModelPickerView {
             composer,
             search,
-            column: None,
+            pool: None,
+            provider: None,
             login_open: false,
             _subs: vec![sub],
         }
     }
 
-    /// The column the list shows and its sections for what's typed in the
-    /// search: each of the column's providers' models (a pool can have
-    /// several), older ones last in each.
-    fn listed(&self, data: &ChipData, cx: &App) -> Option<(String, Vec<PickerSection>)> {
+    /// Works out the active pool, provider rail and model sections for what's
+    /// currently selected and typed in the search box.
+    fn listed(&self, data: &ChipData, cx: &App) -> Option<PickerListing> {
         let settings = data.settings()?;
-        let own_column = if settings.uses_pools() {
-            settings
-                .pool()
-                .map_or(PINNED_COLUMN.to_owned(), |p| p.id.clone())
+        let pool = if settings.uses_pools() {
+            settings.resolve_picker_pool(self.pool.as_deref(), PINNED_COLUMN)
         } else {
-            settings.provider.clone()
+            String::new()
         };
-        let column = self.column.clone().unwrap_or(own_column);
+        let providers = settings.picker_providers(&pool);
+        let active_provider = settings.resolve_picker_provider(&pool, self.provider.as_deref());
         let query = self.search.read(cx).value().to_string();
-        let mut sections = settings.sections(&column, &query);
+        let mut sections = settings.sections_for(&pool, active_provider.as_deref(), &query);
         for section in &mut sections {
             section.rows.sort_by_key(|r| r.is_older);
         }
-        Some((column, sections))
+        Some(PickerListing {
+            pool,
+            providers,
+            active_provider,
+            sections,
+        })
     }
 
     /// Return in the search: the first model listed, as a click on it would.
@@ -1533,15 +1828,25 @@ impl ModelPickerView {
             return;
         };
         let data = composer.read(cx).chip_data(cx);
-        let Some((column, sections)) = self.listed(&data, cx) else {
+        let pools = data.settings().is_some_and(|s| s.uses_pools());
+        let Some(listing) = self.listed(&data, cx) else {
             return;
         };
-        let Some((provider, first)) = sections
+        let Some((provider, first)) = listing
+            .sections
             .into_iter()
             .find_map(|s| s.rows.into_iter().next().map(|r| (s.provider, r)))
         else {
             return;
         };
+        let column = if pools {
+            listing.pool
+        } else {
+            provider.clone()
+        };
+        self.pool = None;
+        self.provider = None;
+        self.login_open = false;
         composer.update(cx, |c, cx| {
             c.pick_model(&first, &column, &provider, &data, cx)
         });
@@ -1550,10 +1855,6 @@ impl ModelPickerView {
 }
 
 impl Render for ModelPickerView {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "baselined at 296 lines when the lint was turned on (20 Nov 2026); split it when it's next worked on"
-    )]
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(composer) = self.composer.upgrade() else {
             return div().into_any_element();
@@ -1563,259 +1864,27 @@ impl Render for ModelPickerView {
             return div().into_any_element();
         };
         let pools = settings.uses_pools();
-        // A pool's column has its providers' logos over its title, and its
-        // logins and best room under it ("3 · 61%", `Pools.railSubtitle`);
-        // without pools a column is a provider, drawn as its logo alone.
-        let columns: Vec<(String, String, Option<String>, Vec<String>)> = if pools {
-            data.logins
-                .pools
-                .iter()
-                .map(|p| {
-                    let count =
-                        threadbear_core::new_thread::pool_logins(p, &data.logins.accounts, None)
-                            .len();
-                    let subtitle =
-                        match threadbear_core::new_thread::best_room(p, &data.logins.accounts) {
-                            Some(best) => format!(
-                                "{count} \u{00B7} {}",
-                                threadbear_core::new_thread::percent(best)
-                            ),
-                            None => count.to_string(),
-                        };
-                    (
-                        p.id.clone(),
-                        p.title.clone(),
-                        Some(subtitle),
-                        threadbear_core::new_thread::pool_providers(p, &data.logins.accounts),
-                    )
-                })
-                .collect()
-        } else {
-            let mut seen: Vec<String> = Vec::new();
-            for a in &data.logins.accounts {
-                if !seen.iter().any(|p| p == a.provider_id()) {
-                    seen.push(a.provider_id().to_owned());
-                }
-            }
-            seen.into_iter()
-                .map(|p| (p.clone(), data.logins.provider_title(&p), None, vec![p]))
-                .collect()
-        };
         let query = self.search.read(cx).value().to_string();
-        let Some((column, sections)) = self.listed(&data, cx) else {
+        let Some(listing) = self.listed(&data, cx) else {
             return div().into_any_element();
         };
         let levels = settings.effort_levels();
         let chosen = settings.effective_effort();
-        // A pool's button fits its row of logos with room either side: four
-        // in a 96pt rail touched the edges of its highlight (20 Nov).
-        let most_logos = columns.iter().map(|c| c.3.len()).max().unwrap_or(0) as f32;
-        let rail_width = if pools {
-            (most_logos * POOL_LOGO
-                + (most_logos - 1.).max(0.) * POOL_LOGO_GAP
-                + 2. * (POOL_BUTTON_INSET + POOL_BUTTON_PAD))
-                .max(96.)
-        } else {
-            44.
-        };
-        let width = if pools { 344. + rail_width } else { 380. };
-        let this = cx.entity().downgrade();
-        let (fg, secondary) = (cx.theme().foreground, cx.theme().muted_foreground);
-        let (active_fill, hover_fill) = (
-            style::primary_opacity(cx, 0.1),
-            style::primary_opacity(cx, 0.06),
+        let width = if pools { 392. } else { 380. };
+        let rail = self.render_provider_rail(
+            &data,
+            &listing.providers,
+            listing.active_provider.as_deref(),
+            cx,
         );
-        // Down the whole of the popover's left, a shade off its fill
-        // (`PickerRail`). Its height comes from the row below stretching it,
-        // and v_flex keeps its buttons at the top.
-        let rail = v_flex()
-            .w(px(rail_width))
-            .flex_shrink_0()
-            .py(px(6.))
-            .gap(px(4.))
-            .bg(style::primary_opacity(cx, 0.03))
-            .children(columns.into_iter().enumerate().map(
-                |(i, (id, title, subtitle, providers))| {
-                    let active = id == column;
-                    let this = this.clone();
-                    let color = if active { fg } else { secondary };
-                    let tip = match &subtitle {
-                        Some(sub) if pools => format!("{title}: {sub}"),
-                        _ => title.clone(),
-                    };
-                    let button = if pools {
-                        // `PoolButton`: the pool's providers' logos, its title, and
-                        // its logins and best room.
-                        v_flex()
-                            .id(("picker-rail", i))
-                            .mx(px(POOL_BUTTON_INSET))
-                            .h(px(if providers.is_empty() { 44. } else { 64. }))
-                            .px(px(POOL_BUTTON_PAD))
-                            .items_center()
-                            .justify_center()
-                            .gap(px(1.))
-                            .rounded(px(7.))
-                            .when(!providers.is_empty(), |s| {
-                                s.child(h_flex().gap(px(POOL_LOGO_GAP)).pb(px(4.)).children(
-                                    providers.iter().map(|p| {
-                                        crate::icons::provider_mark(p)
-                                            .with_size(px(POOL_LOGO))
-                                            .text_color(color)
-                                    }),
-                                ))
-                            })
-                            .child(
-                                div()
-                                    .max_w_full()
-                                    .text_size(px(12.))
-                                    .text_color(color)
-                                    .truncate()
-                                    .child(title),
-                            )
-                            .when_some(subtitle, |s, sub| {
-                                s.child(
-                                    div()
-                                        .text_size(px(10.5))
-                                        .text_color(style::faint_text(cx))
-                                        .child(sub),
-                                )
-                            })
-                    } else {
-                        // `IconButton`: a provider's logo, its name in the tip.
-                        v_flex()
-                            .id(("picker-rail", i))
-                            .mx(px(7.))
-                            .size(px(30.))
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(7.))
-                            .child(
-                                crate::icons::provider_mark(
-                                    providers.first().map_or("claude", String::as_str),
-                                )
-                                .with_size(px(16.))
-                                .text_color(color),
-                            )
-                    };
-                    button
-                        .cursor_pointer()
-                        .when(active, |s| s.bg(active_fill))
-                        .when(!active, |s| s.hover(move |s| s.bg(hover_fill)))
-                        .tip(tip)
-                        .on_click(move |_, _, cx| {
-                            if let Some(this) = this.upgrade() {
-                                this.update(cx, |this, cx| {
-                                    this.column = Some(id.clone());
-                                    cx.notify();
-                                });
-                            }
-                        })
-                },
-            ));
-        let row_view = |row: PickerRow, provider: &str, cx: &App| {
-            let composer = self.composer.clone();
-            let (data, column, picked, section) = (
-                self.chip_snapshot(cx),
-                column.clone(),
-                row.clone(),
-                provider.to_owned(),
-            );
-            model_row(row, provider, cx, move |window, cx| {
-                if let Some(c) = composer.upgrade() {
-                    c.update(cx, |c, cx| {
-                        c.pick_model(&picked, &column, &section, &data, cx)
-                    });
-                }
-                window.dispatch_action(Box::new(gpui_kit::base::actions::Cancel), cx);
-            })
-        };
-        let heading = |text: SharedString, top: f32, cx: &App| {
-            div()
-                .px(px(10.))
-                .pt(px(top))
-                .pb(px(2.))
-                .text_size(px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(style::faint_text(cx))
-                .child(text)
-        };
-        let mut list = v_flex().p(px(6.)).gap(px(1.));
-        if sections.iter().all(|s| s.rows.is_empty()) {
-            list = list.child(
-                div()
-                    .p(px(10.))
-                    .text_size(px(13.))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if query.is_empty() {
-                        "No models listed yet"
-                    } else {
-                        "Nothing matches"
-                    }),
-            );
-        }
-        for (i, section) in sections.into_iter().enumerate() {
-            // A pool of several providers: each one's models under its name.
-            if let Some(title) = section.title {
-                list = list.child(heading(title.into(), if i == 0 { 4. } else { 12. }, cx));
-            }
-            let (main, older): (Vec<_>, Vec<_>) =
-                section.rows.into_iter().partition(|r| !r.is_older);
-            list = list.children(main.into_iter().map(|r| row_view(r, &section.provider, cx)));
-            if !older.is_empty() {
-                list = list.child(heading("Older".into(), 8., cx)).children(
-                    older
-                        .into_iter()
-                        .map(|r| row_view(r, &section.provider, cx)),
-                );
-            }
-        }
-        let composer_for_effort = self.composer.clone();
-        let effort = (!levels.is_empty()).then(|| {
-            h_flex()
-                .m(px(12.))
-                .p(px(2.))
-                .gap(px(2.))
-                .rounded(px(7.))
-                .bg(style::chip_fill(cx))
-                .children(levels.into_iter().map(|level| {
-                    let active = chosen.as_deref() == Some(level.as_str());
-                    let title = effort_title(&level);
-                    let tip = effort_porridge(&level).unwrap_or(&title).to_owned();
-                    let (composer, level2) = (composer_for_effort.clone(), level.clone());
-                    div()
-                        .id(SharedString::from(format!("effort-{level}")))
-                        .role(Role::Button)
-                        .flex_1()
-                        .h(px(22.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .text_size(px(11.))
-                        .when(active, |s| {
-                            s.bg(cx.theme().background)
-                                .font_weight(FontWeight::SEMIBOLD)
-                        })
-                        .text_color(if active {
-                            cx.theme().foreground
-                        } else {
-                            cx.theme().muted_foreground
-                        })
-                        .hover(|s| s.bg(style::hover_fill(cx)))
-                        .child(title)
-                        .tip(tip)
-                        .on_click(move |_, _, cx| {
-                            if let Some(c) = composer.upgrade() {
-                                c.update(cx, |c, cx| c.set_effort(level2.clone(), cx));
-                            }
-                        })
-                }))
-        });
+        let list = self.render_model_list(&data, &listing, &query, cx);
+        let effort = (!levels.is_empty()).then(|| self.render_effort_bar(levels, chosen, cx));
         // With pools, "Login: Auto (gmail for now)" under the effort levels,
         // opening in place to pin the thread to one of the pool's logins
         // (threadbear_core::login_picker, "The model picker's Login line").
-        let login = pools.then(|| self.render_login_footer(&data, &column, cx));
+        let login = pools.then(|| {
+            self.render_login_footer(&data, &listing.pool, listing.active_provider.as_deref(), cx)
+        });
         let right = v_flex()
             .flex_1()
             .min_w_0()
@@ -1823,7 +1892,7 @@ impl Render for ModelPickerView {
                 h_flex()
                     .h(px(36.))
                     .px(px(12.))
-                    .gap(px(6.))
+                    .gap(px(8.))
                     .border_b_1()
                     .border_color(style::hairline(cx))
                     .child(
@@ -1859,21 +1928,441 @@ impl Render for ModelPickerView {
                     .border_color(style::hairline(cx))
                     .child(l)
             }));
-        // Stretched, so the rail (pools' or the icon rail) and the divider run
-        // down the whole popover beside the list: h_flex centres its children
-        // on the cross axis, which left the rail floating mid-height with its
-        // shade only behind its buttons (12 Nov).
-        h_flex()
-            .w(px(width))
+        // Stretched, so the provider rail and divider run down the full body
+        // beside the list, search, effort and login footer.
+        let body = h_flex()
             .items_stretch()
             .child(rail)
             .child(div().w(px(1.)).bg(style::hairline(cx)))
-            .child(right)
-            .into_any_element()
+            .child(right);
+        if pools {
+            v_flex()
+                .w(px(width))
+                .child(self.render_pool_strip(&data, &listing.pool, cx))
+                .child(body)
+                .into_any_element()
+        } else {
+            body.w(px(width)).into_any_element()
+        }
     }
 }
 
 impl ModelPickerView {
+    /// Top pool strip: each pool's title with its login count and best room
+    /// ("Main  7 · 100%"), plus a divider and "No pool" tab whenever at least
+    /// one login isn't in any pool, wrapping cleanly when there are several.
+    fn render_pool_strip(
+        &self,
+        data: &ChipData,
+        active_pool: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let (fg, secondary, faint) = (
+            cx.theme().foreground,
+            cx.theme().muted_foreground,
+            style::faint_text(cx),
+        );
+        let (warn, danger) = (style::needs_you(cx), cx.theme().danger);
+        let (active_fill, hover_fill) = (
+            style::primary_opacity(cx, 0.11),
+            style::primary_opacity(cx, 0.06),
+        );
+        let sub_color = move |badge: Option<ChipBadge>, active: bool| match badge {
+            Some(b) if b.is_stop() => danger,
+            Some(ChipBadge::Low(_)) => warn,
+            _ if active => secondary,
+            _ => faint,
+        };
+        let format_sub = |count: usize, best: Option<f64>| match best {
+            Some(best) => format!(
+                "{count} \u{00B7} {}",
+                threadbear_core::new_thread::percent(best)
+            ),
+            None => count.to_string(),
+        };
+        let unpooled = threadbear_core::new_thread::unpooled_logins(
+            &data.logins.pools,
+            &data.logins.accounts,
+            None,
+        );
+        let mut strip = h_flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.))
+            .px(px(8.))
+            .py(px(6.))
+            .bg(style::primary_opacity(cx, 0.03))
+            .border_b_1()
+            .border_color(style::hairline(cx))
+            .children(data.logins.pools.iter().enumerate().map(|(i, p)| {
+                let active = p.id == active_pool;
+                let pool_id = p.id.clone();
+                let title = p.title.clone();
+                let logins =
+                    threadbear_core::new_thread::pool_logins(p, &data.logins.accounts, None);
+                let subtitle = format_sub(
+                    logins.len(),
+                    threadbear_core::new_thread::best_room_of(&logins),
+                );
+                let badge = threadbear_core::new_thread::group_chip_badge(&logins);
+                let pool_providers =
+                    threadbear_core::new_thread::pool_providers(p, &data.logins.accounts);
+                let this = this.clone();
+                h_flex()
+                    .id(("picker-pool", i))
+                    .test_support()
+                    .role(Role::Button)
+                    .aria_label(SharedString::from(format!("Pool: {title}")))
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(10.))
+                    .py(px(5.))
+                    .rounded(px(7.))
+                    .cursor_pointer()
+                    .when(active, |s| s.bg(active_fill))
+                    .when(!active, |s| s.hover(move |s| s.bg(hover_fill)))
+                    .tip(format!("{title}: {subtitle}"))
+                    .on_click(move |_, _, cx| {
+                        if let Some(this) = this.upgrade() {
+                            this.update(cx, |this, cx| {
+                                this.pool = Some(pool_id.clone());
+                                let keep = this
+                                    .provider
+                                    .as_deref()
+                                    .is_some_and(|p| pool_providers.iter().any(|x| x == p));
+                                if !keep {
+                                    this.provider = None;
+                                }
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .child(
+                        div()
+                            .max_w(px(180.))
+                            .truncate()
+                            .text_size(px(12.))
+                            .when(active, |s| s.font_weight(FontWeight::SEMIBOLD))
+                            .text_color(if active { fg } else { secondary })
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(sub_color(badge, active))
+                            .child(subtitle),
+                    )
+            }));
+        if !unpooled.is_empty() {
+            let active = active_pool == UNPOOLED_COLUMN;
+            let subtitle = format_sub(
+                unpooled.len(),
+                threadbear_core::new_thread::best_room_of(&unpooled),
+            );
+            let badge = threadbear_core::new_thread::group_chip_badge(&unpooled);
+            let providers = threadbear_core::new_thread::unpooled_providers(
+                &data.logins.pools,
+                &data.logins.accounts,
+            );
+            strip = strip
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(1.))
+                        .h(px(14.))
+                        .mx(px(3.))
+                        .bg(style::hairline(cx)),
+                )
+                .child(
+                    h_flex()
+                        .id("picker-pool-unpooled")
+                        .test_support()
+                        .role(Role::Button)
+                        .aria_label(SharedString::from("Pool: No pool"))
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(10.))
+                        .py(px(5.))
+                        .rounded(px(7.))
+                        .cursor_pointer()
+                        .when(active, |s| s.bg(active_fill))
+                        .when(!active, |s| s.hover(move |s| s.bg(hover_fill)))
+                        .tip(format!("Not in a pool: {subtitle}"))
+                        .on_click(move |_, _, cx| {
+                            if let Some(this) = this.upgrade() {
+                                this.update(cx, |this, cx| {
+                                    this.pool = Some(UNPOOLED_COLUMN.to_owned());
+                                    let keep = this
+                                        .provider
+                                        .as_deref()
+                                        .is_some_and(|p| providers.iter().any(|x| x == p));
+                                    if !keep {
+                                        this.provider = None;
+                                    }
+                                    cx.notify();
+                                });
+                            }
+                        })
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .when(active, |s| s.font_weight(FontWeight::SEMIBOLD))
+                                .text_color(if active { fg } else { secondary })
+                                .child("No pool"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(sub_color(badge, active))
+                                .child(subtitle),
+                        ),
+                );
+        }
+        strip.into_any_element()
+    }
+
+    /// Left icon rail for the providers in the chosen pool (or on the runner
+    /// when pools aren't in use).
+    fn render_provider_rail(
+        &self,
+        data: &ChipData,
+        providers: &[String],
+        active_provider: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let (fg, secondary) = (cx.theme().foreground, cx.theme().muted_foreground);
+        let (active_fill, hover_fill) = (
+            style::primary_opacity(cx, 0.11),
+            style::primary_opacity(cx, 0.06),
+        );
+        v_flex()
+            .w(px(46.))
+            .flex_shrink_0()
+            .py(px(7.))
+            .items_center()
+            .gap(px(5.))
+            .bg(style::primary_opacity(cx, 0.025))
+            .children(providers.iter().enumerate().map(|(i, provider)| {
+                let active = active_provider == Some(provider.as_str());
+                let title = data.logins.provider_title(provider);
+                let color = if active { fg } else { secondary };
+                let provider_id = provider.clone();
+                let this = this.clone();
+                div()
+                    .id(("picker-provider", i))
+                    .test_support()
+                    .role(Role::Button)
+                    .aria_label(SharedString::from(format!("Provider: {title}")))
+                    .size(px(32.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(7.))
+                    .cursor_pointer()
+                    .when(active, |s| s.bg(active_fill))
+                    .when(!active, |s| s.hover(move |s| s.bg(hover_fill)))
+                    .tip(title)
+                    .on_click(move |_, window, cx| {
+                        if let Some(this) = this.upgrade() {
+                            this.update(cx, |this, cx| {
+                                this.provider = Some(provider_id.clone());
+                                if !this.search.read(cx).value().is_empty() {
+                                    this.search
+                                        .update(cx, |s, cx| s.set_value(String::new(), window, cx));
+                                }
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .child(
+                        crate::icons::provider_mark(provider)
+                            .with_size(px(16.))
+                            .text_color(color),
+                    )
+            }))
+            .into_any_element()
+    }
+
+    fn render_model_list(
+        &self,
+        data: &ChipData,
+        listing: &PickerListing,
+        query: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let pools = data.settings().is_some_and(|s| s.uses_pools());
+        let this = cx.entity().downgrade();
+        let row_view = |row: PickerRow, provider: &str, cx: &App| {
+            let composer = self.composer.clone();
+            let this = this.clone();
+            let column = if pools {
+                listing.pool.clone()
+            } else {
+                provider.to_owned()
+            };
+            let (data, picked, section) =
+                (self.chip_snapshot(cx), row.clone(), provider.to_owned());
+            model_row(row, provider, cx, move |window, cx| {
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |this, _| {
+                        this.pool = None;
+                        this.provider = None;
+                        this.login_open = false;
+                    });
+                }
+                if let Some(c) = composer.upgrade() {
+                    c.update(cx, |c, cx| {
+                        c.pick_model(&picked, &column, &section, &data, cx)
+                    });
+                }
+                window.dispatch_action(Box::new(gpui_kit::base::actions::Cancel), cx);
+            })
+        };
+        let unpooled_hint = |provider: &str| -> Option<String> {
+            if !pools || listing.pool != UNPOOLED_COLUMN {
+                return None;
+            }
+            let logins = threadbear_core::new_thread::unpooled_logins(
+                &data.logins.pools,
+                &data.logins.accounts,
+                Some(provider),
+            );
+            match logins.len() {
+                0 => None,
+                1 => Some(format!(
+                    "Pins to {}",
+                    threadbear_core::new_thread::login_name(&logins[0].id, &data.logins.accounts)
+                )),
+                n => Some(format!("{n} unpooled logins")),
+            }
+        };
+        let heading = |text: SharedString, hint: Option<String>, top: f32, cx: &App| {
+            h_flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.))
+                .px(px(10.))
+                .pt(px(top))
+                .pb(px(3.))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(style::faint_text(cx))
+                        .child(text),
+                )
+                .when_some(hint, |s, hint| {
+                    s.child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(style::faint_text(cx))
+                            .truncate()
+                            .child(hint),
+                    )
+                })
+        };
+        let mut list = v_flex().p(px(6.)).gap(px(1.));
+        if listing.sections.iter().all(|s| s.rows.is_empty()) {
+            if query.trim().is_empty() {
+                if let Some(active) = &listing.active_provider {
+                    list = list.child(heading(
+                        data.logins.provider_title(active).into(),
+                        unpooled_hint(active),
+                        4.,
+                        cx,
+                    ));
+                }
+            }
+            return list
+                .child(
+                    div()
+                        .p(px(10.))
+                        .text_size(px(13.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if query.trim().is_empty() {
+                            "No models listed yet"
+                        } else {
+                            "Nothing matches"
+                        }),
+                )
+                .into_any_element();
+        }
+        for (i, section) in listing.sections.iter().cloned().enumerate() {
+            if let Some(title) = section.title {
+                list = list.child(heading(
+                    title.into(),
+                    unpooled_hint(&section.provider),
+                    if i == 0 { 4. } else { 12. },
+                    cx,
+                ));
+            }
+            let (main, older): (Vec<_>, Vec<_>) =
+                section.rows.into_iter().partition(|r| !r.is_older);
+            list = list.children(main.into_iter().map(|r| row_view(r, &section.provider, cx)));
+            if !older.is_empty() {
+                list = list.child(heading("Older".into(), None, 8., cx)).children(
+                    older
+                        .into_iter()
+                        .map(|r| row_view(r, &section.provider, cx)),
+                );
+            }
+        }
+        list.into_any_element()
+    }
+
+    fn render_effort_bar(
+        &self,
+        levels: Vec<String>,
+        chosen: Option<String>,
+        cx: &App,
+    ) -> AnyElement {
+        let composer_for_effort = self.composer.clone();
+        h_flex()
+            .mx(px(12.))
+            .my(px(9.))
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(7.))
+            .bg(style::chip_fill(cx))
+            .children(levels.into_iter().map(|level| {
+                let active = chosen.as_deref() == Some(level.as_str());
+                let title = effort_title(&level);
+                let tip = effort_porridge(&level).unwrap_or(&title).to_owned();
+                let (composer, level2) = (composer_for_effort.clone(), level.clone());
+                div()
+                    .id(SharedString::from(format!("effort-{level}")))
+                    .role(Role::Button)
+                    .flex_1()
+                    .h(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_size(px(11.))
+                    .when(active, |s| {
+                        s.bg(cx.theme().background)
+                            .font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .text_color(if active {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().muted_foreground
+                    })
+                    .hover(|s| s.bg(style::hover_fill(cx)))
+                    .child(title)
+                    .tip(tip)
+                    .on_click(move |_, _, cx| {
+                        if let Some(c) = composer.upgrade() {
+                            c.update(cx, |c, cx| c.set_effort(level2.clone(), cx));
+                        }
+                    })
+            }))
+            .into_any_element()
+    }
+
     fn chip_snapshot(&self, cx: &App) -> ChipData {
         self.composer
             .upgrade()
@@ -1883,28 +2372,47 @@ impl ModelPickerView {
                 logins: RunnerLogins::default(),
                 is_new: false,
                 away: None,
+                runner: None,
             })
     }
 
     /// The Login line (option C, 12 Nov 2026): "Login: Auto (gmail for
-    /// now)", or "Login: gmail" when pinned, and a chevron. A click opens the
-    /// list in place: Auto, then the logins of the pool the rail shows, each
-    /// with its usage line and a bar of the room it has left. For a pinned
-    /// thread's own column, the pool Auto would put it in.
+    /// now)", or "Login: gmail" when pinned (with "(not in a pool)" when
+    /// pinned to an unpooled login), and a chevron. A click opens the list in
+    /// place: Auto then the pool's logins, or the unpooled logins for the
+    /// active provider (with no Auto row) when browsing the "No pool" tab.
     fn render_login_footer(
         &self,
         data: &ChipData,
         column: &str,
+        active_provider: Option<&str>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(settings) = data.settings() else {
             return div().into_any_element();
         };
         let accounts = &data.logins.accounts;
-        let (line, on) =
-            threadbear_core::login_picker::login_line(&settings.account, accounts, settings.pool());
+        let on_unpooled = column == UNPOOLED_COLUMN;
+        let pinned_unpooled = settings.is_pinned_to_unpooled();
+        let (line, on) = threadbear_core::login_picker::login_line_for(
+            &settings.account,
+            accounts,
+            settings.pool(),
+            pinned_unpooled,
+        );
         let open = self.login_open;
         let pinned = settings.pool().is_none();
+        let tip = if on_unpooled {
+            if pinned_unpooled {
+                "Pinned to this unpooled login. Open to pick another unpooled login"
+            } else {
+                "Not in a pool. Open to pick a specific unpooled login"
+            }
+        } else if pinned {
+            "Pinned to this login. Open to pick another, or Auto to let the pool pick"
+        } else {
+            "Let the pool pick, or pin this thread to one login"
+        };
         let header = h_flex()
             .id("picker-login")
             .test_support()
@@ -1918,11 +2426,7 @@ impl ModelPickerView {
             .text_size(px(11.))
             .line_height(px(style::natural_line(11.)))
             .hover(|s| s.bg(style::primary_opacity(cx, 0.04)))
-            .tip(if pinned {
-                "Pinned to this login. Open to pick another, or Auto to let the pool pick"
-            } else {
-                "Let the pool pick, or pin this thread to one login"
-            })
+            .tip(tip)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.login_open = !this.login_open;
                 cx.notify();
@@ -1949,20 +2453,39 @@ impl ModelPickerView {
         if !open {
             return header.into_any_element();
         }
-        let Some(pool_id) = self.login_list_pool(data, column, cx) else {
-            return header.into_any_element();
-        };
-        let Some(pool) = data.logins.pool(&pool_id) else {
-            return header.into_any_element();
-        };
         let now = threadbear_core::chrono::Local::now();
-        let rows = threadbear_core::login_picker::pool_login_rows(
-            pool,
-            accounts,
-            settings.pool().map(|p| p.id.as_str()),
-            pinned.then_some(settings.account.as_str()),
-            &now,
-        );
+        let (pool_id, rows) = if on_unpooled {
+            let rows = threadbear_core::login_picker::unpooled_login_rows(
+                &data.logins.pools,
+                accounts,
+                active_provider,
+                settings.pool().map(|p| p.id.as_str()),
+                pinned.then_some(settings.account.as_str()),
+                &now,
+            );
+            if rows.is_empty() {
+                return header.into_any_element();
+            }
+            (String::new(), rows)
+        } else {
+            let Some(pool_id) = self.login_list_pool(data, column, cx) else {
+                return header.into_any_element();
+            };
+            let Some(pool) = data.logins.pool(&pool_id) else {
+                return header.into_any_element();
+            };
+            let rows = threadbear_core::login_picker::pool_login_rows(
+                pool,
+                accounts,
+                settings.pool().map(|p| p.id.as_str()),
+                pinned.then_some(settings.account.as_str()),
+                &now,
+            );
+            (pool_id, rows)
+        };
+        let Some(app) = self.composer.upgrade().map(|c| c.read(cx).app.clone()) else {
+            return header.into_any_element();
+        };
         let list = v_flex()
             .px(px(6.))
             .pb(px(6.))
@@ -1974,9 +2497,23 @@ impl ModelPickerView {
                     pool_id.clone(),
                     row.id.clone(),
                 );
-                pool_login_row(row, cx, move |window, cx| {
+                let reset = row.reset.as_ref().zip(row.id.clone()).map(|(offer, id)| {
+                    crate::composer_account::reset_line(
+                        &format!("picker-login-{id}"),
+                        offer,
+                        app.clone(),
+                        data.runner.clone(),
+                        id,
+                        cx,
+                    )
+                });
+                pool_login_row(row, reset, cx, move |window, cx| {
                     if let Some(this) = this.upgrade() {
-                        this.update(cx, |this, _| this.login_open = false);
+                        this.update(cx, |this, _| {
+                            this.pool = None;
+                            this.provider = None;
+                            this.login_open = false;
+                        });
                     }
                     if let Some(c) = composer.upgrade() {
                         c.update(cx, |c, cx| c.pick_login(login.clone(), &pool_id, cx));
@@ -2004,6 +2541,7 @@ impl ModelPickerView {
 /// the room left, orange under a quarter and red at its limit.
 fn pool_login_row(
     row: threadbear_core::login_picker::PoolLoginRow,
+    reset: Option<AnyElement>,
     cx: &App,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -2063,7 +2601,8 @@ fn pool_login_row(
                             .text_color(style::secondary_label(cx))
                             .child(sub),
                     )
-                }),
+                })
+                .children(reset),
         )
         .when_some(fill, |s, fill| {
             s.child(
@@ -2266,17 +2805,23 @@ fn model_row(
     let selected = row.is_selected;
     let (fg, secondary) = (cx.theme().foreground, cx.theme().muted_foreground);
     let (selected_fill, hover_fill) = (
-        style::primary_opacity(cx, 0.1),
+        style::primary_opacity(cx, 0.09),
         style::primary_opacity(cx, 0.06),
     );
+    let tile_fill = if selected {
+        style::primary_opacity(cx, 0.12)
+    } else {
+        style::primary_opacity(cx, 0.065)
+    };
     h_flex()
         .id(SharedString::from(format!("model-{provider}-{}", row.id)))
+        .test_support()
         .role(Role::Button)
+        .aria_label(SharedString::from(row.title.clone()))
         .gap(px(10.))
-        .pl(px(6.))
-        .pr(px(10.))
-        .py(px(5.))
-        .rounded(px(8.))
+        .px(px(8.))
+        .py(px(6.))
+        .rounded(px(7.))
         .cursor_pointer()
         .when(selected, |s| s.bg(selected_fill))
         .when(!selected, |s| s.hover(move |s| s.bg(hover_fill)))
@@ -2284,16 +2829,16 @@ fn model_row(
         // `ModelRow`: the provider's logo on a faint tile.
         .child(
             div()
-                .size(px(26.))
+                .size(px(28.))
                 .rounded(px(7.))
-                .bg(style::primary_opacity(cx, 0.07))
+                .bg(tile_fill)
                 .flex()
                 .items_center()
                 .justify_center()
                 .when(row.is_older, |s| s.opacity(0.6))
                 .child(
                     crate::icons::provider_mark(provider)
-                        .with_size(px(15.))
+                        .with_size(px(14.))
                         .text_color(if selected { fg } else { secondary }),
                 ),
         )
@@ -2304,25 +2849,40 @@ fn model_row(
                 .child(
                     div()
                         .text_size(px(13.))
-                        .font_weight(FontWeight::MEDIUM)
+                        .font_weight(FontWeight::SEMIBOLD)
                         .child(row.title.clone()),
                 )
                 .when_some(row.subtitle.clone().filter(|s| !s.is_empty()), |s, sub| {
                     s.child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(px(11.5))
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
                             .child(sub),
                     )
                 }),
         )
-        // The default, as a filled star (`star.fill`, tertiary).
-        .when(row.is_default, |s| {
+        .when(row.is_default || selected, |s| {
             s.child(
-                crate::icons::symbol("star.fill")
-                    .with_size(px(9.))
-                    .text_color(style::faint_text(cx)),
+                h_flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .flex_shrink_0()
+                    // The default, as a filled star (`star.fill`, tertiary).
+                    .when(row.is_default, |s| {
+                        s.child(
+                            crate::icons::symbol("star.fill")
+                                .with_size(px(10.))
+                                .text_color(style::faint_text(cx)),
+                        )
+                    })
+                    .when(selected, |s| {
+                        s.child(
+                            Icon::from(IconName::Check)
+                                .with_size(px(12.))
+                                .text_color(fg),
+                        )
+                    }),
             )
         })
 }
@@ -2363,8 +2923,9 @@ pub(crate) fn picker_lines(composer: &Entity<Composer>, cx: &App) -> Vec<String>
     picker_lines_with(&data, list)
 }
 
-/// The Login line and its list (open or not) for the thread's own pool, or
-/// a pinned thread's Auto pool, as the automation reads and clicks them.
+/// The Login line and its list (open or not) for the thread's own pool,
+/// unpooled logins when pinned to an unpooled login, or a pinned thread's Auto
+/// pool, as the automation reads and clicks them.
 #[cfg(feature = "automation")]
 fn login_list(
     composer: &Entity<Composer>,
@@ -2380,8 +2941,25 @@ fn login_list(
         return None;
     }
     let accounts = &data.logins.accounts;
-    let line =
-        threadbear_core::login_picker::login_line(&settings.account, accounts, settings.pool());
+    let pinned_unpooled = settings.is_pinned_to_unpooled();
+    let line = threadbear_core::login_picker::login_line_for(
+        &settings.account,
+        accounts,
+        settings.pool(),
+        pinned_unpooled,
+    );
+    let now = threadbear_core::chrono::Local::now();
+    if pinned_unpooled {
+        let rows = threadbear_core::login_picker::unpooled_login_rows(
+            &data.logins.pools,
+            accounts,
+            None,
+            None,
+            Some(settings.account.as_str()),
+            &now,
+        );
+        return Some((String::new(), line, rows));
+    }
     let pool_id = match settings.pool() {
         Some(pool) => pool.id.clone(),
         None => composer.read(cx).unpin_pool(data, cx)?,
@@ -2393,7 +2971,7 @@ fn login_list(
         accounts,
         settings.pool().map(|p| p.id.as_str()),
         pinned.then_some(settings.account.as_str()),
-        &threadbear_core::chrono::Local::now(),
+        &now,
     );
     Some((pool_id, line, rows))
 }
@@ -2428,10 +3006,12 @@ fn picker_lines_with(
             lines.push(line);
         }
     };
-    // A pinned thread's own login first, as the picker opens on it.
-    let pinned = (settings.uses_pools() && settings.pool().is_none()).then(|| {
-        threadbear_core::login_picker::pinned_line(&settings.account, &data.logins.accounts)
-    });
+    // A pinned thread's own login first, as the picker opens on it (unless
+    // it's pinned to an unpooled login, which opens on "# [x] No pool").
+    let pinned = (settings.uses_pools()
+        && settings.pool().is_none()
+        && !settings.is_pinned_to_unpooled())
+    .then(|| threadbear_core::login_picker::pinned_line(&settings.account, &data.logins.accounts));
     if let Some(line) = pinned {
         lines.push(format!("# {line}"));
         add_rows(settings.rows(&settings.provider, ""), &mut lines);
@@ -2445,6 +3025,16 @@ fn picker_lines_with(
                 pool.title
             ));
             for section in settings.sections(&pool.id, "") {
+                if let Some(title) = section.title {
+                    lines.push(format!("## {title}"));
+                }
+                add_rows(section.rows, &mut lines);
+            }
+        }
+        if settings.has_unpooled() {
+            let is_own = settings.is_pinned_to_unpooled();
+            lines.push(format!("# {}No pool", if is_own { "[x] " } else { "[ ] " }));
+            for section in settings.sections(UNPOOLED_COLUMN, "") {
                 if let Some(title) = section.title {
                     lines.push(format!("## {title}"));
                 }
@@ -2596,10 +3186,18 @@ pub(crate) fn picker_click(
         }
         // A pinned thread's own login first, as the picker lists it, so a
         // pick there stays on that login rather than moving into a pool.
-        let pinned = settings.pool().is_none().then(|| PINNED_COLUMN.to_owned());
-        pinned
-            .into_iter()
+        let head = if settings.is_pinned_to_unpooled() {
+            Some(UNPOOLED_COLUMN.to_owned())
+        } else if settings.pool().is_none() {
+            Some(PINNED_COLUMN.to_owned())
+        } else {
+            None
+        };
+        let tail = (settings.has_unpooled() && !settings.is_pinned_to_unpooled())
+            .then(|| UNPOOLED_COLUMN.to_owned());
+        head.into_iter()
             .chain(order.iter().map(|p| p.id.clone()))
+            .chain(tail)
             .collect()
     } else {
         let mut providers: Vec<String> = Vec::new();

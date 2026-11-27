@@ -785,6 +785,7 @@ final class AppModel {
     func count(_ section: PhoneSection) -> Int? {
         switch section {
         case .backlog: sections.backlog.count
+        case .coordinators: sections.coordinators.count
         case .starred: sections.starred.count
         case .inbox: sections.inbox.count
         case .running: sections.running.count
@@ -805,6 +806,7 @@ final class AppModel {
     func threads(_ section: PhoneSection) -> [PhoneThread] {
         switch section {
         case .backlog: sections.backlog
+        case .coordinators: sections.coordinators
         case .starred: sections.starred
         case .inbox: sections.inbox
         case .running: sections.running

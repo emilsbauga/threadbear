@@ -13,6 +13,7 @@ import { reviewerLists, type LabReviewer } from './lab-reviewers.ts';
 import { findGatewayClient } from './notion-tasks.ts';
 import { onPath } from './adapters/acp/agents.ts';
 import { dataDirFor, exeName, logFileFor } from './platform.ts';
+import { PROVIDER_INFO } from './providers.ts';
 import { CLI_POLICIES, isEffortLevel, isProvider, type CliPolicy, type EffortLevel, type PermissionMode, type Provider } from './protocol.ts';
 import type { PiProfile } from './protocol.ts';
 import { parsePiProfiles } from './pi-profiles.ts';
@@ -170,11 +171,12 @@ export type Config = {
   keepAwake: boolean;
   // Mike's runner tags a signed release of main once a day for everyone
   // else's copy (src/upstream.ts): runner.json `releases`.
-  releases?: { publish: boolean; signingKey?: string; signingProvider?: string };
-  // The runner's own model calls (src/models/): the pool whose Claude
-  // logins answer them (null: none, so no small jobs) and folders whose
-  // threads are never sent.
-  models: { pool: string | null; privateFolders: string[] };
+  releases?: { publish: boolean; signingKey?: string; signingProvider?: string; delegate?: boolean };
+  // The runner's own model calls (src/models/): the pool whose logins answer
+  // them (null: none, so no small jobs), optional custom provider order inside
+  // that pool (unset: Claude, then Codex, then the rest in pool order), and
+  // folders whose threads are never sent.
+  models: { pool: string | null; privateFolders: string[]; providers?: Provider[] };
   // The Convex mirror (src/sync.ts): the project's URL, whether it's on,
   // the name the phone shows for this runner and its id (made once).
   // THREADBEAR_SYNC=off turns it off for tests and dev runners.
@@ -265,8 +267,8 @@ export type RunnerJson = {
   // bringIn: how often a fork's runner starts a thread to bring in Mike's
   // releases (bring-in.ts): every so many days, 'important' or 'off'.
   // checkup: false stops that thread offering Mike a check-up (checkup.ts).
-  releases?: { publish?: boolean; signingKey?: string; signingProvider?: string; bringIn?: number | 'important' | 'off'; checkup?: boolean };
-  models?: { pool?: string | null; privateFolders?: string[] };
+  releases?: { publish?: boolean; signingKey?: string; signingProvider?: string; delegate?: boolean; bringIn?: number | 'important' | 'off'; checkup?: boolean };
+  models?: { pool?: string | null; privateFolders?: string[]; providers?: unknown };
   // icon: an SF Symbol for this runner in lists (machine.ts works one out).
   // An rpcUrl left from the direct link between Macs (gone 13 Nov 2026) is ignored.
   // full: true sends tool output to your Convex deployment as well, scrubbed first
@@ -515,7 +517,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, opts: { readOnl
     // On for everyone since 10 Nov 2026, after a few days as an experiment
     // on Mike's Mac; Settings turns it off for anyone who'd rather.
     keepAwake: json.keepAwake !== false,
-    ...(json.releases?.publish === true ? { releases: { publish: true, ...(typeof json.releases.signingKey === 'string' ? { signingKey: expand(json.releases.signingKey) } : {}), ...(typeof json.releases.signingProvider === 'string' ? { signingProvider: expand(json.releases.signingProvider) } : {}) } } : {}),
+    ...(json.releases?.publish === true ? { releases: { publish: true, ...(typeof json.releases.signingKey === 'string' ? { signingKey: expand(json.releases.signingKey) } : {}), ...(typeof json.releases.signingProvider === 'string' ? { signingProvider: expand(json.releases.signingProvider) } : {}), ...(json.releases.delegate === true ? { delegate: true } : {}) } } : {}),
     models: modelSettingsFrom(json),
     ...(codexPath ? { codexPath: expand(codexPath) } : {}),
     ...(nonEmpty(json.cursorPath) ? { cursorPath: expand(nonEmpty(json.cursorPath)!) } : {}),
@@ -638,13 +640,38 @@ function cliUpdatesConfig(raw: Partial<CliUpdatesConfig> | undefined, envValue: 
 
 export const DEFAULT_SMALL_MODEL_POOL = 'claude';
 
+// Small-job providers in Mike's chosen order (runner.json `models.providers`).
+// Lenient on disk: unknown or non-smallJobs entries are skipped, duplicates
+// count once. Undefined for absent or null (default order); an explicit empty
+// array is preserved.
+export function parseSmallJobProviders(raw: unknown): Provider[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Provider[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && isProvider(item) && PROVIDER_INFO[item].smallJobs && !out.includes(item)) {
+      out.push(item);
+    }
+  }
+  return out;
+}
+
+export function smallJobProviderProblem(raw: unknown): string | undefined {
+  const allowed = (Object.keys(PROVIDER_INFO) as Provider[]).filter((p) => PROVIDER_INFO[p].smallJobs);
+  if (typeof raw !== 'string' || !isProvider(raw) || !PROVIDER_INFO[raw].smallJobs) {
+    return `models.providers entries must be one of ${allowed.join(', ')}`;
+  }
+  return undefined;
+}
+
 export function modelSettingsFrom(json: RunnerJson): Config['models'] {
   const folders = json.models?.privateFolders;
   const pool = json.models?.pool;
+  const providers = parseSmallJobProviders(json.models?.providers);
   return {
     // Absent or not a string: the Claude pool. null is Mike saying none.
     pool: pool === null ? null : typeof pool === 'string' && pool.trim() ? pool.trim() : DEFAULT_SMALL_MODEL_POOL,
     privateFolders: Array.isArray(folders) ? folders.filter((f): f is string => typeof f === 'string' && f.trim() !== '') : [],
+    ...(providers !== undefined ? { providers } : {}),
   };
 }
 

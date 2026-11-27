@@ -6,6 +6,7 @@
 use crate::composer::Composer;
 use crate::style;
 use gpui_kit::assets::IconName;
+use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::input::{Enter, InputEvent, Textarea, TextareaState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::prelude::*;
@@ -136,6 +137,22 @@ impl Composer {
         threadbear_core::sidebar::work_wait_row(thread, &threadbear_core::chrono::Local::now())
     }
 
+    /// The done card's title: Done, or what it's waiting on with a spinner.
+    /// A long thread title ends in "…" short of Archive, the whole of it in
+    /// the tip (25 Nov: one ran on under the button).
+    fn done_heading(&self, tick: AnyElement, cx: &App) -> AnyElement {
+        match self.waiting_on_work(cx) {
+            Some((words, tip)) => h_flex()
+                .id("waiting-on-work")
+                .flex_1()
+                .min_w_0()
+                .child(card_title(self.waiting_spinner(cx), 4., words, cx))
+                .tip(tip)
+                .into_any_element(),
+            None => card_title(tick, 2.5, "Done", cx).into_any_element(),
+        }
+    }
+
     fn waiting_spinner(&self, cx: &App) -> AnyElement {
         crate::spinner::Spinner::new()
             .with_size(px(13.))
@@ -161,6 +178,9 @@ impl Composer {
                 });
             }
         }
+        self.card
+            .picks
+            .retain(|index, _| !card.resolved.contains(index));
     }
 
     /// The card's saved Something else words (drafts.rs), into each box not
@@ -305,6 +325,9 @@ impl Composer {
         let Some(card) = self.open_card(cx) else {
             return;
         };
+        if !card.can_answer(ask) {
+            return;
+        }
         self.sync_card(&card, cx);
         let key = ask as i64;
         let picked = self.card.picks.get(&key) == Some(&option);
@@ -340,12 +363,11 @@ impl Composer {
                         return;
                     }
                     if let Some(card) = this.open_card(cx) {
-                        if let Some(next) = composer::next_unanswered(
-                            page,
-                            card.asks.len(),
-                            &this.card.picks,
-                            false,
-                        ) {
+                        let mut picks = this.card.picks.clone();
+                        picks.extend(card.resolved.iter().map(|&index| (index, 0)));
+                        if let Some(next) =
+                            composer::next_unanswered(page, card.asks.len(), &picks, false)
+                        {
                             this.set_page(next, cx);
                         }
                     }
@@ -401,7 +423,11 @@ impl Composer {
 
     fn toggle_follow_up(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let key = index as i64;
+        let pick_one = self.open_card(cx).is_some_and(|c| c.next_pick_one());
         if !self.card.next_picks.remove(&key) {
+            if pick_one {
+                self.card.next_picks.clear();
+            }
             self.card.next_picks.insert(key);
             if !cx.reduce_motion() {
                 self.card.ticked = Some(index);
@@ -559,6 +585,9 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.open_card(cx).is_some_and(|card| card.can_answer(ask)) {
+            return;
+        }
         if command || !self.show_unanswered(ask, true, window, cx) {
             self.send(window, cx);
         }
@@ -577,7 +606,8 @@ impl Composer {
         let Some(card) = self.open_card(cx) else {
             return false;
         };
-        let filled = composer::filled_picks(&self.card.picks, &self.card.notes);
+        let mut filled = composer::filled_picks(&self.card.picks, &self.card.notes);
+        filled.extend(card.resolved.iter().map(|&index| (index, 0)));
         let Some(next) = composer::next_unanswered(ask, card.asks.len(), &filled, or_this) else {
             return false;
         };
@@ -599,13 +629,14 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.card.picks.is_empty()
-            && self.card.next_picks.is_empty()
-            && self.card.explain.is_empty()
-        {
+        let Some(card) = self.open_card(cx) else {
+            return false;
+        };
+        let has_answers = !card.active_picks(&self.card.picks).is_empty();
+        if !has_answers && self.card.next_picks.is_empty() && self.card.explain.is_empty() {
             return false;
         }
-        if !self.card.picks.is_empty() && self.show_unanswered(self.card.page, true, window, cx) {
+        if has_answers && self.show_unanswered(self.card.page, true, window, cx) {
             return true;
         }
         self.send(window, cx);
@@ -645,7 +676,8 @@ impl Composer {
                 Value::Null,
             ));
         }
-        let answers = composer::answers(&card.asks, &self.card.picks, &self.card.notes);
+        let picks = card.active_picks(&self.card.picks);
+        let answers = composer::answers(&card.asks, &picks, &self.card.notes);
         if answers.is_empty() {
             return None;
         }
@@ -653,9 +685,9 @@ impl Composer {
             .iter()
             .map(|(_, a)| json!({ "action": a.action, "answer": a.answer }))
             .collect();
-        let images = composer::note_images(&card.asks, &self.card.picks, &self.card.notes);
+        let images = composer::note_images(&card.asks, &picks, &self.card.notes);
         Some((
-            composer::answers_message(&card.asks, &self.card.picks, &self.card.notes, words),
+            composer::answers_message(&card.asks, &picks, &self.card.notes, words),
             images,
             Value::Array(answers_json),
         ))
@@ -664,13 +696,15 @@ impl Composer {
     /// What the box's card asks for next: its placeholder, by what's picked
     /// (ComposerView.placeholder).
     pub(crate) fn card_placeholder(&self, cx: &App) -> &'static str {
-        let needs_you = self.open_card(cx).is_some_and(|c| !c.is_done());
-        if !self.card.picks.is_empty()
+        let Some(card) = self.open_card(cx) else {
+            return "Message";
+        };
+        if !card.active_picks(&self.card.picks).is_empty()
             || !self.card.next_picks.is_empty()
             || !self.card.explain.is_empty()
         {
             "Add anything else…"
-        } else if needs_you {
+        } else if !card.is_done() {
             "Or say something else…"
         } else {
             "Message"
@@ -705,6 +739,9 @@ impl Composer {
         );
         let card = card?;
         self.sync_card(&card, cx);
+        if self.done_card_empty(&card, cx) {
+            return None;
+        }
         let body = if card.is_done() {
             self.render_done_card(&card, settle.filter(|_| !cx.reduce_motion()), window, cx)
         } else {
@@ -753,6 +790,50 @@ impl Composer {
         )
     }
 
+    /// A coordinator is never archived, so its done card has no Done
+    /// heading (26 Nov: Mike saw a lone "Done" on one), and with no
+    /// follow-ups or loose ends it has nothing to show at all. Waiting on
+    /// its own work, it still says what for.
+    fn done_heading_dropped(&self, cx: &App) -> bool {
+        self.pane
+            .upgrade()
+            .is_some_and(|pane| pane.read(cx).summary.is_coordinator())
+            && self.waiting_on_work(cx).is_none()
+    }
+
+    fn done_card_empty(&self, card: &AsksCard, cx: &App) -> bool {
+        card.is_done()
+            && card.next.is_empty()
+            && card.loose_ends.as_ref().is_none_or(|ends| ends.is_empty())
+            && self.done_heading_dropped(cx)
+    }
+
+    fn render_done_archive(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pane = self.pane.upgrade()?;
+        let summary = &pane.read(cx).summary;
+        if summary.is_coordinator() {
+            return None;
+        }
+        // Already archived, it offers the way back instead (26 Nov: an
+        // archived thread's card still said Archive).
+        let (label, tip) = done_archive_words(summary.is_archived());
+        let this = cx.entity().downgrade();
+        Some(
+            card_button(("done-archive", 0usize), label, ButtonLook::Plain, tip, cx)
+                .test_support()
+                .role(Role::Button)
+                .aria_label(tip)
+                .on_click(move |event, window, cx| {
+                    if let Some(this) = this.upgrade() {
+                        this.update(cx, |this, cx| {
+                            this.archive_thread(event.position(), window, cx)
+                        });
+                    }
+                })
+                .into_any_element(),
+        )
+    }
+
     /// RowRenderer.doneText: Done, with Archive at the right, and the agent's
     /// follow-ups under "Or carry on", each a row with a tick and a "?".
     fn render_done_card(
@@ -781,37 +862,20 @@ impl Composer {
         // from, or the app restarting onto what it landed): what for, with a
         // spinner, as it hasn't finished (19 Nov: one waiting to land read
         // Done and was archived with nothing landed).
-        let heading = match self.waiting_on_work(cx) {
-            Some((words, _)) => {
-                card_title(self.waiting_spinner(cx), 4., words, cx).into_any_element()
-            }
-            None => card_title(tick, 2.5, "Done", cx).into_any_element(),
-        };
-        column = column.child(
-            h_flex()
-                .w_full()
-                .h(px(metrics::PAGED_HEADING))
-                .justify_between()
-                .child(heading)
-                .child(
-                    card_button(
-                        ("done-archive", 0usize),
-                        "Archive",
-                        ButtonLook::Plain,
-                        "Archive this thread",
-                        cx,
-                    )
-                    .on_click({
-                        let this = this.clone();
-                        move |ev, window, cx| {
-                            if let Some(this) = this.upgrade() {
-                                let at = ev.position();
-                                this.update(cx, |this, cx| this.archive_thread(at, window, cx));
-                            }
-                        }
+        if !self.done_heading_dropped(cx) {
+            let heading = self.done_heading(tick, cx);
+            column = column.child(
+                h_flex()
+                    .w_full()
+                    .h(px(metrics::PAGED_HEADING))
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(heading)
+                    .when_some(self.render_done_archive(cx), |row, button| {
+                        row.child(button)
                     }),
-                ),
-        );
+            );
+        }
         // What's still open (doneText): a booked check-in alone goes under
         // "Coming back", as it doesn't stop an archive.
         if let Some(ends) = &card.loose_ends {
@@ -878,101 +942,151 @@ impl Composer {
             }
         }
         if !card.next.is_empty() {
-            column = column.child(small_label("Or carry on", cx));
-            for (index, follow_up) in card.next.iter().enumerate() {
-                let (ticked, explained) = (
-                    self.card.next_picks.contains(&(index as i64)),
-                    self.card.explain.contains(&(index as i64)),
-                );
-                // Just ticked: its circle pops as the tick draws in.
-                let popping = self
-                    .card
-                    .ticked
-                    .filter(|i| ticked && *i == index)
-                    .map(|_| first_frame(&self.card.tick_started).elapsed())
-                    .filter(|e| *e < threadbear_core::juice::TICK_POP);
-                if popping.is_some() {
-                    window.request_animation_frame();
-                }
-                let this2 = this.clone();
-                let this3 = this.clone();
-                // A row is a body line, 8 over and 8 under; its hover fill
-                // reaches 5 past the line each way (drawHoveredRow), so the
-                // fills sit 6 apart.
-                column = column.child(
-                    h_flex()
-                        .id(("follow-up", index))
-                        .role(Role::Button)
-                        .w_full()
-                        .items_start()
-                        .mt(px(if index == 0 { 3. } else { 6. }))
-                        .pl(px(metrics::ROW_INSET))
-                        .py(px(5.))
-                        .rounded(px(6.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(style::hover_fill(cx)))
-                        .tip("Send this with your next message")
-                        .on_click(move |_, window, cx| {
-                            if let Some(this) = this2.upgrade() {
-                                this.update(cx, |this, cx| {
-                                    this.toggle_follow_up(index, window, cx)
-                                });
-                            }
-                        })
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(px(metrics::ROW_WORDS - metrics::ROW_INSET))
-                                .h(px(style::size::BODY_LINE))
-                                .flex()
-                                .items_center()
-                                .child(tick_circle(ticked, popping, cx)),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(px(style::size::BODY))
-                                .line_height(px(style::size::BODY_LINE))
-                                .text_color(style::label_text(cx))
-                                .child(follow_up.clone()),
-                        )
-                        .child(
-                            div()
-                                .id(("follow-up-explain", index))
-                                .role(Role::Button)
-                                .flex_none()
-                                .mx(px(8.))
-                                .size(px(22.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_full()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(style::hover_fill(cx)))
-                                .child(
-                                    Icon::from(IconName::CircleQuestionMark)
-                                        .with_size(px(14.))
-                                        .text_color(if explained {
-                                            style::accent(cx)
-                                        } else {
-                                            style::quiet_text(cx)
-                                        }),
-                                )
-                                .tip("Ask what this means")
-                                .on_click(move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    if let Some(this) = this3.upgrade() {
-                                        this.update(cx, |this, cx| {
-                                            this.toggle_explain(index, window, cx)
-                                        });
-                                    }
-                                }),
-                        ),
-                );
-            }
+            column = self.render_done_follow_ups(column, card, &this, window, cx);
         }
         column.into_any_element()
+    }
+
+    fn render_done_follow_ups(
+        &mut self,
+        mut column: Div,
+        card: &AsksCard,
+        this: &gpui::WeakEntity<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let pick_one = card.next_pick_one();
+        column = column.child(small_label(
+            if pick_one {
+                "Or pick one"
+            } else {
+                "Or carry on"
+            },
+            cx,
+        ));
+        for (index, follow_up) in card.next.iter().enumerate() {
+            let (ticked, explained) = (
+                self.card.next_picks.contains(&(index as i64)),
+                self.card.explain.contains(&(index as i64)),
+            );
+            let suggested = pick_one && card.next_suggested == Some(index);
+            // Just ticked: its circle pops as the tick draws in.
+            let popping = self
+                .card
+                .ticked
+                .filter(|i| !pick_one && ticked && *i == index)
+                .map(|_| first_frame(&self.card.tick_started).elapsed())
+                .filter(|e| *e < threadbear_core::juice::TICK_POP);
+            if popping.is_some() {
+                window.request_animation_frame();
+            }
+            let this2 = this.clone();
+            let this3 = this.clone();
+            // A row is a body line, 8 over and 8 under; its hover fill
+            // reaches 5 past the line each way (drawHoveredRow), so the
+            // fills sit 6 apart.
+            column = column.child(
+                h_flex()
+                    .id(("follow-up", index))
+                    .role(Role::Button)
+                    .w_full()
+                    .items_start()
+                    .mt(px(if index == 0 { 3. } else { 6. }))
+                    .pl(px(metrics::ROW_INSET))
+                    .py(px(5.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(style::hover_fill(cx)))
+                    .tip(if pick_one {
+                        "Pick this direction to send"
+                    } else {
+                        "Send this with your next message"
+                    })
+                    .on_click(move |_, window, cx| {
+                        if let Some(this) = this2.upgrade() {
+                            this.update(cx, |this, cx| this.toggle_follow_up(index, window, cx));
+                        }
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(metrics::ROW_WORDS - metrics::ROW_INSET))
+                            .h(px(style::size::BODY_LINE))
+                            .flex()
+                            .items_center()
+                            .child(if pick_one {
+                                radio_circle(ticked, cx).into_any_element()
+                            } else {
+                                tick_circle(ticked, popping, cx).into_any_element()
+                            }),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(style::size::BODY))
+                                    .line_height(px(style::size::BODY_LINE))
+                                    .text_color(style::label_text(cx))
+                                    .child(follow_up.clone()),
+                            )
+                            .when(suggested, |s| {
+                                s.child(
+                                    h_flex()
+                                        .mt(px(2.))
+                                        .items_baseline()
+                                        .gap(px(3.))
+                                        .child(
+                                            div()
+                                                .text_size(px(9.))
+                                                .text_color(style::recommended_star(cx))
+                                                .child("★"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(style::size::SMALL))
+                                                .text_color(style::secondary_label(cx))
+                                                .child("Recommended"),
+                                        ),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id(("follow-up-explain", index))
+                            .role(Role::Button)
+                            .flex_none()
+                            .mx(px(8.))
+                            .size(px(22.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(style::hover_fill(cx)))
+                            .child(
+                                Icon::from(IconName::CircleQuestionMark)
+                                    .with_size(px(14.))
+                                    .text_color(if explained {
+                                        style::accent(cx)
+                                    } else {
+                                        style::quiet_text(cx)
+                                    }),
+                            )
+                            .tip("Ask what this means")
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(this) = this3.upgrade() {
+                                    this.update(cx, |this, cx| {
+                                        this.toggle_explain(index, window, cx)
+                                    });
+                                }
+                            }),
+                    ),
+            );
+        }
+        column
     }
 
     /// RowRenderer.asksText: the heading, then each ask with its answers. Over
@@ -1126,7 +1240,7 @@ impl Composer {
             {
                 let body = v_flex()
                     .w_full()
-                    .child(self.render_ask(index, ask, numbered, window, cx));
+                    .child(self.render_card_ask(card, index, ask, numbered, window, cx));
                 let cell = div().w_full().min_w_0().col_start(1).row_start(1);
                 pages = pages.child(match slide {
                     // The two asks sliding like a deck (CardDeck): the next
@@ -1167,10 +1281,31 @@ impl Composer {
             column = column.child(pages);
         } else {
             for (index, ask) in card.asks.iter().enumerate() {
-                column = column.child(self.render_ask(index, ask, numbered, window, cx));
+                column = column.child(self.render_card_ask(card, index, ask, numbered, window, cx));
             }
         }
         column.into_any_element()
+    }
+
+    fn render_card_ask(
+        &mut self,
+        card: &AsksCard,
+        index: usize,
+        ask: &Ask,
+        numbered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if card.can_answer(index) {
+            return self.render_ask(index, ask, numbered, window, cx);
+        }
+        v_flex()
+            .gap(px(4.))
+            .p(px(8.))
+            .text_color(style::secondary_text(cx))
+            .child(ask.action.clone())
+            .child(small_label("Handled on the task board", cx))
+            .into_any_element()
     }
 
     /// One of an ask's links: through the thread's own link handling, as a
@@ -2074,6 +2209,9 @@ impl Composer {
         }
         let mut lines = vec![format!("{} picked", self.card.picks.len())];
         for (i, ask) in card.asks.iter().enumerate() {
+            if !card.can_answer(i) {
+                continue;
+            }
             let options = composer::choices(ask);
             // Each with what it does in brackets, when the agent said, and the
             // ask's links after, as the Swift dump's `decisions` has them (the
@@ -2186,7 +2324,7 @@ impl Composer {
             let Some(the_ask) = card.asks.get(ask.wrapping_sub(1)) else {
                 return Err(format!("no choice {pick}"));
             };
-            if *choice > composer::choices(the_ask).len() {
+            if !card.can_answer(ask - 1) || *choice > composer::choices(the_ask).len() {
                 return Err(format!("no choice {pick}"));
             }
             let option = if *choice == 0 {
@@ -2203,7 +2341,7 @@ impl Composer {
             let Ok(n) = n.parse::<usize>() else {
                 return Err(format!("no ask in {value}"));
             };
-            if !(1..=card.asks.len()).contains(&n) {
+            if !card.can_answer(n.wrapping_sub(1)) {
                 return Err(format!("no ask in {value}"));
             }
             let ask = n - 1;
@@ -2223,8 +2361,8 @@ impl Composer {
             let Some(ask) = n
                 .parse::<usize>()
                 .ok()
-                .filter(|n| (1..=card.asks.len()).contains(n))
-                .map(|n| n - 1)
+                .map(|n| n.wrapping_sub(1))
+                .filter(|&n| card.can_answer(n))
             else {
                 return Err(format!("no ask in {value}"));
             };
@@ -2338,12 +2476,17 @@ impl Composer {
                     .read(cx)
                     .ask_link_words(&link.title, &target)
             });
+        if self.done_card_empty(&card, cx) {
+            return None;
+        }
         if card.is_done() {
-            lines.push(
-                self.waiting_on_work(cx)
-                    .map(|(words, _)| words)
-                    .unwrap_or_else(|| "Done".to_owned()),
-            );
+            if !self.done_heading_dropped(cx) {
+                lines.push(
+                    self.waiting_on_work(cx)
+                        .map(|(words, _)| words)
+                        .unwrap_or_else(|| "Done".to_owned()),
+                );
+            }
             for (i, next) in card.next.iter().enumerate() {
                 let tick = if self.card.next_picks.contains(&(i as i64)) {
                     "[x]"
@@ -2527,13 +2670,17 @@ fn card_title(
     cx: &App,
 ) -> impl IntoElement {
     let words: SharedString = words.into();
+    // Shrinks to an ellipsis rather than running under the buttons beside it.
     h_flex()
-        .flex_none()
+        .flex_1()
+        .min_w_0()
         .items_center()
         .gap(px(gap))
         .child(mark)
         .child(
             div()
+                .min_w_0()
+                .truncate()
                 .relative()
                 .top(px(0.75))
                 .text_size(px(style::size::CARD_TITLE))
@@ -2953,6 +3100,31 @@ fn tick_circle(ticked: bool, popping: Option<Duration>, cx: &App) -> impl IntoEl
     }
 }
 
+fn radio_circle(picked: bool, cx: &App) -> impl IntoElement {
+    let side = px(16.);
+    if picked {
+        div()
+            .size(side)
+            .flex_none()
+            .rounded_full()
+            .border_2()
+            .border_color(style::accent(cx))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().size(px(7.)).rounded_full().bg(style::accent(cx)))
+            .into_any_element()
+    } else {
+        div()
+            .size(side)
+            .flex_none()
+            .rounded_full()
+            .border_1()
+            .border_color(style::quiet_text(cx))
+            .into_any_element()
+    }
+}
+
 /// "Or carry on" and the like: small, secondary, on a 19 pt line 10 under
 /// what's above, in by the rows' inset.
 fn small_label(text: &'static str, cx: &App) -> impl IntoElement {
@@ -2963,6 +3135,16 @@ fn small_label(text: &'static str, cx: &App) -> impl IntoElement {
         .line_height(px(metrics::WHERE_LINE))
         .text_color(style::secondary_label(cx))
         .child(text)
+}
+
+/// The done card's button: Archive, or Back to Inbox on a thread that's
+/// already archived (its click toggles either way, `toggle_archive_of`).
+pub(crate) fn done_archive_words(archived: bool) -> (&'static str, &'static str) {
+    if archived {
+        ("Back to Inbox", "Unarchive this thread")
+    } else {
+        ("Archive", "Archive this thread")
+    }
 }
 
 #[cfg(test)]

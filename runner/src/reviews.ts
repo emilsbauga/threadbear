@@ -17,7 +17,7 @@ import { ErrorCode, RpcError } from './protocol.ts';
 // made sense moving (6 Nov 2026). A sound (MP3, M4A, AAC, WAV) plays too, as
 // Mike wanted to compare music beds (24 Nov 2026).
 export type ReviewShotKind = 'image' | 'video' | 'audio' | 'page';
-// marks: the agent's marks on the picture (the reviewCanvas experiment); an
+// marks: the agent's marks on the picture; an
 // option's own belong to its path shot.
 export type ReviewShotInput = { path: string; title?: string; kind?: ReviewShotKind; marks?: AgentMark[] };
 export type ReviewInput = { title: string; note?: string; recommended?: string; options: { id: string; title: string; path?: string; shots?: ReviewShotInput[]; url?: string; note?: string; reference?: boolean; marks?: AgentMark[] }[] };
@@ -128,9 +128,7 @@ function fitAgentMarks(raw: unknown): AgentMark[] {
   return out;
 }
 
-// reviewCanvas: the reviewCanvas experiment is on, so marks are kept;
-// without it they're dropped unread.
-export function reviewInput(raw: unknown, cwd: string, opts: { marks?: boolean } = {}): { title: string; note?: string; recommended?: string; options: ReviewOptionSource[] } {
+export function reviewInput(raw: unknown, cwd: string): { title: string; note?: string; recommended?: string; options: ReviewOptionSource[] } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return bad('A review needs a title and options.');
   const p = raw as Record<string, unknown>;
   const title = text(p.title, 'title', 200, true)!;
@@ -156,11 +154,11 @@ export function reviewInput(raw: unknown, cwd: string, opts: { marks?: boolean }
     const add = (raw: unknown, title: string | undefined, rawMarks: unknown) => {
       const file = shotFile(raw, cwd);
       if (file.kind !== 'image') mediaBytes += file.size;
-      const own = opts.marks ? agentMarks(rawMarks, `${id}, picture ${shots.length + 1}`) : [];
+      const own = agentMarks(rawMarks, `${id}, picture ${shots.length + 1}`);
       marks += own.length;
       shots.push({ path: file.path, kind: file.kind, ...(title ? { title } : {}), ...(own.length ? { marks: own } : {}) });
     };
-    if (opts.marks && (Array.isArray(o.marks) ? o.marks.length > 0 : o.marks !== undefined) && o.path === undefined) bad(`marks on ${id} belong to its path picture, and it has none: put them on its shots.`);
+    if ((Array.isArray(o.marks) ? o.marks.length > 0 : o.marks !== undefined) && o.path === undefined) bad(`marks on ${id} belong to its path picture, and it has none: put them on its shots.`);
     if (o.path !== undefined) add(o.path, undefined, o.marks);
     for (const [j, s] of ((o.shots as unknown[] | undefined) ?? []).entries()) {
       if (!s || typeof s !== 'object' || Array.isArray(s)) bad(`shots[${j}] on ${id} must be an object with a path.`);

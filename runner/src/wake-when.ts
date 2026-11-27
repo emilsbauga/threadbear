@@ -7,6 +7,7 @@
 
 import { trimEndOfOrSpace } from './linear-text.ts';
 import { cutSafely, safeEnd } from './safe-cut.ts';
+import { parseIsoTime } from './when.ts';
 
 export type WakeWhen = {
   // What Mike typed.
@@ -81,6 +82,289 @@ export function readWakeAnswer(text: string, now: number): WakeAnswer | { error:
   }
   if (!until && !topic) return { error: why || "Couldn't work out when from that." };
   return { ...(until ? { until } : {}), ...(topic ? { topic } : {}), why };
+}
+
+// ---- Local time parsing (no model needed) ----
+
+type TimeOfDay = { hour: number; minute: number; explicitClock: boolean };
+
+const WORD_NUMS: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+
+const WEEKDAYS: Record<string, number> = {
+  sunday: 0, sun: 0,
+  monday: 1, mon: 1,
+  tuesday: 2, tue: 2, tues: 2,
+  wednesday: 3, wed: 3,
+  thursday: 4, thu: 4, thur: 4, thurs: 4,
+  friday: 5, fri: 5,
+  saturday: 6, sat: 6,
+};
+
+const MONTHS: Record<string, number> = {
+  jan: 0, january: 0,
+  feb: 1, february: 1,
+  mar: 2, march: 2,
+  apr: 3, april: 3,
+  may: 4,
+  jun: 5, june: 5,
+  jul: 6, july: 6,
+  aug: 7, august: 7,
+  sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9,
+  nov: 10, november: 10,
+  dec: 11, december: 11,
+};
+
+const DAY_DEFAULT: TimeOfDay = { hour: 9, minute: 0, explicitClock: false };
+
+function parseTimeOfDay(raw: string): TimeOfDay | undefined {
+  const s = raw.trim().replace(/^at\s+/i, '').trim().toLowerCase();
+  if (!s) return undefined;
+  if (s === 'morning') return { hour: 9, minute: 0, explicitClock: false };
+  if (s === 'noon' || s === 'midday') return { hour: 12, minute: 0, explicitClock: true };
+  if (s === 'lunch' || s === 'lunchtime') return { hour: 12, minute: 0, explicitClock: false };
+  if (s === 'afternoon') return { hour: 14, minute: 0, explicitClock: false };
+  if (s === 'evening') return { hour: 18, minute: 0, explicitClock: false };
+  if (s === 'night') return { hour: 19, minute: 0, explicitClock: false };
+  if (s === 'midnight') return { hour: 0, minute: 0, explicitClock: true };
+  const m12 = /^(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)$/.exec(s);
+  if (m12) {
+    const h = Number(m12[1]);
+    const minute = m12[2] ? Number(m12[2]) : 0;
+    if (h < 1 || h > 12 || minute > 59) return undefined;
+    const pm = m12[3].startsWith('p');
+    const hour = pm ? (h === 12 ? 12 : h + 12) : (h === 12 ? 0 : h);
+    return { hour, minute, explicitClock: true };
+  }
+  const m24 = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (m24) {
+    const hour = Number(m24[1]);
+    const minute = Number(m24[2]);
+    if (hour > 23 || minute > 59) return undefined;
+    return { hour, minute, explicitClock: true };
+  }
+  return undefined;
+}
+
+function localAt(year: number, month: number, day: number, hour: number, minute: number): number | undefined {
+  const d = new Date(year, month, day, hour, minute, 0, 0);
+  if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return undefined;
+  return d.getTime();
+}
+
+function addLocalDays(now: number, days: number, tod?: TimeOfDay): number {
+  const d = new Date(now);
+  d.setDate(d.getDate() + days);
+  if (tod) d.setHours(tod.hour, tod.minute, 0, 0);
+  return d.getTime();
+}
+
+function addLocalMonths(now: number, months: number): number {
+  const d = new Date(now);
+  const total = d.getFullYear() * 12 + d.getMonth() + months;
+  const year = Math.floor(total / 12);
+  const month = ((total % 12) + 12) % 12;
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const day = Math.min(d.getDate(), lastDay);
+  return new Date(year, month, day, d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()).getTime();
+}
+
+// Deterministic local parsing for plain time expressions in Wake when…
+// ("tomorrow", "2h", "in 2 hours", "tonight", "tomorrow morning",
+// "Friday 9am", "at the weekend", "in 2 weeks", "15 Dec 2pm", ISO times).
+// Returns undefined for topics, events or fuzzy words ("woodworking",
+// "woodworking, or tomorrow", "when the parts arrive", "after Christmas",
+// "in a few weeks"), so those go to the model.
+export function parseWakeTime(said: string, now: number): { until: string; why: string } | { error: string } | undefined {
+  let s = said.trim().replace(/[.!?]+$/, '').trim();
+  if (!s) return undefined;
+  s = s.replace(/^(?:until|till|til)\s+/i, '').trim();
+  if (!s) return undefined;
+
+  const finish = (t: number, why: string): { until: string; why: string } | { error: string } => {
+    if (!Number.isFinite(t)) return { error: "Couldn't read that time." };
+    if (t < now + 60_000) return { error: 'That time has already passed.' };
+    if (t > now + LATEST_MS) return { error: 'That is more than two years away.' };
+    return { until: new Date(t).toISOString(), why };
+  };
+
+  // ISO date ("2026-11-28" -> local 9 am) or full ISO timestamp.
+  const isoDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (isoDate) {
+    const t = localAt(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3]), 9, 0);
+    if (t === undefined) return { error: `That date doesn't exist: ${s}` };
+    return finish(t, s);
+  }
+  const isoTs = parseIsoTime(s);
+  if (isoTs !== undefined) return finish(isoTs, s);
+
+  const lower = s.toLowerCase().replace(/\s+/g, ' ');
+
+  // "in half an hour" / "half an hour".
+  if (/^(?:in\s+)?half\s+an?\s+hour$/.test(lower)) return finish(now + 30 * 60_000, 'In 30 minutes');
+
+  // Compound hours + minutes: "1h 30m", "1h30m", "in 1 hour 30 minutes", "in 2 hours and 15 mins".
+  const hm = /^(?:in\s+)?(\d+)\s*(?:h|hr|hrs|hour|hours)\s*(?:and\s+)?(\d+)\s*(?:m|min|mins|minute|minutes)$/.exec(lower);
+  if (hm) return finish(now + (Number(hm[1]) * 60 + Number(hm[2])) * 60_000, s);
+
+  // Relative durations with digits ("30m", "2h", "in 2 hours", "1.5 hours", "in 2 weeks", "3 months").
+  const relNum = /^(?:in\s+)?(\d+(?:\.\d+)?)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks|mo|mos|month|months)$/.exec(lower);
+  // Relative durations with word numbers ("in an hour", "in two weeks", "a couple of days").
+  const relWord = !relNum
+    ? /^(?:in\s+)?(a couple(?: of)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(min|mins|minute|minutes|hr|hrs|hour|hours|day|days|wk|wks|week|weeks|month|months)$/.exec(lower)
+    : null;
+  const rel = relNum ?? relWord;
+  if (rel) {
+    const n = relNum ? Number(rel[1]) : rel[1].startsWith('a couple') ? 2 : WORD_NUMS[rel[1]];
+    const unit = rel[2];
+    if (unit === 'm' || unit.startsWith('min')) return finish(now + Math.round(n * 60_000), s);
+    if (unit === 'h' || unit.startsWith('hr') || unit.startsWith('hour')) return finish(now + Math.round(n * 3_600_000), s);
+    if (unit === 'd' || unit.startsWith('day')) {
+      const t = Number.isInteger(n) ? addLocalDays(now, n) : now + Math.round(n * 86_400_000);
+      return finish(t, s);
+    }
+    if (unit === 'w' || unit.startsWith('wk') || unit.startsWith('week')) {
+      const t = Number.isInteger(n) ? addLocalDays(now, n * 7) : now + Math.round(n * 7 * 86_400_000);
+      return finish(t, s);
+    }
+    if (unit.startsWith('mo')) {
+      if (!Number.isInteger(n)) return undefined;
+      return finish(addLocalMonths(now, n), s);
+    }
+  }
+
+  // "tonight" or "tonight at 8pm".
+  const tonight = /^tonight(?:\s+(?:at\s+)?(.+))?$/.exec(lower);
+  if (tonight) {
+    const tod = tonight[1] ? parseTimeOfDay(tonight[1]) : { hour: 19, minute: 0, explicitClock: false };
+    if (!tod) return undefined;
+    const t = addLocalDays(now, 0, tod);
+    if (!tod.explicitClock && t < now + 60_000) return undefined;
+    return finish(t, s);
+  }
+
+  // "this morning" / "this afternoon" / "this evening" / "today 5pm".
+  const todayPart = /^(?:this\s+(morning|afternoon|evening)|today\s+(?:at\s+)?(.+))$/.exec(lower);
+  if (todayPart) {
+    const tod = parseTimeOfDay(todayPart[1] ?? todayPart[2]);
+    if (!tod) return undefined;
+    const t = addLocalDays(now, 0, tod);
+    if (!tod.explicitClock && t < now + 60_000) return undefined;
+    return finish(t, s);
+  }
+
+  // Bare clock time ("5pm", "at 5pm", "9:30 am", "14:30", "noon", "midnight"):
+  // today if still ahead, else tomorrow.
+  const bareClock = parseTimeOfDay(lower);
+  if (bareClock?.explicitClock) {
+    let t = addLocalDays(now, 0, bareClock);
+    if (t < now + 60_000) t = addLocalDays(now, 1, bareClock);
+    return finish(t, s);
+  }
+
+  // "tomorrow", "tomorrow morning", "tomorrow at 2pm".
+  const tomorrow = /^(?:tomorrow|tmrw)(?:\s+(?:at\s+)?(.+))?$/.exec(lower);
+  if (tomorrow) {
+    const tod = tomorrow[1] ? parseTimeOfDay(tomorrow[1]) : DAY_DEFAULT;
+    if (!tod) return undefined;
+    return finish(addLocalDays(now, 1, tod), s);
+  }
+
+  // "the day after tomorrow" / "day after tomorrow".
+  const dayAfter = /^(?:the\s+)?day\s+after\s+tomorrow(?:\s+(?:at\s+)?(.+))?$/.exec(lower);
+  if (dayAfter) {
+    const tod = dayAfter[1] ? parseTimeOfDay(dayAfter[1]) : DAY_DEFAULT;
+    if (!tod) return undefined;
+    return finish(addLocalDays(now, 2, tod), s);
+  }
+
+  const dNow = new Date(now);
+  const nowDow = dNow.getDay();
+  const nowMonDow = (nowDow + 6) % 7;
+
+  // "at the weekend", "this weekend", "the weekend", "weekend", "next weekend".
+  const weekend = /^(?:(next)|(?:at\s+the|on\s+the|this|the))?\s*weekend(?:\s+(?:at\s+)?(.+))?$/.exec(lower);
+  if (weekend) {
+    const tod = weekend[2] ? parseTimeOfDay(weekend[2]) : DAY_DEFAULT;
+    if (!tod) return undefined;
+    let daysAhead: number;
+    if (weekend[1] === 'next') {
+      daysAhead = (7 - nowMonDow) + 5;
+    } else {
+      daysAhead = (6 - nowDow + 7) % 7;
+      if (daysAhead === 0 && addLocalDays(now, 0, tod) < now + 60_000) daysAhead = 7;
+    }
+    return finish(addLocalDays(now, daysAhead, tod), s);
+  }
+
+  // "next week" (Monday 9 am, or given time).
+  const nextWeek = /^next\s+week(?:\s+(?:at\s+)?(.+))?$/.exec(lower);
+  if (nextWeek) {
+    const tod = nextWeek[1] ? parseTimeOfDay(nextWeek[1]) : DAY_DEFAULT;
+    if (!tod) return undefined;
+    return finish(addLocalDays(now, 7 - nowMonDow, tod), s);
+  }
+
+  // "next month" (1st of next month, 9 am or given time).
+  const nextMonth = /^next\s+month(?:\s+(?:at\s+)?(.+))?$/.exec(lower);
+  if (nextMonth) {
+    const tod = nextMonth[1] ? parseTimeOfDay(nextMonth[1]) : DAY_DEFAULT;
+    if (!tod) return undefined;
+    const nextM = dNow.getMonth() + 1;
+    const t = localAt(dNow.getFullYear() + Math.floor(nextM / 12), nextM % 12, 1, tod.hour, tod.minute);
+    if (t === undefined) return undefined;
+    return finish(t, s);
+  }
+
+  // Weekday: "Friday", "Friday 9am", "this Monday morning", "next Tuesday", "on Wednesday at 2pm".
+  const weekday = /^(?:(this|next|on)\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)(?:\s+(?:at\s+)?(.+))?$/.exec(lower);
+  if (weekday) {
+    const prefix = weekday[1];
+    const targetDow = WEEKDAYS[weekday[2]];
+    const hasTime = Boolean(weekday[3]);
+    const tod = weekday[3] ? parseTimeOfDay(weekday[3]) : DAY_DEFAULT;
+    if (!tod) return undefined;
+    let daysAhead: number;
+    if (prefix === 'next') {
+      const targetMonDow = (targetDow + 6) % 7;
+      daysAhead = (7 - nowMonDow) + targetMonDow;
+    } else {
+      daysAhead = (targetDow - nowDow + 7) % 7;
+      if (daysAhead === 0 && (!hasTime || addLocalDays(now, 0, tod) < now + 60_000)) daysAhead = 7;
+    }
+    return finish(addLocalDays(now, daysAhead, tod), s);
+  }
+
+  // Calendar date: "15 Dec", "15 December 2pm", "Dec 15", "December 15, 2026 at 9am".
+  const dmy = /^(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)(?:,?\s+(\d{4}))?(?:\s+(?:at\s+)?(.+))?$/.exec(lower);
+  const mdy = !dmy
+    ? /^(?:on\s+)?(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?(?:\s+(?:at\s+)?(.+))?$/.exec(lower)
+    : null;
+  if (dmy || mdy) {
+    const day = Number(dmy ? dmy[1] : mdy![2]);
+    const month = MONTHS[dmy ? dmy[2] : mdy![1]];
+    const yearStr = dmy ? dmy[3] : mdy![3];
+    const timeStr = dmy ? dmy[4] : mdy![4];
+    const tod = timeStr ? parseTimeOfDay(timeStr) : DAY_DEFAULT;
+    if (!tod) return undefined;
+    if (yearStr) {
+      const t = localAt(Number(yearStr), month, day, tod.hour, tod.minute);
+      if (t === undefined) return { error: `That date doesn't exist: ${s}` };
+      return finish(t, s);
+    }
+    const baseYear = dNow.getFullYear();
+    // Try this year, then subsequent years (handles Feb 29 in non-leap years).
+    for (let dy = 0; dy <= 4; dy++) {
+      const t = localAt(baseYear + dy, month, day, tod.hour, tod.minute);
+      if (t !== undefined && t >= now + 60_000) return finish(t, s);
+    }
+    return undefined;
+  }
+
+  return undefined;
 }
 
 // The note the thread gets: "Hibernating until Saturday 1 November, 9 am."

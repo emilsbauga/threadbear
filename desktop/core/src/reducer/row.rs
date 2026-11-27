@@ -165,6 +165,12 @@ pub struct UserMessage {
     pub editable: bool,
     /// Sent from this app and not shown by the runner yet.
     pub pending: Option<Pending>,
+    /// The runner's message saying another lab's review came back, read
+    /// into its findings (review_note.rs): drawn as a checklist.
+    pub review_note: Option<Box<super::review_note::ReviewNote>>,
+    /// What the agent did about those findings: the ledger of the turn that
+    /// answered them, set by the reducer once it's done (build_rows).
+    pub review_ledger: Option<Box<super::event::LabReview>>,
 }
 
 impl UserMessage {
@@ -674,7 +680,67 @@ impl RowContent {
     pub fn is_saved_message_note(&self) -> bool {
         matches!(self, RowContent::Note(text) if text.starts_with("Your stopped message"))
     }
+
+    /// The note a thread leaves when it's archived, brought back,
+    /// hibernated, woken or moved under Hibernating for a schedule, saying
+    /// who did it and why (runner/src/place-notes.ts, and the quiet inbox's,
+    /// end_turn's and a wait's own lines). They come after the turn, so they
+    /// folded into its line of work and never showed: on 25 Nov 2026 a
+    /// thread the quiet inbox archived and an agent brought back showed
+    /// neither move. Like a login note, they never fold. The runner words
+    /// them; these are the starts it uses.
+    pub fn is_place_note(&self) -> bool {
+        const STARTS: &[&str] = &[
+            "Archived",
+            "Brought back",
+            "Back in the archive",
+            "Back in the inbox",
+            "Hibernated ",
+            "Hibernating until",
+            "Not hibernated",
+            "Woken ",
+            "Moved to Hibernating",
+        ];
+        matches!(self, RowContent::Note(text) if STARTS.iter().any(|s| text.starts_with(s)))
+    }
+
+    /// A note that never folds into a turn's work: Mike came to the thread
+    /// to read it.
+    pub fn is_standalone_note(&self) -> bool {
+        self.is_wake_note()
+            || self.is_login_note()
+            || self.is_saved_message_note()
+            || self.is_place_note()
+    }
+
+    /// What hovering a note explains, when it names something Mike may not
+    /// know: the quiet inbox, which archives threads by itself. Also its
+    /// lines from before 25 Nov 2026, which didn't name it ("Archived
+    /// quietly: ...", "Brought back by you: you should have been shown
+    /// this.").
+    pub fn note_tip(&self) -> Option<&'static str> {
+        match self {
+            RowContent::Note(text)
+                if text.contains("Quiet inbox")
+                    || text.starts_with("Archived quietly:")
+                    || text.ends_with("you should have been shown this.") =>
+            {
+                Some(QUIET_INBOX_TIP)
+            }
+            _ => None,
+        }
+    }
 }
+
+/// What the quiet inbox is (runner/src/experiments/quietInboxMine.md), for
+/// hovering the line it leaves in a thread it archived or that came back.
+/// Broken into lines by hand: the tooltip doesn't wrap, and one line ran
+/// off the window (Gemini's review, 25 Nov 2026).
+pub const QUIET_INBOX_TIP: &str = "Quiet inbox is an experiment: when one of your own threads\n\
+finishes with nothing for you, Opus guesses whether you needed\n\
+to read the reply, and if not, the thread goes straight to Archived.\n\
+If it hid one you wanted, right-click the thread and pick\n\
+Should Have Shown Me.";
 
 /// What Mike has put in an ask's own box (its Something else): his words
 /// and any pictures he pasted or dropped there.
@@ -698,11 +764,16 @@ pub struct AsksCard {
     pub seq: i64,
     pub asks: Vec<Ask>,
     pub ticked: BTreeSet<i64>,
+    pub resolved: BTreeSet<i64>,
     pub is_open: bool,
     /// The option picked on each ask (ask index to option index).
     pub picks: BTreeMap<i64, i64>,
     /// The done card's follow-ups (end_turn's `next`).
     pub next: Vec<String>,
+    /// "one" when follow-ups are mutually exclusive directions; None means multi-pick.
+    pub next_pick: Option<String>,
+    /// Index into `next` of the agent's recommendation when `next_pick` is "one".
+    pub next_suggested: Option<usize>,
     pub picked_next: BTreeSet<i64>,
     /// The follow-ups whose "?" is on, by index.
     pub explain_next: BTreeSet<i64>,
@@ -719,14 +790,33 @@ impl AsksCard {
             seq,
             asks,
             ticked: BTreeSet::new(),
+            resolved: BTreeSet::new(),
             is_open: true,
             picks: BTreeMap::new(),
             next: Vec::new(),
+            next_pick: None,
+            next_suggested: None,
             picked_next: BTreeSet::new(),
             explain_next: BTreeSet::new(),
             notes: BTreeMap::new(),
             loose_ends: None,
         }
+    }
+
+    pub fn next_pick_one(&self) -> bool {
+        self.next_pick.as_deref() == Some("one") && self.next.len() > 1
+    }
+
+    pub fn can_answer(&self, index: usize) -> bool {
+        index < self.asks.len() && !self.resolved.contains(&(index as i64))
+    }
+
+    pub fn active_picks(&self, picks: &BTreeMap<i64, i64>) -> BTreeMap<i64, i64> {
+        picks
+            .iter()
+            .filter(|(index, _)| !self.resolved.contains(index))
+            .map(|(&index, &choice)| (index, choice))
+            .collect()
     }
 
     pub fn ticked_count(&self) -> usize {

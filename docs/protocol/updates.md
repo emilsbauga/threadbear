@@ -144,7 +144,42 @@ the key that announced it is revoked first; then it's added to
 taken out at once and kept in `<home>/upstream-revoked`, which
 `ssh-keygen -Y verify` is given with `-r` on every check and which setup
 honours too, but only if that release was signed with the key itself or
-with one pinned after it. `release.commit` is the commit
+with one pinned after it. A signature may also come from a weekly key
+whose OpenSSH certificate a pinned key made (Mike's, since 25 Nov 2026:
+release-keys.ts, "Releases signed by a weekly key"): each pinned key also
+counts as a `cert-authority` for its principal, for the git namespace, and
+such a signature is checked at the tag's own tagger time
+(`-O verify-time`), which must fall on the UTC day the tag's name says
+and be no more than an hour ahead of the fork's clock, so the
+certificate's week bounds the names it can sign, and a leaked one can't
+name tomorrow's release today (nor one after the fork's UTC day). Only
+that failure (dated ahead of the fork's clock), or a key file that can't
+be read yet, isn't remembered, as it may pass later. Release names must
+have a month 01-12 and a day 01-31. A certificate for
+any key type but ed25519 is refused. The certificate carries, in its
+`threadbear-keys@threadbear` extension, the SHA-256 of the
+`scripts/release-signers` and `scripts/release-keys-revoked` its
+authority vouched for (with a NUL between them), and a release it signs
+counts only if its commit has exactly those: so a weekly key can't change
+which keys count, its release's key changes are its authority's, and each
+one carries the whole list, so a fork that was away takes every change
+from the next. Any release may revoke a key that was never pinned (a
+weekly key), which goes in `<home>/upstream-revoked-weekly` (ed25519 keys
+only) and is checked against the key a certificate certifies, never its
+authority. Revocations are read from every release a check fetched that
+verifies and is on upstream's main (by tag object, so a same-day
+replacement counts), not just the newest, so a newer release signed by a
+revoked key can't hide the one revoking it; when one does revoke
+something, the check looks again before the newest says anything. A
+weekly key's release is taken only while its certificate is good by the
+fork's own clock (as well as at the tag's time); once kept, it stays. So a
+weekly key that leaked is good for its week at most, however the tags
+upstream are arranged. One whose week ended before the fork saw it is
+passed over from then on, so older releases stay in reach. An older
+release read for its revocations never lets a waiting key in. Mike's runner waits for
+UTC's day only on its hourly look: `tb updates publish` signs with the
+release key then.
+`release.commit` is the commit
 the verified tag names, and that is what a bring-in merges. It never
 changes main: bringing a release in is a thread (docs/bringing-in-updates.md).
 
@@ -198,6 +233,14 @@ type UpstreamStatus = {
 `upstream.check` fetches first and then returns the same (`tb updates
 [check]`). `runner.status` carries it as `upstream`.
 
+`upstream.publish` (Mike's runner, `tb updates publish`) tags and signs
+today's release now, without the hour main and the runner must otherwise
+sit still, and with a Touch ID key asks at once rather than waiting to see
+him at the Mac. GitHub's checks still pick the commit: the tip if green,
+else the newest green one since the last release. It returns `{ tag?:
+string, upstream: UpstreamStatus }`: no `tag` when nothing went out, with
+`upstream.held` saying why.
+
 After each check that finds a release main doesn't have, the runner may
 start a thread to bring it in (`runner/src/bring-in.ts`), as Bring Them In
 would: titled "Bring in Mike's release of 6 Nov", in the release's checkout,
@@ -215,6 +258,31 @@ main's tip as `release/<local date>` (SSH-signed, its message the subjects
 since the last release) and pushes it to origin, when there's no tag for
 today, main has moved since the last one, main's tip is an hour old, and the
 runner it's running is main's runner/, marked good and up for an hour.
+
+With `"delegate": true` and a Touch ID key, it signs with a weekly key
+instead (`runner/src/release-delegate.ts`), so a release doesn't wait for
+Mike at the Mac: a plain ed25519 key in `<home>/runner/release-delegate`,
+with a certificate from the release key good for 8 days
+(`release-delegate-cert.pub`). With 3 days left, the hourly look asks for
+Touch ID to make a new one when he's at the Mac (at most once an hour;
+`tb updates publish` asks at once), checks a signature made with it
+verifies before putting it in place, and with 36 hours left and still not
+renewed starts a starred thread asking him to (its id in
+`release-delegate.json`, one at a time). The weekly key is used only once
+the last release's `runner/src/release-keys.ts` has the check that takes
+it, with two days or more left (forks take its release only within its
+week), when its key file and the release key
+match its certificate, when it isn't revoked, and when it vouches for the
+release's key files (a key change needs a new one, with a touch), and when
+this Mac's day is UTC's (in Perth, from 8am; before then it waits);
+otherwise the release key signs, as before (and a key that doesn't fit is renewed
+next time). When main hasn't moved but the last release was a weekly key's whose
+week ends within two days, the same commit goes out again under today's
+name, so a fork that missed it still has one it can take. `tb updates
+publish` says until when the weekly key signs, or why renewing it failed.
+Known limit: while main stays red for longer than a weekly key's week,
+nothing new goes out, and a fork that missed the last weekly key's
+release waits for the next green commit's.
 
 ### Your changes to the old app
 

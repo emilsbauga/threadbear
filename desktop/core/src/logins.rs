@@ -101,6 +101,24 @@ pub struct Account {
     /// itself never comes to the app.
     #[serde(default, deserialize_with = "crate::wire::field")]
     pub year_token: Option<YearToken>,
+    /// A usage reset worth using now, as the runner works it out
+    /// (docs/protocol/settings.md, "Telling Mike about resets"): the Usage
+    /// row, the Usage button and the login lists draw it (reset_hint.rs).
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub reset_hint: Option<ResetHint>,
+}
+
+/// `Account.resetHint`: why ("out" or "expiring"), how many resets are
+/// left, and when the soonest expires.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ResetHint {
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub why: String,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub available: u64,
+    #[serde(default, deserialize_with = "crate::wire::field")]
+    pub next_expires_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -212,6 +230,8 @@ pub struct RunnerLogins {
     pub accounts: Vec<Account>,
     pub providers: Vec<ProviderInfo>,
     pub pools: Vec<Pool>,
+    /// Remote pools for Usage; remote creation still chooses a login.
+    pub usage_pools: Option<Vec<Pool>>,
     pub defaults: RunnerDefaults,
     /// Sign-in commands declared by this runner, replaced on every hello.
     pub login_commands: HashMap<String, String>,
@@ -240,6 +260,7 @@ impl RunnerLogins {
             accounts: accounts_from(&hello["accounts"]),
             providers: lossy(&hello["providers"]),
             pools: pools_from(&hello["pools"]),
+            usage_pools: hello.get("usagePools").map(pools_from),
             defaults: hello
                 .get("defaults")
                 .cloned()
@@ -293,11 +314,16 @@ impl RunnerLogins {
         if self.provider(provider).and_then(|p| p.effort.as_deref()) == Some("none") {
             return Vec::new();
         }
-        if let Some(choice) = model
-            .and_then(|m| choice_for(m, choices))
-            .filter(|c| !c.effort_levels.is_empty())
-        {
-            return choice.effort_levels.clone();
+        if let Some(choice) = model.and_then(|m| choice_for(m, choices)) {
+            if !choice.effort_levels.is_empty() {
+                return choice.effort_levels.clone();
+            }
+            // When the login's model list reports effortLevels, a model that
+            // omits them (Haiku 4.5, an OpenCode model with no thinking option)
+            // takes no effort level.
+            if choices.iter().any(|c| !c.effort_levels.is_empty()) {
+                return Vec::new();
+            }
         }
         match self.provider(provider).and_then(|p| p.effort.as_deref()) {
             Some("none") => Vec::new(),
@@ -350,6 +376,23 @@ impl RunnerLogins {
         }
     }
 
+    /// `replace_account` for an answer that may be another runner's login:
+    /// only where this list has the same login, the same id, provider and
+    /// email, as the same id on another runner can be another login.
+    pub fn replace_same_login(&mut self, account: &Value) {
+        for a in accounts_from(&Value::Array(vec![account.clone()])) {
+            let email = a.email.as_deref().map(str::to_lowercase);
+            if let Some(slot) = self.accounts.iter_mut().find(|x| {
+                x.id == a.id
+                    && x.provider_id() == a.provider_id()
+                    && email.is_some()
+                    && x.email.as_deref().map(str::to_lowercase) == email
+            }) {
+                *slot = a;
+            }
+        }
+    }
+
     /// `pools.updated`: the pools, which replace the ones from `hello`.
     pub fn set_pools(&mut self, pools: &Value) {
         self.pools = pools_from(pools);
@@ -368,7 +411,26 @@ impl RunnerLogins {
     pub fn uses_pools(&self) -> bool {
         !self.pools.is_empty()
     }
+
+    /// The logins not belonging to any pool.
+    pub fn unpooled_accounts(&self) -> Vec<&Account> {
+        crate::new_thread::unpooled_logins(&self.pools, &self.accounts, None)
+    }
+
+    /// Whether `account_id` is a known login that doesn't belong to any pool.
+    pub fn is_unpooled(&self, account_id: &str) -> bool {
+        self.uses_pools()
+            && self.account(account_id).is_some()
+            && !self
+                .pools
+                .iter()
+                .any(|p| p.account_ids.iter().any(|id| id == account_id))
+    }
 }
+
+/// Sentinel pool column for the "No pool" tab when pools are in use and at
+/// least one login isn't in any pool.
+pub const UNPOOLED_COLUMN: &str = "@unpooled";
 
 fn accounts_from(v: &Value) -> Vec<Account> {
     let mut accounts: Vec<Account> = lossy(v);
@@ -593,6 +655,7 @@ pub fn effort_levels(model: Option<&str>, choices: &[ModelChoice], provider: &st
     };
     match model.and_then(|m| choice_for(m, choices)) {
         Some(choice) if !choice.effort_levels.is_empty() => choice.effort_levels.clone(),
+        Some(_) if choices.iter().any(|c| !c.effort_levels.is_empty()) => Vec::new(),
         _ => provider_levels(),
     }
 }
@@ -846,13 +909,90 @@ impl<'a> ChipSettings<'a> {
         )
     }
 
+    /// Whether pools are in use and at least one login isn't in any pool.
+    pub fn has_unpooled(&self) -> bool {
+        self.uses_pools() && !self.logins.unpooled_accounts().is_empty()
+    }
+
+    /// Whether this thread is pinned (no pool) to a login that isn't in any pool.
+    pub fn is_pinned_to_unpooled(&self) -> bool {
+        self.uses_pools() && self.pool().is_none() && self.logins.is_unpooled(&self.account)
+    }
+
+    fn group_provider_rows(
+        &self,
+        own: bool,
+        logins: &[&Account],
+        provider: &str,
+        query: &str,
+    ) -> Vec<PickerRow> {
+        // The login whose list it shows: the thread's own, else (or
+        // when its own lists none, signed out or not yet asked) the
+        // first of the group's that lists models.
+        let listing = logins
+            .iter()
+            .find(|a| !a.models.is_empty())
+            .or(logins.first())
+            .copied();
+        if own {
+            let choices = if self.choices().is_empty() {
+                listing.map_or(&[][..], |a| a.models.as_slice())
+            } else {
+                self.choices()
+            };
+            let default = self
+                .default_model()
+                .or_else(|| listing.and_then(|a| a.default_model.clone()));
+            let chosen =
+                resolved_model(&[self.model.as_deref(), default.as_deref()]).map(str::to_owned);
+            picker_rows(
+                choices,
+                default.as_deref(),
+                chosen.as_deref(),
+                query,
+                provider,
+            )
+        } else {
+            let default = self
+                .logins
+                .defaults
+                .model_for(provider)
+                .map(str::to_owned)
+                .or_else(|| listing.and_then(|a| a.default_model.clone()));
+            picker_rows(
+                listing.map_or(&[][..], |a| a.models.as_slice()),
+                default.as_deref(),
+                None,
+                query,
+                provider,
+            )
+        }
+    }
+
+    fn pool_provider_rows(&self, shown: &Pool, provider: &str, query: &str) -> Vec<PickerRow> {
+        let own = self.pool().is_some_and(|p| p.id == shown.id) && provider == self.provider;
+        let logins = crate::new_thread::pool_logins(shown, &self.logins.accounts, Some(provider));
+        self.group_provider_rows(own, &logins, provider, query)
+    }
+
+    fn unpooled_provider_rows(&self, provider: &str, query: &str) -> Vec<PickerRow> {
+        let own = self.is_pinned_to_unpooled() && provider == self.provider;
+        let logins = crate::new_thread::unpooled_logins(
+            &self.logins.pools,
+            &self.logins.accounts,
+            Some(provider),
+        );
+        self.group_provider_rows(own, &logins, provider, query)
+    }
+
     /// A column's models (ThreadSettings.sections). Without pools a column
-    /// is one provider. A pool lists each of its providers' models, under
-    /// the provider's name when it has more than one: a pool of Claude,
-    /// Codex and OpenCode logins showed only Claude's until 20 Nov, so
-    /// OpenCode's Gemini models were nowhere. The default and the tick are
-    /// only for the thread's own pool and provider. Any other column (the
-    /// pinned one) is the thread's own login's list.
+    /// is one provider. A pool (or `UNPOOLED_COLUMN`) lists each of its
+    /// providers' models, under the provider's name when it has more than one:
+    /// a pool of Claude, Codex and OpenCode logins showed only Claude's until
+    /// 20 Nov, so OpenCode's Gemini models were nowhere. The default and the
+    /// tick are only for the thread's own pool (or unpooled login) and
+    /// provider. Any other column (the pinned one) is the thread's own login's
+    /// list.
     pub fn sections(&self, column: &str, query: &str) -> Vec<PickerSection> {
         if !self.uses_pools() {
             return vec![PickerSection {
@@ -860,6 +1000,25 @@ impl<'a> ChipSettings<'a> {
                 title: None,
                 rows: self.rows(column, query),
             }];
+        }
+        if column == UNPOOLED_COLUMN {
+            let providers =
+                crate::new_thread::unpooled_providers(&self.logins.pools, &self.logins.accounts);
+            let many = providers.len() > 1;
+            return providers
+                .into_iter()
+                .filter_map(|provider| {
+                    let rows = self.unpooled_provider_rows(&provider, query);
+                    if rows.is_empty() {
+                        return None;
+                    }
+                    Some(PickerSection {
+                        title: many.then(|| self.logins.provider_title(&provider)),
+                        provider,
+                        rows,
+                    })
+                })
+                .collect();
         }
         let Some(shown) = self.logins.pool(column) else {
             return vec![PickerSection {
@@ -873,51 +1032,7 @@ impl<'a> ChipSettings<'a> {
         providers
             .into_iter()
             .filter_map(|provider| {
-                let own =
-                    self.pool().is_some_and(|p| p.id == shown.id) && provider == self.provider;
-                // The login whose list it shows: the thread's own, else (or
-                // when its own lists none, signed out or not yet asked) the
-                // first of the pool's that lists models.
-                let logins =
-                    crate::new_thread::pool_logins(shown, &self.logins.accounts, Some(&provider));
-                let listing = logins
-                    .iter()
-                    .find(|a| !a.models.is_empty())
-                    .or(logins.first())
-                    .copied();
-                let rows = if own {
-                    let choices = if self.choices().is_empty() {
-                        listing.map_or(&[][..], |a| a.models.as_slice())
-                    } else {
-                        self.choices()
-                    };
-                    let default = self
-                        .default_model()
-                        .or_else(|| listing.and_then(|a| a.default_model.clone()));
-                    let chosen = resolved_model(&[self.model.as_deref(), default.as_deref()])
-                        .map(str::to_owned);
-                    picker_rows(
-                        choices,
-                        default.as_deref(),
-                        chosen.as_deref(),
-                        query,
-                        &provider,
-                    )
-                } else {
-                    let default = self
-                        .logins
-                        .defaults
-                        .model_for(&provider)
-                        .map(str::to_owned)
-                        .or_else(|| listing.and_then(|a| a.default_model.clone()));
-                    picker_rows(
-                        listing.map_or(&[][..], |a| a.models.as_slice()),
-                        default.as_deref(),
-                        None,
-                        query,
-                        &provider,
-                    )
-                };
+                let rows = self.pool_provider_rows(shown, &provider, query);
                 // Nothing to list (no match, or none known yet): no section,
                 // so no heading with nothing under it.
                 if rows.is_empty() {
@@ -930,6 +1045,161 @@ impl<'a> ChipSettings<'a> {
                 })
             })
             .collect()
+    }
+
+    /// The pool column the picker shows when pools are in use: `picked` when
+    /// it names an existing pool, `UNPOOLED_COLUMN` when unpooled logins exist,
+    /// or `pinned_column` on a thread pinned to a pooled login; otherwise the
+    /// thread's own pool, `UNPOOLED_COLUMN` when pinned to an unpooled login,
+    /// or `pinned_column` when pinned to a pooled login.
+    pub fn resolve_picker_pool(&self, picked: Option<&str>, pinned_column: &str) -> String {
+        if let Some(pool) = picked {
+            if (pool == UNPOOLED_COLUMN && self.has_unpooled())
+                || (pool == pinned_column && self.pool().is_none() && !self.is_pinned_to_unpooled())
+                || self.logins.pool(pool).is_some()
+            {
+                return pool.to_owned();
+            }
+        }
+        if let Some(pool) = self.pool() {
+            pool.id.clone()
+        } else if self.is_pinned_to_unpooled() {
+            UNPOOLED_COLUMN.to_owned()
+        } else {
+            pinned_column.to_owned()
+        }
+    }
+
+    /// The providers the left provider rail shows for `column`:
+    /// - with pools: the providers of the selected pool, the providers of
+    ///   unpooled logins for `UNPOOLED_COLUMN`, or the pinned login's own
+    ///   provider when `column` is the pinned column;
+    /// - without pools: every provider with a login on this runner, in order.
+    pub fn picker_providers(&self, column: &str) -> Vec<String> {
+        if !self.uses_pools() {
+            let mut seen = Vec::new();
+            for account in &self.logins.accounts {
+                let provider = account.provider_id().to_owned();
+                if !seen.contains(&provider) {
+                    seen.push(provider);
+                }
+            }
+            return seen;
+        }
+        if column == UNPOOLED_COLUMN {
+            return crate::new_thread::unpooled_providers(
+                &self.logins.pools,
+                &self.logins.accounts,
+            );
+        }
+        match self.logins.pool(column) {
+            Some(pool) => crate::new_thread::pool_providers(pool, &self.logins.accounts),
+            None => vec![self.provider.clone()],
+        }
+    }
+
+    /// The provider active in the left rail for `column`: `picked` when it's
+    /// in the rail, else the thread's own provider when it's in the rail, else
+    /// the rail's first provider.
+    pub fn resolve_picker_provider(&self, column: &str, picked: Option<&str>) -> Option<String> {
+        let providers = self.picker_providers(column);
+        if let Some(p) = picked {
+            if providers.iter().any(|x| x == p) {
+                return Some(p.to_owned());
+            }
+        }
+        if providers.iter().any(|x| x == &self.provider) {
+            return Some(self.provider.clone());
+        }
+        providers.into_iter().next()
+    }
+
+    /// The model sections shown in the Pool -> Provider -> Model picker:
+    /// - Browsing (`query` empty): only the active `provider`'s models in
+    ///   `column`, headed with the provider's title so the icon-only rail is
+    ///   labelled.
+    /// - Searching (`query` non-empty): searches across every provider in the
+    ///   selected pool (or across all unpooled logins on `UNPOOLED_COLUMN`, or
+    ///   all providers when pools aren't used), with the active provider's
+    ///   matches first and every matching section headed with its provider's
+    ///   title.
+    pub fn sections_for(
+        &self,
+        column: &str,
+        provider: Option<&str>,
+        query: &str,
+    ) -> Vec<PickerSection> {
+        let searching = !query.trim().is_empty();
+        if !self.uses_pools() {
+            if searching {
+                let mut found: Vec<PickerSection> = self
+                    .picker_providers(column)
+                    .into_iter()
+                    .filter_map(|p| {
+                        let rows = self.rows(&p, query);
+                        (!rows.is_empty()).then(|| PickerSection {
+                            title: Some(self.logins.provider_title(&p)),
+                            provider: p,
+                            rows,
+                        })
+                    })
+                    .collect();
+                if let Some(active) = provider {
+                    found.sort_by_key(|s| s.provider != active);
+                }
+                return found;
+            }
+            let Some(provider) = provider else {
+                return Vec::new();
+            };
+            let rows = self.rows(provider, "");
+            if rows.is_empty() {
+                return Vec::new();
+            }
+            return vec![PickerSection {
+                title: Some(self.logins.provider_title(provider)),
+                provider: provider.to_owned(),
+                rows,
+            }];
+        }
+        let is_unpooled = column == UNPOOLED_COLUMN;
+        let shown = (!is_unpooled).then(|| self.logins.pool(column)).flatten();
+        if !is_unpooled && shown.is_none() {
+            let rows = self.rows(&self.provider, query);
+            if rows.is_empty() {
+                return Vec::new();
+            }
+            return vec![PickerSection {
+                title: Some(self.logins.provider_title(&self.provider)),
+                provider: self.provider.clone(),
+                rows,
+            }];
+        }
+        if searching {
+            let mut found = self.sections(column, query);
+            for section in &mut found {
+                section.title = Some(self.logins.provider_title(&section.provider));
+            }
+            if let Some(active) = provider {
+                found.sort_by_key(|s| s.provider != active);
+            }
+            return found;
+        }
+        let Some(provider) = provider else {
+            return Vec::new();
+        };
+        let rows = match shown {
+            Some(pool) => self.pool_provider_rows(pool, provider, ""),
+            None => self.unpooled_provider_rows(provider, ""),
+        };
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        vec![PickerSection {
+            title: Some(self.logins.provider_title(provider)),
+            provider: provider.to_owned(),
+            rows,
+        }]
     }
 
     pub fn effort_levels(&self) -> Vec<String> {
@@ -1024,6 +1294,17 @@ pub fn short_account_name(id: &str, accounts: &[Account]) -> String {
         full
     } else {
         mine
+    }
+}
+
+/// "claude-1 (mike@example.com)": both, so Mike knows which login and which
+/// account to sign in as. Just the id when the name is the id.
+pub fn sign_in_label(account: &Account) -> String {
+    let name = account.name();
+    if name == account.id || name.is_empty() {
+        account.id.clone()
+    } else {
+        format!("{} ({name})", account.id)
     }
 }
 
@@ -1299,5 +1580,293 @@ mod tests {
         assert_eq!(twin_label(&accounts[2], &accounts), None);
         assert_eq!(short_account_name("claude-2", &accounts), "Hooks");
         assert_eq!(short_account_name("claude-3", &accounts), "sam");
+    }
+
+    #[test]
+    fn picker_separates_pool_then_provider_then_models() {
+        let mut l = logins();
+        l.accounts.push(Account {
+            id: "opencode-main".into(),
+            provider: "opencode".into(),
+            models: vec![ModelChoice {
+                id: "google/gemini-4-neon".into(),
+                model: "google/gemini-4-neon".into(),
+                title: "Gemini 4 Neon".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        l.pools.push(Pool {
+            id: "mixed".into(),
+            title: "Mixed".into(),
+            account_ids: vec![
+                "codex-main".into(),
+                "claude-main".into(),
+                "opencode-main".into(),
+            ],
+            ..Default::default()
+        });
+        let s = settings(&l);
+
+        // Default pool is the thread's own; stale pool id falls back to it.
+        assert_eq!(s.resolve_picker_pool(None, "@pinned"), "claude");
+        assert_eq!(s.resolve_picker_pool(Some("gone"), "@pinned"), "claude");
+        assert_eq!(s.resolve_picker_pool(Some("mixed"), "@pinned"), "mixed");
+
+        // In the mixed pool, providers appear in pool order, and the default
+        // active provider prefers the thread's own ("claude") even when listed second.
+        assert_eq!(
+            s.picker_providers("mixed"),
+            vec!["codex", "claude", "opencode"]
+        );
+        assert_eq!(
+            s.resolve_picker_provider("mixed", None).as_deref(),
+            Some("claude")
+        );
+        // Switching to a pool that lacks the previously picked provider falls
+        // back to the thread's own provider or the pool's first.
+        assert_eq!(
+            s.resolve_picker_provider("claude", Some("opencode"))
+                .as_deref(),
+            Some("claude")
+        );
+
+        // Browsing shows only the active provider's models, headed with its title.
+        let browsing = s.sections_for("mixed", Some("opencode"), "");
+        assert_eq!(browsing.len(), 1);
+        assert_eq!(browsing[0].provider, "opencode");
+        assert_eq!(browsing[0].title.as_deref(), Some("OpenCode"));
+        assert_eq!(browsing[0].rows[0].title, "Gemini 4 Neon");
+        assert!(!browsing[0].rows[0].is_selected);
+
+        // Searching searches across all providers in the selected pool, with
+        // the active provider's matches first.
+        let cross = s.sections_for("mixed", Some("claude"), "gemini");
+        assert_eq!(cross.len(), 1);
+        assert_eq!(cross[0].provider, "opencode");
+        assert_eq!(cross[0].title.as_deref(), Some("OpenCode"));
+
+        let active_first = s.sections_for("mixed", Some("claude"), "5");
+        assert_eq!(active_first[0].provider, "claude");
+    }
+
+    #[test]
+    fn picker_handles_pinned_threads_empty_pools_and_non_pool_fallback() {
+        let mut l = logins();
+        l.pools.push(Pool {
+            id: "empty".into(),
+            title: "Empty".into(),
+            account_ids: vec![],
+            ..Default::default()
+        });
+
+        // Pinned thread: defaults to @pinned, shows only its own login's provider.
+        let mut pinned = settings(&l);
+        pinned.pool_id = None;
+        assert_eq!(pinned.resolve_picker_pool(None, "@pinned"), "@pinned");
+        assert_eq!(pinned.picker_providers("@pinned"), vec!["claude"]);
+        assert_eq!(
+            pinned.resolve_picker_provider("@pinned", None).as_deref(),
+            Some("claude")
+        );
+        let pinned_sections = pinned.sections_for("@pinned", Some("claude"), "");
+        assert_eq!(pinned_sections.len(), 1);
+        assert_eq!(pinned_sections[0].title.as_deref(), Some("Claude"));
+        assert!(pinned_sections[0].rows.iter().any(|r| r.is_selected));
+
+        // Once unpinned (thread has a pool again), a stale @pinned falls back.
+        let unpinned = settings(&l);
+        assert_eq!(
+            unpinned.resolve_picker_pool(Some("@pinned"), "@pinned"),
+            "claude"
+        );
+
+        // Empty pool has no providers and returns no sections.
+        assert!(unpinned.picker_providers("empty").is_empty());
+        assert_eq!(unpinned.resolve_picker_provider("empty", None), None);
+        assert!(unpinned.sections_for("empty", None, "").is_empty());
+
+        // Non-pool fallback: provider rail lists all accounts' providers;
+        // browsing shows one provider, searching finds matches across providers.
+        l.pools.clear();
+        let no_pools = settings(&l);
+        assert_eq!(no_pools.picker_providers(""), vec!["claude", "codex"]);
+        let browse = no_pools.sections_for("", Some("claude"), "");
+        assert_eq!(browse.len(), 1);
+        assert_eq!(browse[0].provider, "claude");
+        let search = no_pools.sections_for("", Some("claude"), "sol");
+        assert_eq!(search.len(), 1);
+        assert_eq!(search[0].provider, "codex");
+        assert_eq!(search[0].title.as_deref(), Some("Codex"));
+    }
+
+    #[test]
+    fn picker_no_pool_tab_lists_and_searches_unpooled_logins() {
+        let mut l = logins();
+        // In `logins()`, `codex-main` is not in any pool; add an unpooled Claude
+        // and an unpooled Cursor login too.
+        l.accounts.push(Account {
+            id: "claude-solo".into(),
+            provider: "claude".into(),
+            email: Some("mike@cannstudios.co".into()),
+            default_model: Some("opus".into()),
+            models: vec![
+                ModelChoice {
+                    id: "opus".into(),
+                    model: "claude-opus-5-5".into(),
+                    title: "Opus 5.5".into(),
+                    ..Default::default()
+                },
+                ModelChoice {
+                    id: "sonnet".into(),
+                    model: "claude-sonnet-5".into(),
+                    title: "Sonnet 5".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        l.accounts.push(Account {
+            id: "cursor-solo".into(),
+            provider: "cursor".into(),
+            models: vec![ModelChoice {
+                id: "composer-2".into(),
+                model: "composer-2".into(),
+                title: "Composer 2".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        // A pooled thread can select UNPOOLED_COLUMN, sees unpooled providers
+        // (Claude, Codex, Cursor), and no row is ticked on it.
+        let pooled = settings(&l);
+        assert!(pooled.has_unpooled());
+        assert!(!pooled.is_pinned_to_unpooled());
+        assert_eq!(
+            pooled.resolve_picker_pool(Some(UNPOOLED_COLUMN), "@pinned"),
+            UNPOOLED_COLUMN
+        );
+        assert_eq!(
+            pooled.picker_providers(UNPOOLED_COLUMN),
+            vec!["claude", "codex", "cursor"]
+        );
+        let browse = pooled.sections_for(UNPOOLED_COLUMN, Some("claude"), "");
+        assert_eq!(browse.len(), 1);
+        assert_eq!(browse[0].title.as_deref(), Some("Claude"));
+        assert!(browse[0].rows.iter().all(|r| !r.is_selected));
+
+        // Searching in UNPOOLED_COLUMN looks across all unpooled providers.
+        let search = pooled.sections_for(UNPOOLED_COLUMN, Some("claude"), "composer");
+        assert_eq!(search.len(), 1);
+        assert_eq!(search[0].provider, "cursor");
+        assert_eq!(search[0].rows[0].title, "Composer 2");
+
+        // A thread pinned to an unpooled login defaults to UNPOOLED_COLUMN and
+        // ticks its active model.
+        let mut on_solo = settings(&l);
+        on_solo.pool_id = None;
+        on_solo.account = "claude-solo".into();
+        on_solo.provider = "claude".into();
+        on_solo.model = Some("sonnet".into());
+        assert!(on_solo.is_pinned_to_unpooled());
+        assert_eq!(
+            on_solo.resolve_picker_pool(None, "@pinned"),
+            UNPOOLED_COLUMN
+        );
+        let own_sections = on_solo.sections_for(UNPOOLED_COLUMN, Some("claude"), "");
+        assert!(own_sections[0]
+            .rows
+            .iter()
+            .any(|r| r.id == "sonnet" && r.is_selected));
+
+        // Once every account is in a pool, a stale UNPOOLED_COLUMN falls back.
+        l.pools[0].account_ids.extend([
+            "codex-main".into(),
+            "claude-solo".into(),
+            "cursor-solo".into(),
+        ]);
+        let all_pooled = settings(&l);
+        assert!(!all_pooled.has_unpooled());
+        assert_eq!(
+            all_pooled.resolve_picker_pool(Some(UNPOOLED_COLUMN), "@pinned"),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn effort_levels_follow_model_and_hide_for_models_without_any() {
+        let l = RunnerLogins::from_hello(&json!({
+            "providers": [
+                { "id": "antigravity", "name": "Gemini", "effort": "claude" },
+                { "id": "opencode", "name": "OpenCode", "effort": "claude" },
+                { "id": "claude", "name": "Claude", "effort": "claude" }
+            ],
+            "accounts": [
+                {
+                    "id": "antigravity-main",
+                    "provider": "antigravity",
+                    "title": "Gemini",
+                    "defaultModel": "gemini-3.8-flash",
+                    "models": [
+                        { "id": "gemini-4-neon", "title": "Gemini 4 Neon", "effortLevels": ["low", "medium", "high", "xhigh"], "defaultEffort": "high" },
+                        { "id": "gemini-3.8-flash", "title": "Gemini 3.8 Flash", "effortLevels": ["low", "medium", "high"], "defaultEffort": "high" }
+                    ]
+                },
+                {
+                    "id": "opencode-main",
+                    "provider": "opencode",
+                    "title": "OpenCode",
+                    "models": [
+                        { "id": "opencode/gpt-6-astra", "title": "GPT-6 Astra", "effortLevels": ["low", "medium", "high", "xhigh", "max"] },
+                        { "id": "opencode/big-pickle", "title": "Big Pickle" }
+                    ]
+                },
+                {
+                    "id": "claude-main",
+                    "provider": "claude",
+                    "title": "Claude",
+                    "models": [
+                        { "id": "opus", "title": "Opus 5.5", "effortLevels": ["low", "medium", "high", "xhigh", "max"] },
+                        { "id": "claude-haiku-4-5-20251001", "title": "Haiku 4.5" }
+                    ]
+                }
+            ]
+        }));
+        let agy = &l.account("antigravity-main").unwrap().models;
+        assert_eq!(
+            l.effort_levels(Some("gemini-4-neon"), agy, "antigravity"),
+            vec!["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(
+            l.effort_levels(Some("gemini-3.8-flash"), agy, "antigravity"),
+            vec!["low", "medium", "high"]
+        );
+
+        let oc = &l.account("opencode-main").unwrap().models;
+        assert_eq!(
+            l.effort_levels(Some("opencode/gpt-6-astra"), oc, "opencode"),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+        assert!(
+            l.effort_levels(Some("opencode/big-pickle"), oc, "opencode")
+                .is_empty(),
+            "a model omitting effortLevels when sibling models list them offers none"
+        );
+
+        let claude = &l.account("claude-main").unwrap().models;
+        assert!(l
+            .effort_levels(Some("claude-haiku-4-5-20251001"), claude, "claude")
+            .is_empty());
+
+        // When no model on the login reports effortLevels (older CLI), fall back to the provider's levels.
+        let legacy = vec![ModelChoice {
+            id: "opus".into(),
+            ..Default::default()
+        }];
+        assert_eq!(
+            l.effort_levels(Some("opus"), &legacy, "claude"),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
     }
 }

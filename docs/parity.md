@@ -131,6 +131,8 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 | Needs you or done | `turn.needs` | Yes | Yes | Yes |
 | Needs-you card | `turn.asks` | Yes | Yes | Yes |
 | Done card's follow-ups | `turn.next` | Yes | Yes | Yes |
+| Done card's pick-one follow-up mode | `turn.nextPick` | Yes | Yes | Yes |
+| Done card's recommended follow-up | `turn.nextSuggested` | Yes | Yes | Yes |
 | Another lab's review ledger | `turn.review` | Yes | Yes | Yes |
 | Done card's loose ends | `turn.looseEnds` | Yes | Yes | Yes |
 | What it cost | `turn.costUsd` | Yes | No: Not drawn yet. | Yes |
@@ -143,6 +145,7 @@ pasted (`Desktop only for now.` for all three) is left out of this table.
 
 | What | Kind | iPhone | Android | Website |
 |---|---|---|---|---|
+| Coordinators section | `section.coordinators` | Yes | Yes | Yes |
 | Starred section | `section.starred` | Yes | Yes | Yes |
 | Inbox section | `section.inbox` | Yes | Yes | Yes |
 | Running section | `section.running` | Yes | Yes | Yes |

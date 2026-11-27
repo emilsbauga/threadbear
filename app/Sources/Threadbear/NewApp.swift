@@ -7,11 +7,16 @@ import ThreadbearCore
 /// 2026: mockups A and C in the GPUI port thread). Two pieces:
 ///
 /// - A window over the main one, once, when the app starts (`NewAppWindow`):
-///   what the new app is, that this one is frozen, "Not now" and "Start
-///   using the new app".
+///   what the new app is, that this one stops being updated on
+///   `NewAppCopy.retirementDate`, "Close" and "Start using the new app".
 /// - A card at the top of the sidebar (`NewAppCard`) whose "Start using it"
-///   brings that window up again; "Later" hides it for a week. Once the
-///   switch has started, the card shows its thread instead.
+///   brings that window up again. Once the switch has started, the card
+///   shows its thread instead.
+///
+/// The last Swift build before app/ is deleted (Mike, 25 Nov 2026) made it
+/// hard to miss: the window comes up at every launch, not once ever, and
+/// the card can't be hidden. Close still lets someone in the middle of
+/// something get on with it, until the app next starts.
 ///
 /// Starting doesn't run anything here: it starts a thread in the app's own
 /// checkout with a brief (`brief(checkout:)`), as Investigate does, so an
@@ -38,30 +43,24 @@ final class NewAppOffer {
     private(set) var offered = false
     /// The thread doing the switch, once there is one (kept across launches).
     private(set) var threadId: String?
-    private var hiddenUntil: Date?
     private var checkout: String?
     @ObservationIgnored weak var app: AppModel?
 
-    static let seenKey = "newAppPromptSeen"
-    static let laterKey = "newAppCardHiddenUntil"
     static let threadKey = "newAppThreadId"
     static let target = URL(fileURLWithPath: NSHomeDirectory() + "/Applications/Threadbear GPUI.app")
     nonisolated static let script = "desktop/scripts/switch-from-swift.sh"
     /// Which features the new app has yet, from its behaviour specs.
     static let parityURL = URL(string: "https://github.com/mikecann/threadbear/blob/main/docs/gpui-port/PARITY.md")!
 
-    /// The card: a switch under way, or offered and not put off with Later.
+    /// The card: a switch under way, or offered.
     var cardShown: Bool {
-        if threadId != nil { return true }
-        guard offered else { return false }
-        return (hiddenUntil ?? .distantPast) < Date()
+        threadId != nil || offered
     }
 
     /// At launch, once the threads are in. A scripted run never shows the
     /// window by itself (the automation's `newApp` does).
     func setUp(app: AppModel, scripted: Bool) {
         self.app = app
-        hiddenUntil = UserDefaults.standard.object(forKey: Self.laterKey) as? Date
         // A switch already started: its card stays until the thread's archived.
         if let id = UserDefaults.standard.string(forKey: Self.threadKey) {
             if let thread = app.threads[id], thread.archivedAt == nil {
@@ -79,23 +78,16 @@ final class NewAppOffer {
             guard result.status == 0 else { return }
             self.checkout = checkout
             self.offered = true
-            // Once ever, and not over the tour, which has the window first.
-            if !scripted, !UserDefaults.standard.bool(forKey: Self.seenKey), Tour.shared.step == nil {
-                UserDefaults.standard.set(true, forKey: Self.seenKey)
+            // At every launch, but not over the tour, which has the window first.
+            if !scripted, Tour.shared.step == nil {
                 windowShown = true
             }
         }
     }
 
-    func notNow() {
+    func close() {
         windowShown = false
         startError = nil
-    }
-
-    func later() {
-        let until = Date().addingTimeInterval(7 * 24 * 3600)
-        hiddenUntil = until
-        UserDefaults.standard.set(until, forKey: Self.laterKey)
     }
 
     /// Starts the thread that builds and switches. The window closes once
@@ -156,7 +148,6 @@ final class NewAppOffer {
     func preview(_ c: [String: Any], app: AppModel) {
         self.app = app
         offered = true
-        hiddenUntil = nil
         startError = c["error"] as? String
         threadId = c["thread"] as? String
         if let shown = c["window"] as? Bool { windowShown = shown }
@@ -166,10 +157,9 @@ final class NewAppOffer {
 private enum NewAppCopy {
     static let windowTitle = "Try the new Threadbear app"
     static let windowBody = "It looks and works exactly like this one, and it runs on Windows and Linux as well as the Mac."
-    /// When the Swift app stops being updated. Set it (say "1 December")
-    /// once the GPUI app's remaining gaps and the carry-over of people's own
-    /// Swift changes have landed, and both pieces say so.
-    static let retirementDate: String? = nil
+    /// When the Swift app stops being updated: the day app/ is deleted from
+    /// Mike's copy (his pick, 25 Nov 2026). Both pieces say so.
+    static let retirementDate: String? = "2 December"
     static var frozen: String {
         let base = "This app no longer gets new features: everything new goes into the new app"
         return retirementDate.map { "\(base), and this one stops being updated on \($0)." } ?? "\(base)."
@@ -178,7 +168,10 @@ private enum NewAppCopy {
     static let windowBuild = "Starting it begins a thread that builds it on this Mac (20 to 40 minutes, installing Rust first if you need it), fixes anything that gets in the way, and asks you before it switches."
     static let windowGaps = "A few things still only work here."
     static let cardTitle = "A new Threadbear app"
-    static let cardBody = "It looks and works like this one, and runs on Windows and Linux too. This one no longer gets new features."
+    static var cardBody: String {
+        let base = "It looks and works like this one, and runs on Windows and Linux too."
+        return retirementDate.map { "\(base) This one stops being updated on \($0)." } ?? "\(base) This one no longer gets new features."
+    }
 }
 
 @MainActor private var gpuiIcon: some View {
@@ -234,10 +227,10 @@ struct NewAppWindow: View {
                     Text(error).foregroundStyle(.red)
                 }
                 HStack(spacing: zoomed(10)) {
-                    Button("Not now") { offer.notNow() }
+                    Button("Close") { offer.close() }
                         .keyboardShortcut(.cancelAction)
                         .buttonStyle(NewAppPrimary(quiet: true))
-                        .tip("Close this. The card at the top of the sidebar can bring it back")
+                        .tip("Close this until the app next starts. The card at the top of the sidebar brings it back")
                     Button { offer.start() } label: {
                         HStack(spacing: zoomed(6)) {
                             if offer.starting { SpinnerMark(color: .white).frame(width: zoomed(12), height: zoomed(12)) }
@@ -280,16 +273,11 @@ struct NewAppCard: View {
                         .font(.system(size: TypeScale.sidebarPreview))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: zoomed(8)) {
-                        Button { offer.windowShown = true } label: {
-                            Text("Start using it").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(NewAppPrimary())
-                        .tip("What the new app is, and a button that installs it")
-                        Button("Later") { offer.later() }
-                            .buttonStyle(.borderless)
-                            .tip("Hide this for a week")
+                    Button { offer.windowShown = true } label: {
+                        Text("Start using it").frame(maxWidth: .infinity)
                     }
+                    .buttonStyle(NewAppPrimary())
+                    .tip("What the new app is, and a button that installs it")
                 }
             }
             .padding(zoomed(12))
@@ -329,7 +317,7 @@ struct NewAppCard: View {
 /// the window isn't the key one, which a window over the app at launch
 /// often isn't.
 private struct NewAppPrimary: ButtonStyle {
-    /// The grey one ("Not now", "Open the thread").
+    /// The grey one ("Close", "Open the thread").
     var quiet = false
     @Environment(\.isEnabled) private var enabled
 

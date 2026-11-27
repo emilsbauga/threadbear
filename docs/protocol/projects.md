@@ -427,7 +427,9 @@ schedule keeps `poolId` (and `provider`), so the run still picks its login.
   or queued; one that needs Mike, fails or waits stays out. Mike writing to
   it, or archiving or unarchiving it himself, clears the mark.
 - **New threads** get the schedule's title and settings and are made the
-  way `threads.create` makes them. One with a `poolId` starts on that
+  way `threads.create` makes them; with `starThreads` each starts starred
+  (`starredAt`, the Starred section). The backend stores it from API 100,
+  and a runner sends it only to a backend that has it. One with a `poolId` starts on that
   pool's pick of its logins at the time (Which login), and stays in the pool.
   Unlike a thread Mike starts, it doesn't change the login or pool the
   next new thread starts on. Their summary's `schedule` says which
@@ -656,3 +658,313 @@ recipe's file, its state, its schedules or the threads they started. The
 runner looks every 30 seconds and at once after its own changes; a client
 fetches `recipes.list` again (and `recipes.get` for a recipe it shows). With
 the experiment off every method fails with `-32601`.
+## Project coordinators
+
+The `coordinators` experiment adds one optional coordinator to a project. It is an
+ordinary thread using the normal pool/model settings, and you can switch its model
+or provider at will. No coordinator budget, spending limit or cost estimate is
+added.
+
+The project home has Conversation, Activity, To-dos and Threads tabs. Its right
+Highlights pane pins durable Open loops above the living project brief (shared
+`state`, `goals`, active work and `links`), and tucks the shared `notes` into a
+collapsible Agent memory drawer at the bottom so technical agent notes stay out
+of the way unless opened. These fields remain the same canonical records
+`projects.get` and `projects.update` read and write. The conversation is the
+audit trail. Routine work uses runner-managed hidden helper sessions (started
+and resumed through the `coordinator` tool, never separate inbox threads),
+surfaced in Activity and readable via `threads.subagent`. Questions and
+permission requests from helpers go to the coordinator. Only it asks the user.
+
+`projects.update` optionally takes `ifUnchanged: { goals?, state?, notes? }`.
+The owning runner compares every supplied baseline before writing anything. A
+conflict leaves the project unchanged and the editor keeps the user's draft.
+
+Requests (local runner; other clients tolerate the unknown methods/notification):
+
+| Method | Params | Reply |
+| --- | --- | --- |
+| `coordinators.list` | `{}` | `{ coordinators: Coordinator[] }` |
+| `coordinators.get` | `{ projectId }` | `{ coordinator }` |
+| `coordinators.start` | `{ projectId, accountId?, poolId?, model?, effort?, charter?, tasks?, message? }` | `{ coordinator, thread, started? }` |
+| `coordinators.pause` | `{ projectId, paused }` | `{ coordinator }` |
+| `coordinators.addTask` | `{ projectId, title, doneWhen }` | `{ coordinator }` |
+| `coordinators.update` | `{ projectId, charter?, interests?, wakeAt? }` | `{ coordinator }` |
+| `coordinators.answer` | `{ projectId, questionId, answer }` | `{ coordinator }` |
+| `coordinators.closeLoop` | `{ projectId, loopId }` | `{ coordinator }` |
+| `coordinators.reopenLoop` | `{ projectId, loopId }` | `{ coordinator }` |
+| `coordinators.replyLoop` | `{ projectId, loopId, text, close? }` | `{ coordinator }` |
+
+`coordinators.updated` carries `{ coordinators: Coordinator[] }`, and the app
+loads `coordinators.list` again after reconnect. With the experiment off, lists
+are empty and writes refuse; existing coordinator identities still retain their
+tool restrictions. They cannot become unrestricted threads by turning it off.
+
+`Coordinator` is `{ projectId, threadId, state: "active" | "paused", charter,
+interests: string[], tasks, questions, loops, updatedAt, wakeAt? }`. Tasks have
+`{ id, title, doneWhen, state, run? }`; task state is `todo`, `working`,
+`blocked`, `review` or `done`. Run is `{ id, agentId?, nativeTaskId?,
+nativeRunId?, status, summary?, updatedAt }`.
+Run states are `queued`, `running`, `interrupted`, `completed`, `failed`, `stopped`.
+One transition function owns the allowed moves. Starting or resuming a helper
+reserves the run and starts a hidden runner-owned helper session (inheriting the
+coordinator's pool/model or overriding them). Its turn outcome updates the run
+and wakes the coordinator. A turn that ends with background work still going
+that the CLI wakes for (a shell, a monitor, a subagent: Claude, not Codex)
+doesn't end the run: the turn that work wakes carries it on, tools and all, and
+its end is what the coordinator hears; if none comes once the work is done and
+the wake grace has passed, or the CLI goes, the held turn's result is. Tasks are the user's list of all open work, not only helper
+jobs: the coordinator is told to add one for each open step or decision (the user's
+own included, done with `completeTask`), and its desk says so when none are open. The UI does not manually mark running work done.
+Questions have `{ id, agentId, questions, state, answer? }`.
+
+**Open loops.** `loops` holds durable user questions and coordinator decisions
+so overlapping topics in chat cannot push earlier questions or asks out of view.
+Each loop is `{ id, kind: "user_question" | "waiting_on_user", state: "open" |
+"answered" | "closed", title, summary?, options?, sourceSeq?, createdAt,
+updatedAt, closedAt? }`. Older coordinators without `loops` default to `[]`.
+- `user_question` loops are opened or updated by the coordinator via `openLoop`
+  and `updateLoop`: `open` while checking, `answered` with a short `summary`
+  once answered. They stay visible until explicitly closed (`coordinators.closeLoop`
+  or `closeLoop` after explicit user sign-off). `coordinators.reopenLoop` undoes
+  a close.
+- A `waiting_on_user` loop is the legacy backing record for an ask without a
+  matching task. An ask can also bind to an existing decision task. Both appear
+  as one decision on the Tasks board. A legacy `openLoop` or `updateLoop`
+  still reads and writes its loop. Replying on the composer card with
+  `answers` updates the matching decision. An unrelated message leaves it open.
+- The desktop's Open loops pane doesn't draw `waiting_on_user` loops. It
+  mirrors the coordinator thread's live `asks` instead, one read-only row each
+  that takes you to the Needs you card, where they're answered. The loops stay
+  in the registry for the coordinator's own context.
+- `coordinators.replyLoop` sends the user's reply to the coordinator thread
+  referencing the loop's title (refused while paused). For `waiting_on_user`
+  (default `close: true`) it records the answer and closes the loop. A Not now
+  reply postpones it until tomorrow at 9 a.m. local time. For `user_question`
+  (`close: false`, follow-up) it moves the loop back to `open`.
+
+The runner stores the registry outside the model's context, including briefs,
+helper session identities and checkpoints. Each execution has its own run
+generation; late results from earlier executions cannot finish resumed work.
+Helper completion puts the task in review and wakes the coordinator. The
+coordinator checks its result against `doneWhen` before `completeTask` marks it
+done; `archiveTask` retains the full finished record in `coordinator-history.jsonl`
+and frees its active-list space. A to-do no longer needed (the user took it to a
+thread of their own, or it's moot) goes with `dropTask` and a `summary` of why
+(required): into the same history with `droppedAt` and `reason`, never marked
+done, and refused while a helper is working on it or once it's done. A session
+whose tool list predates `dropTask` drops it with `archiveTask` and a `summary`.
+`read_thread` reaches a coordinator's own hidden helpers by short id too;
+`send_message` refuses any helper (its coordinator uses `resumeHelper`). These actions use the scoped coordinator tool,
+with `taskId`, rather than a manual running-task checkbox.
+
+**Restarts.** A runner update (a handover or a plain restart), a crash or a
+reboot cuts off a helper mid-turn: its CLI is one of the coordinator's sessions, which never stay
+on a draining runner, as `coordinators.json` has one writer. The run is saved
+`interrupted` and marked in the registry (not in `Run`) to be carried on, and
+the next runner does that by itself once it's listening (beside its own
+carry-on of threads stopped mid-turn, which leaves helpers alone): the same helper session gets
+the runner's message, as a new run generation like `resumeHelper`, saying the
+runner restarted partway through its turn and to check what's already done
+rather than repeat a send, merge, release or deploy. The coordinator isn't woken
+and nothing is added to its conversation (the helper's Activity row says it's
+working again); it hears as usual when the helper's turn ends. Before 26 Nov
+2026 every update woke the coordinator, which then told the user it had started
+the helper again. When the runner can't carry a helper on, it wakes the
+coordinator to reconcile it instead, once: the helper has no session to resume,
+another helper is working, the run was cut off more than 12 hours ago, the
+runner went down without stopping cleanly (a crash or a power cut, not an
+update or a SIGTERM) during a turn it had carried on after the last such crash, it has carried this run on 10 times, or the send is refused. A
+paused coordinator's helpers aren't carried on, and Pause or Resume drops the
+marks, so Resume's wake leaves them to the coordinator; with coordinators off
+nothing happens until they're turned back on. A helper whose session can't be
+resumed (its transcript gone) fails its turn to the coordinator rather than
+starting a fresh session without its brief. That wake is the restart report, saved in the same write
+that drops the run's mark and delivered like a helper's report (kept until a
+coordinator turn that has it finishes), so a refused send or a crash doesn't
+lose it. A known helper may be
+resumed explicitly with `resumeHelper`. Otherwise a new helper starts from its
+saved checkpoint. Compaction (on CLIs that support `/compact`)
+waits for helpers to finish, retains the charter and rereads canonical project
+records after compaction.
+
+### Tasks and work items
+
+The coordinator tool adds `addWorkItem`, `updateWorkItem`, `removeWorkItem`,
+`addWorkTask`, `updateWorkTask`, `moveWorkTask`, and `postponeTask`. Use
+`taskId` or `workItemId` to select a row. Task edits accept `title`,
+`doneWhen`, `kind`, `owner`, `state`, `now`, `due`, `workItemId`,
+`parentTaskId`, `decisionOptions` (objects with `label` and optional `does`),
+and `recommendation` (the recommended option's label). Omitted edit fields
+keep their values. Pass null to clear `now`, `due`, decision options or the
+recommendation, or to move a task out of a group or parent. Setting
+`state: "postponed"` takes a trigger in `due`. Moving a task under a
+parent inherits its group, including when an edit sends back the inherited
+`workItemId` shown on the board. Removing a work item moves its tasks out of
+the group. Update a work item with `beforeWorkItemId` to reorder it. Null
+moves it to the end.
+
+The Tasks tab and Highlights use these local runner RPCs. Each returns
+`{ coordinator }` with the updated board, plus `workItemId` on creation.
+The same methods are available over the runner's normal RPC transports.
+
+| Method | Params |
+| --- | --- |
+| `coordinators.addWorkItem` | `{ projectId, title }` |
+| `coordinators.updateWorkItem` | `{ projectId, workItemId, title?, collapsed?, beforeWorkItemId? }` |
+| `coordinators.removeWorkItem` | `{ projectId, workItemId }` |
+| `coordinators.answerDecision` | `{ projectId, taskId, answer, asksSeq? }` |
+| `coordinators.postponeTask` | `{ projectId, taskId, due, asksSeq? }` |
+| `coordinators.markTaskDone` | `{ projectId, taskId }` |
+| `coordinators.closeTask` | `{ projectId, taskId }` |
+| `coordinators.reopenTask` | `{ projectId, taskId }` |
+| `coordinators.addToCoordinator` | `{ projectId, text }` |
+
+Input `due` is `{ type: "tomorrow" }`, `{ type: "date", date: "YYYY-MM-DD" }`,
+`{ type: "after_task", taskId }`, or `{ type: "at", at }`. A decision in
+a Needs you card carries `taskId` in its ask. Both surfaces answer or
+postpone that ID. The runner retires the matching ask immediately through an
+`asks.ticked` event with `resolved` indexes. Unresolved asks on the same card
+keep their original indexes. The board exposes `needsYou: true` for published,
+active decisions and `canReopen: true` for confirmations that support Undo. Card
+clients may send `asksSeq` to reject a stale card. The runner records the
+answer and marks the decision done, then wakes the coordinator to act on the
+answer. Use a separate action task for remaining work. Postponing clears the
+current ask. When the trigger is due, the runner wakes the coordinator to
+reconsider and ask again with the same ID. Legacy replies keep the
+`answers: [{ action, answer }]` shape. An ordinary reply can answer a decision
+when it matches a choice on one active ask. Convex continues to mirror the
+legacy card fields. Only a reply to the current card can resolve a task through
+the legacy card route. Include every open decision that is ready to ask when
+ending the turn. The explicit Not now option postpones until 9 a.m. tomorrow.
+A linked comparison stays available through a re-ask on the same task.
+An unrelated message leaves that comparison open.
+
+`markTaskDone` marks a user-owned action done. `closeTask` confirms an
+agent-owned action that is ready to close, including a substantive question
+the coordinator has answered. `reopenTask` undoes that confirmation and
+returns the task to ready to close. Both actions wake the coordinator.
+`addToCoordinator` takes a free-text
+request and hands it to the coordinator to organize into work.
+
+Coordinator responses and `coordinators.updated` can include `taskBoard`.
+Existing clients and coordinator tools can keep reading `tasks`, `loops`,
+`questions` and `wakeAt` with their original shapes and actions. The board is
+local to the coordinator's runner. The Convex mirror still carries the thread's
+optional `coordinatorProjectId`, with no backend version change.
+
+- `taskBoard.workItems` contains `{ id, title, collapsed, progress: { done,
+  total } }`. Progress counts current top-level tasks assigned to the group.
+- `taskBoard.tasks` contains `{ id, title, kind, owner, state, doneWhen?,
+  now?, source?, due?, workItemId?, parentTaskId?, decision?, createdAt?,
+  updatedAt?, closedAt? }`. `owner` is `{ kind: "user" | "agent" }` or
+  `{ kind: "person", name }`. `source` can carry `threadId`, `runId` and
+  `seq`. A child inherits its parent's `workItemId` in this view. Only the
+  parent stores that field. Legacy open loops appear as top-level tasks during
+  the transition. A task can still have no group.
+- States are `todo`, `working`, `waiting`, `postponed`, `ready_to_close` and
+  `done`. Legacy blocked work maps to waiting and a finished helper awaiting
+  review maps to ready to close. User questions become agent actions. An
+  answered question is ready to close until the user signs off. Decisions
+  waiting on the user become user-owned decisions, with any saved options as
+  `{ label, does? }`. A decision can also carry a recommendation and the
+  recorded answer.
+- An absolute due trigger is `{ type: "at", at, preset? }` with an ISO
+  timestamp. Following the runner's Tomorrow preset, date picks use 9 a.m.
+  in the runner's local time. The runner rejects an absolute postpone time
+  that has already been reached. The runner stores the resolved instant. An
+  `{ type: "after_task", taskId }` trigger is satisfied when that task is done.
+  Only postponed tasks trigger a wake. The runner clears the postponement
+  and queues a durable wake together, including while the coordinator is
+  paused. A postponed task returns to its underlying state when released.
+  The coordinator's turn context shows the postponement and its trigger.
+  Selecting, starting, resuming, completing or dropping a postponed to-do
+  waits for its wake.
+- Old records keep their identities, run and loop data, and coordinator wake
+  times. The registry adds task details to the old records in place.
+  Existing JSONL history stays append-only. The runner reads old archived,
+  dropped, and removed-coordinator entries as task history without rewriting
+  them. Closed loops that roll out of the old list stay on the task board.
+
+### Handing a project to its coordinator
+
+An ordinary thread starts a project's coordinator, or hands the one it has more
+work, with the `coordinator` option of its `create_project` and `update_project`
+tools (offered only where the experiment is on): `{ pool?, model?, effort?,
+charter?, tasks?: { title, doneWhen }[], message? }`. A new coordinator starts
+with that charter (else the default) and to-dos, and its first message names the
+thread that handed it over and quotes `message`. An existing one gets the charter
+in place of its own and the to-dos added, then a wake saying the same; its pool
+and model stay as they are. The message goes in as quoted data from that
+thread, never as the user's words. A paused coordinator or an archived project
+is refused, and all of it is checked before anything is written or a card is
+put up (text lengths, 100 tasks at most). `coordinators.start` with any of
+`charter`, `tasks` or `message` does the same over RPC and says `started`.
+
+A coordinator thread runs at the runner's default access and its helpers do the
+work, and its charter and to-dos are read on every later turn whatever access
+it has by then, so from a thread below Full access the tool always asks on a
+card first. The card names the most access among the coordinator and the
+helpers it could resume, shows the whole brief the coordinator will be told,
+goes to the user even in Auto (never the card reviewer), and is refused if the
+brief, the coordinator or its access changed while it was up. The handoff's
+words carry that access as their ceiling, so they're held if the coordinator is
+raised before they run. `tasks: null` is refused, not read as none.
+
+Over a thread's key, `coordinators.start`, `coordinators.addTask` and
+`coordinators.update` are open to a thread on Full access and refused below it
+(pointing at `update_project`). The runner names the calling thread as the
+sender (`fromThread`), whatever the call says, and tells the coordinator when
+another thread changed its charter or interests. `addTask` from a thread needs
+a coordinator already there; `update` checks every field before setting any,
+and from a thread refuses a paused coordinator. A handoff or change the
+coordinator couldn't be told of (its message refused) leaves its desk as it was.
+
+Only the user pauses a coordinator or answers its helpers' questions
+(`coordinators.pause` and `coordinators.answer` refuse every thread key). The
+coordinator's `coordinator` tool may read its own registry, add tasks,
+select/complete/archive tasks, start or resume hidden helpers, manage open loops
+(`openLoop`, `updateLoop`, `closeLoop`), update its charter and interests, set a
+wake time and record answers to helper questions. It may also use `add_button`
+to offer a side job outside the project as a new thread; only the user's press
+starts it, so it can't use one to get round its own boundary. A coordinator may also call
+Agent Archive's read tools (exact names in `coordinator-policy.ts`) to look
+back before asking the user something already settled: on Claude by tool name;
+on Antigravity (which gets
+the archive as a stdio server in `session/new`, unless its own or the folder's
+config names an `agent-archive` server itself) only when every frame of the
+call agrees it is that tool. Grok threads get the archive too, but its calls
+ask like any other server's, as a Grok agent profile can put its own server
+under that name, so a Grok coordinator has no archive. A Codex coordinator's
+app-server starts with plugins and apps off, every other configured MCP server
+is switched off for its thread, and it refuses to start if
+`mcpServerStatus/list` shows any other server still offering tools, as Codex
+runs MCP tools without asking. A coordinator and its helpers cannot start or hand work to any
+coordinator (update_project refuses the option there, and their thread keys
+refuse every `coordinators.*` write), and neither coordinator nor helper shells
+may use thread-owned RPC to create threads or mutate other work.
+Coordinator read-only and helper non-escalation boundaries are enforced in each
+adapter before Full access (Claude `PreToolUse`, Codex read-only sandbox and
+approval refusal, ACP `session/request_permission` and Cursor `ask` mode), plus
+hidden helper suppression of user approval and question cards.
+
+Pause blocks new dispatch and all coordinator/helper tool calls, cancels pending
+wake timers and interrupts its CLI. Resume reconciles interrupted work. It does
+not pause independent threads that the coordinator messages. Completion/failure
+events from project threads and matching interest keywords are deduplicated and
+batched for ten minutes; progress does not wake it. An explicit timer or a helper
+question wakes it without that batch delay. Sources remain quoted event data.
+
+Queued coordinator updates survive runner recovery. An update already started
+has a durable receipt; a still-queued update remains queued rather than becoming
+an unsent-message note. Runner handover ends coordinator sessions and records
+unfinished work before the replacement takes over the registry. A project with
+an active coordinator cannot be deleted or merged: pause it first. Removal then
+archives its conversation and execution records before removing the identity.
+
+This version watches completed project threads and literal interest keywords.
+It does not yet classify incoming email, Slack or Sentry through the librarian.
+The project document follows the existing canonical project updates in place;
+a browsable document-version history and per-edit source links are not included.
+
+

@@ -25,7 +25,7 @@ use threadbear_core::reducer::{LabReview, ReviewFinding, Row};
 /// A finding's mark (SF's checkmark.circle, exclamationmark.bubble,
 /// person.crop.circle and circle, as Lucide draws them), its word and its
 /// colour, by what was done about it.
-fn outcome(finding: &ReviewFinding, cx: &App) -> (IconName, &'static str, Hsla) {
+pub(super) fn outcome(finding: &ReviewFinding, cx: &App) -> (IconName, &'static str, Hsla) {
     match finding.outcome.as_deref() {
         Some("fixed") => (IconName::CircleCheck, "Fixed", style::tick_green(cx)),
         Some("disputed") => (

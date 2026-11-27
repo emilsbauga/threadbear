@@ -123,3 +123,20 @@ Given("there's a thread called {string} on alex+3 in the Personal pool", async f
   await this.app.do({ cmd: 'mock', method: 'thread', params: { id: `personal-${title.length}`, title, accountId: 'claude-3', poolId: 'personal' } });
   await this.until(`"${title}" in the sidebar`, (d) => this.thread(d, title));
 });
+
+type StarEditor = { scheduleEditor?: { starThreads?: boolean } | null };
+
+Then('the schedule editor stars each new thread', async function (this: ThreadbearWorld) {
+  await this.until('the schedule editor starring each new thread', (d) => (d as unknown as StarEditor).scheduleEditor?.starThreads === true);
+});
+
+Then("the schedule editor doesn't star each new thread", async function (this: ThreadbearWorld) {
+  await this.until('the schedule editor not starring its threads', (d) => (d as unknown as StarEditor).scheduleEditor?.starThreads === false);
+});
+
+When('I tick {string} in the schedule editor and save it', async function (this: ThreadbearWorld, _label: string) {
+  await this.app.do({ cmd: 'schedule', starThreads: true });
+  await this.app.do({ cmd: 'schedule', save: true });
+  // Save closes the editor once the runner has the change.
+  await this.until('the schedule editor closed', (d) => !(d as unknown as StarEditor).scheduleEditor);
+});

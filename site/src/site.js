@@ -57,7 +57,7 @@ if (player) {
   const toggleButton = player.querySelector(".player-toggle");
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let current = 0;
-  let inView = true;
+  let inView = !("IntersectionObserver" in window);
   let paused = still;
   // When autoplay's refused (Low Power Mode on an iPhone, say), the bar and the move to the next
   // clip run by the clock instead: when that clock started and how long the clip is.
@@ -78,6 +78,8 @@ if (player) {
       clockStart = 0;
       return;
     }
+    // Start loading the next clip only once the player is visible and playing.
+    clips[(current + 1) % clips.length].preload = "auto";
     clip.play().catch(() => {
       clockLength = (clip.duration || 12) * 1000;
       clockStart = performance.now() - (clip.currentTime || 0) * 1000;
@@ -101,10 +103,7 @@ if (player) {
     });
     caption.textContent = features[current].querySelector(".feat-text").textContent;
     const clip = clips[current];
-    clip.preload = "auto";
     if (clip.readyState > 0) clip.currentTime = 0;
-    // The next clip loads while this one plays, so it's ready when its turn comes.
-    clips[(current + 1) % clips.length].preload = "auto";
     clockStart = 0;
     play();
   };
@@ -144,7 +143,7 @@ if (player) {
       .observe(player.querySelector(".stage"));
   }
   document.addEventListener("visibilitychange", play);
-  if (still) player.classList.add("paused");
+  if (still) setPaused(true);
   show(0);
 }
 

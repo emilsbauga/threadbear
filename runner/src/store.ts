@@ -67,7 +67,9 @@ const OBJECTS = ['wakeCeiling', 'needs', 'looseEnds', 'stoppedWork', 'stoppedMid
 const NESTED: [string, string, 'object' | 'string' | 'number'][] = [
   ['needs', 'asks', 'object'],
   ['needs', 'ticked', 'number'],
+  ['needs', 'resolved', 'number'],
   ['needs', 'open', 'string'],
+  ['needs', 'next', 'string'],
   ['looseEnds', 'ends', 'object'],
   ['stoppedWork', 'what', 'string'],
   ['highlights', 'items', 'object'],
@@ -87,6 +89,7 @@ function listOf(v: unknown, kind: 'object' | 'string' | 'number'): unknown[] | u
 }
 export function normaliseRecord(rec: Record<string, unknown>): boolean {
   const before = JSON.stringify(rec);
+  if (!rec.model || (rec.explicitModel !== 'pickerId' && rec.explicitModel !== 'modelId' && rec.explicitModel !== 'unresolved')) delete rec.explicitModel;
   for (const k of OBJECTS) if (rec[k] !== undefined && !isObject(rec[k])) delete rec[k];
   for (const [k, kind] of [...OBJECT_LISTS.map((k) => [k, 'object'] as const), ...STRING_LISTS.map((k) => [k, 'string'] as const), ...NUMBER_LISTS.map((k) => [k, 'number'] as const)]) {
     if (rec[k] === undefined) continue;
@@ -102,6 +105,18 @@ export function normaliseRecord(rec: Record<string, unknown>): boolean {
     const list = listOf(obj[k], kind);
     if (list) obj[k] = list;
     else delete obj[k];
+  }
+  if (isObject(rec.needs)) {
+    const next = Array.isArray(rec.needs.next) ? rec.needs.next : undefined;
+    if (!next || next.length < 2 || rec.needs.nextPick !== 'one') {
+      delete rec.needs.nextPick;
+      delete rec.needs.nextSuggested;
+    } else if (
+      rec.needs.nextSuggested !== undefined &&
+      (typeof rec.needs.nextSuggested !== 'number' || !Number.isInteger(rec.needs.nextSuggested) || rec.needs.nextSuggested < 0 || rec.needs.nextSuggested >= next.length)
+    ) {
+      delete rec.needs.nextSuggested;
+    }
   }
   // looseEnds is drawn from its ends; one without them is no check. The
   // Highlights need both their lists, so without either they start again.
@@ -189,6 +204,9 @@ export type ThreadRecord = {
   stoppedWorkWakes?: number;
   provider: Provider;
   model?: string;
+  // The requested model survived validation. Defaults and older records
+  // that didn't save its origin keep the usual pool spillover.
+  explicitModel?: 'pickerId' | 'modelId' | 'unresolved';
   effort?: EffortLevel;
   modelInUse?: string; // full id the CLI ran the last turn on
   effortInUse?: EffortLevel; // the level the CLI reported for the last turn
@@ -258,6 +276,8 @@ export type ThreadRecord = {
   // review thread (the thread whose change it checks), which never gets a
   // review of its own; labReviews counts the reviews since Mike last wrote.
   reviewOf?: string;
+  // Hidden runner-managed helper owned by a project coordinator's thread.
+  coordinatorHelperFor?: string;
   labReviews?: number;
   // The ledger of the review under way (lab-review.ts, LabLedger): its
   // findings and the agent's answers, until Mike next writes.
@@ -269,6 +289,7 @@ export type ThreadRecord = {
   // makes no threads), for the runner that adopts or loads this one to start.
   // `seq`: where that turn's events end, which its diff is read back from.
   labReviewOwed?: { turnId: string; seq?: number; reply?: string };
+  snoozedByAgent?: true; // its snooze until a time was its agent's, not Mike's (place.ts)
   snoozedAt?: string; // when it was last put away, for how long it slept; may be stale once awake
   woke?: { at: string; since?: string }; // woke by itself and not looked at yet (since = snoozedAt)
   archivedAt?: string;
@@ -333,11 +354,12 @@ export type ThreadRecord = {
   sessionCostTotal?: number; // the CLI's running total_cost_usd for this native session
   lastTurnCompletedSeq: number;
   forceUnread?: boolean; // set when a snooze ends
+  quietWake?: true; // its agent's snooze ended with nothing for Mike: unread only while no schedule is booked (HibernationPart.wake)
   // What the last completed turn said it needs from Mike, with the seq of
   // its turn.completed and which of its asks he has ticked.
   // (A record from 11 to 13 Nov 2026 may also hold `open`, the agent's own
   // lines for the done card: nothing reads it now.)
-  needs?: { seq: number; needs: NeedsWho; asks?: Ask[]; ticked?: number[]; afterJobs?: string[] };
+  needs?: { seq: number; needs: NeedsWho; asks?: Ask[]; ticked?: number[]; resolved?: number[]; afterJobs?: string[]; next?: string[]; nextPick?: 'one'; nextSuggested?: number };
   // Set when the folder or account changes, or the record had to be
   // rebuilt; the next turn starts a new native session with a note.
   // lost: the session to resume couldn't be found (never saved; only set

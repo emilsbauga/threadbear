@@ -8,6 +8,7 @@ import java.util.Locale
 
 /** The inbox's headings, top to bottom, as on the Mac sidebar. */
 enum class PhoneSection(val title: String, val view: ThreadsView?) {
+    COORDINATORS("Coordinators", null),
     STARRED("Starred", null),
     INBOX("Inbox", null),
     RUNNING("Running", null),
@@ -57,6 +58,7 @@ data class InboxSections(
     val inbox: List<PhoneThread> = emptyList(),
     val running: List<PhoneThread> = emptyList(),
     val scheduled: List<PhoneThread> = emptyList(),
+    val coordinators: List<PhoneThread> = emptyList(),
 ) {
     /**
      * The badge: threads waiting on an answer or wanting him. A starred one
@@ -65,20 +67,22 @@ data class InboxSections(
      */
     val needsYouCount: Int
         get() {
-            val awake = starred.filter { it.waitState != null || (it.snoozedUntil == null && it.snoozedUntilRestart != true) }
+            val awake = (coordinators + starred).filter { it.waitState != null || (it.snoozedUntil == null && it.snoozedUntilRestart != true) }
             return (awake + inbox).count { InboxUrgency.counts(urgency(it)) }
         }
 
-    val isEmpty get() = starred.isEmpty() && inbox.isEmpty() && running.isEmpty() && scheduled.isEmpty()
+    val isEmpty get() = coordinators.isEmpty() && starred.isEmpty() && inbox.isEmpty() && running.isEmpty() && scheduled.isEmpty()
 
     companion object {
         fun build(threads: Iterable<PhoneThread>, now: Instant, wakes: Map<String, ScheduleWake> = emptyMap()): InboxSections {
+            val coordinators = mutableListOf<PhoneThread>()
             val starred = mutableListOf<PhoneThread>()
             val inbox = mutableListOf<PhoneThread>()
             val running = mutableListOf<PhoneThread>()
             val scheduled = mutableListOf<PhoneThread>()
             for (t in threads) {
                 when (placement(t, now, wakes)) {
+                    PhoneSection.COORDINATORS -> coordinators += t
                     PhoneSection.STARRED -> starred += t
                     PhoneSection.INBOX -> inbox += t
                     PhoneSection.RUNNING -> running += t
@@ -86,17 +90,18 @@ data class InboxSections(
                     PhoneSection.ARCHIVED, null -> {}
                 }
             }
+            coordinators.sortWith(compareBy<PhoneThread> { it.coordinatorProjectId }.thenBy { it.threadId })
             starred.sortWith(compareBy<PhoneThread> { it.starredAt ?: Instant.MAX }.thenBy { it.threadId })
             inbox.sortWith(compareBy<PhoneThread> { urgency(it) }.then(NEWEST_FIRST))
             running.sortWith(NEWEST_FIRST)
             scheduled.sortWith(compareBy<PhoneThread> { wakes[it.threadId]?.nextRunAt ?: Instant.MAX }.then(NEWEST_FIRST))
-            return InboxSections(starred, inbox, running, scheduled)
+            return InboxSections(starred, inbox, running, scheduled, coordinators)
         }
 
         /** The Hibernating heading: scheduled and snoozed together, soonest to wake first. */
         fun hibernating(scheduled: List<PhoneThread>, snoozed: List<PhoneThread>, wakes: Map<String, ScheduleWake>): List<PhoneThread> {
             val seen = HashSet<String>()
-            val all = (scheduled + snoozed).filter { seen.add(it.threadId) }
+            val all = (scheduled + snoozed).filter { it.coordinatorProjectId.isNullOrBlank() && seen.add(it.threadId) }
             val wakesAt = { t: PhoneThread -> t.snoozedUntil ?: wakes[t.threadId]?.nextRunAt ?: Instant.MAX }
             return all.sortedWith(compareBy(wakesAt).then(NEWEST_FIRST))
         }
@@ -123,6 +128,8 @@ data class InboxSections(
          * a snooze, and goes under Running.
          */
         fun placement(t: PhoneThread, now: Instant, wakes: Map<String, ScheduleWake>): PhoneSection? {
+            if (t.archivedAt != null || t.waitState == WaitState.ARCHIVED) return null
+            if (!t.coordinatorProjectId.isNullOrBlank()) return PhoneSection.COORDINATORS
             val state = t.waitState ?: return legacyPlacement(t, now, wakes)
             return when (val section = state.section(t.starredAt != null)) {
                 PhoneSection.ARCHIVED -> null

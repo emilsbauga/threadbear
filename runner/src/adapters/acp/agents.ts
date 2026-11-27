@@ -62,6 +62,20 @@ export type AcpAgent = {
   // The plugin a process started with these args must report running before
   // the model does anything each turn, or the turn is stopped (AcpSession).
   guardName?(args: string[]): string | undefined;
+  // Gets the runner's extra MCP servers (Agent Archive) as stdio servers in
+  // session/new. Tried on Antigravity 1.4.5 and Grok 1.0.92 (26 Nov 2026).
+  takesMcpServers?: boolean;
+  // Where the agent's own MCP servers can be set up, its user config and
+  // the folder's: one that names a runner server (agent-archive) could stand
+  // in for it, so the runner's isn't given or trusted there.
+  mcpConfigFiles?(home: string, cwd: string): string[];
+  // Its calls to the runner's MCP servers go ahead unasked (Agent Archive's
+  // reads): only where a server's name can't be taken over by something the
+  // runner doesn't check. Not Grok: an agent profile (GROK_AGENT and the
+  // like) can put its own server under the same name, replacing the one the
+  // runner gave it (Codex's review, 26 Nov 2026), so there they ask as any
+  // other server's tools do.
+  trustsRunnerMcp?: boolean;
   // Whether the agent trusts this folder, read once as a process starts.
   trusts?(cwd: string): boolean;
   // The agent writes into the folder its session opens in (Antigravity's
@@ -93,6 +107,10 @@ export type AcpAgent = {
   // reads it in a short-lived process every few minutes and soon after each
   // of its turns (AcpAdapter.limitsPollMs, limit-recheck.ts).
   limits?: { method: string; read(result: unknown): AcpLimits | undefined } | { command: string; read(text: string, session: unknown): AcpLimits | undefined };
+  // Reports thought_level only for the session's active model (OpenCode 2),
+  // so models() switches through each model to discover its effortLevels even
+  // when the initial model has none.
+  probesModelEfforts?: boolean;
 };
 
 function isExecutableFile(file: string): boolean {
@@ -417,6 +435,9 @@ const ANTIGRAVITY: AcpAgent = {
   folderNote: (cwd) => `The project you're working in is ${cwd}: run commands there and use full paths under it. Your session's own folder is only a scratch space.`,
   toolInput: antigravityInput,
   readsInFolderGoAhead: ANTIGRAVITY_READ_KEYS,
+  takesMcpServers: true,
+  trustsRunnerMcp: true,
+  mcpConfigFiles: (home, cwd) => [path.join(geminiHome(home), 'antigravity', 'mcp_config.json'), path.join(geminiHome(home), 'antigravity-acp', 'settings.json'), path.join(geminiHome(home), 'settings.json'), path.join(cwd, '.gemini', 'settings.json')],
   limits: { command: 'usage', read: agyLimits },
   // An MCP tool's request says its server and tool in _meta.mcp (1.4.5).
   mcpToolName(call) {
@@ -460,6 +481,7 @@ export const ACP_AGENTS: Record<AcpProvider, AcpAgent> = {
     env: opencodeEnv,
     identifies: (init) => /opencode/i.test(init.agentInfo?.name ?? '') || Boolean(init.authMethods?.some((m) => m.id === 'opencode-login')),
     modeFor: (mode) => (mode === 'plan' ? 'plan' : 'build'),
+    probesModelEfforts: true,
   },
   cursor: {
     provider: 'cursor',
@@ -489,6 +511,8 @@ export const ACP_AGENTS: Record<AcpProvider, AcpAgent> = {
     accountId: 'grok-main',
     title: 'Grok',
     configDir: (home) => path.join(home, '.grok'),
+    takesMcpServers: true,
+    mcpConfigFiles: (home, cwd) => [path.join(home, '.grok', 'config.toml'), path.join(cwd, '.grok', 'config.toml')],
     // Its login; only whether it exists is read, never what it holds.
     loggedIn: (home) => fs.existsSync(path.join(home, '.grok', 'auth.json')),
     findBinary({ explicit, home, pathEnv }) {

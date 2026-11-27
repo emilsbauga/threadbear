@@ -122,6 +122,38 @@ When('a reply starts streaming in', async function (this: ThreadbearWorld) {
   await this.app.do({ cmd: 'mock', method: 'stream', params: { threadId: d.selection?.id, hz: 40, seconds: 3 } });
 });
 
+When('a reply saying {string} streams in and finishes', async function (this: ThreadbearWorld, text: string) {
+  const d = await this.app.dump();
+  await this.app.do({ cmd: 'mock', method: 'stream', params: { threadId: d.selection?.id, text, hz: 60 } });
+  await this.until(`the reply "${text}", finished`, (d) =>
+    d.transcript.rows.some((r) => r.kind === 'assistant' && r.text.startsWith(text)) && !d.transcript.rows.some((r) => r.kind === 'working'),
+  );
+});
+
+// mock.approval: a card with no tool call or turn, as a background agent's.
+When('a background agent asks to run {string}', async function (this: ThreadbearWorld, command: string) {
+  const d = await this.app.dump();
+  await this.app.do({ cmd: 'mock', method: 'approval', params: { threadId: d.selection?.id, title: command } });
+  await this.until(`an approval for "${command}"`, (d) => d.transcript.rows.some((r) => r.kind === 'approval' && r.text.includes(command)));
+});
+
+// Every dump until the turn's done (or 6 s), so a row drawn twice for a moment
+// mid-turn is caught, not only how it ends.
+Then('no row is drawn twice while it streams', async function (this: ThreadbearWorld) {
+  const deadline = Date.now() + 6000;
+  let working = false;
+  while (Date.now() < deadline) {
+    const d = await this.app.dump();
+    const ids = d.transcript.rows.map((r) => r.id);
+    const twice = ids.find((id, i) => ids.indexOf(id) !== i);
+    assert.equal(twice, undefined, `${twice} drawn twice in ${ids.join(' ')}`);
+    const now = d.transcript.rows.some((r) => r.kind === 'working');
+    if (working && !now) return;
+    working ||= now;
+    await new Promise((done) => setTimeout(done, 50));
+  }
+});
+
 Then('the working line shows', async function (this: ThreadbearWorld) {
   await this.until('a working line', (d) => d.transcript.rows.some((r) => r.kind === 'working'));
 });

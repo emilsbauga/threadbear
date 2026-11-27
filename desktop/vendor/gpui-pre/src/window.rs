@@ -1315,7 +1315,8 @@ struct ModifierState {
 /// Tracks input event timestamps to determine if input is arriving at a high rate.
 /// Used for selective VRR (Variable Refresh Rate) optimization.
 #[derive(Clone, Debug)]
-pub(crate) struct InputRateTracker {
+#[doc(hidden)]
+pub struct InputRateTracker {
     timestamps: Vec<Instant>,
     window: Duration,
     inputs_per_second: u32,
@@ -1396,8 +1397,18 @@ impl Default for InputRateTracker {
 }
 
 impl InputRateTracker {
-    pub fn record_input(&mut self) {
+    pub fn record_input(&mut self, is_scroll: bool) {
         let now = Instant::now();
+        if is_scroll {
+            // Scrolling is continuous motion from the first event (e.g. smooth mouse
+            // wheel glides or trackpad gestures). Don't wait for a burst of 6 events
+            // across 100 ms to treat it as high rate; otherwise, the second frame after
+            // idle hits the inactive window throttle (33.3 ms) and piles events up into
+            // a noticeable jerk.
+            self.sustain_until = now + self.sustain_duration;
+            self.timestamps.clear();
+            return;
+        }
         self.timestamps.push(now);
         self.prune_old_timestamps(now);
 
@@ -6012,7 +6023,8 @@ impl Window {
 
         let caused_invalidation = self.invalidator.update_count() > update_count_before;
         if caused_invalidation {
-            self.input_rate_tracker.borrow_mut().record_input();
+            let is_scroll = matches!(event, PlatformInput::Scroll(_));
+            self.input_rate_tracker.borrow_mut().record_input(is_scroll);
         }
         #[cfg(feature = "profiler")]
         self.window_profiler.end_input(caused_invalidation);

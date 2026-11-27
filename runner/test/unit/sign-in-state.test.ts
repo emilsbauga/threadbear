@@ -7,7 +7,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeClock } from '../../src/clock.ts';
 import { nullLogger } from '../../src/log.ts';
-import { ENDING_SOON_MS, REFUSAL_HOLD_MS, SignInState, parseAuthStatus, signInWords, viewOf } from '../../src/sign-in-state.ts';
+import { ACCESS_OFF_HOLD_MS, ACCESS_OFF_TEXT, ENDING_SOON_MS, REFUSALS_FILE, REFUSAL_HOLD_MS, SignInState, heldRefusals, parseAuthStatus, signInWords, viewOf } from '../../src/sign-in-state.ts';
+import { AUTH_TEXT } from '../../src/adapters/claude/normalize.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -211,4 +212,42 @@ test('checkNow asks about one login straight away, without waiting for the sweep
   await state.checkNow();
   assert.deepEqual(asked, ['claude-main', 'claude-1'], 'every Claude login without an id');
   state.stop();
+});
+
+// claude-1 on 26 Nov 2026: signed in, Max paid, and every turn failed at
+// once with this. Nothing in its profile or `auth status` says so: only a
+// turn does. It counts as signed out for a day, kept across restarts, so
+// pools and the dev runner's login (test-login.ts) move off it.
+const ACCESS_OFF = 'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
+const PAST_DUE = "Claude Code can't use your Claude subscription, usually because a payment is past due · Pay or renew at https://claude.ai/settings/billing (if you just paid, try again shortly), or use an Anthropic API key instead";
+
+test('a turn refused because the org turned Claude Code off or payment is past due is an auth failure', () => {
+  assert.ok(AUTH_TEXT.test(ACCESS_OFF));
+  assert.ok(ACCESS_OFF_TEXT.test(ACCESS_OFF));
+  assert.ok(AUTH_TEXT.test(PAST_DUE));
+  assert.ok(ACCESS_OFF_TEXT.test(PAST_DUE));
+  assert.equal(ACCESS_OFF_TEXT.test('Failed to authenticate. API Error: 401'), false);
+});
+
+test('an access-off refusal holds a day, not an hour, and is kept in the data dir across restarts', () => {
+  const clock = new FakeClock(NOW);
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tb-refusals-')), REFUSALS_FILE);
+  const accounts = [account('claude-1'), account('claude-2')];
+  const make = () => new SignInState({ claudePath: '/bin/claude', accounts: () => accounts, env: () => ({}), clock, log: nullLogger, exec: async () => JSON.stringify({ loggedIn: true, loginExpiresAt: iso(NOW + 9 * DAY) }), file });
+  const state = make();
+  state.noteRefused('claude-1', ACCESS_OFF_HOLD_MS);
+  state.noteRefused('claude-2');
+  clock.advance(REFUSAL_HOLD_MS + 1);
+  const again = make();
+  assert.equal(again.view(accounts[0]!).signedOut, true);
+  assert.equal(again.view(accounts[1]!).signedOut, undefined);
+  assert.deepEqual([...heldRefusals(file, clock.now())], ['claude-1']);
+  clock.advance(ACCESS_OFF_HOLD_MS);
+  assert.equal(again.view(accounts[0]!).signedOut, undefined);
+  assert.deepEqual([...heldRefusals(file, clock.now())], []);
+  // A turn that went through clears it from the file too.
+  again.noteRefused('claude-1', ACCESS_OFF_HOLD_MS);
+  again.noteWorked('claude-1');
+  assert.deepEqual([...heldRefusals(file, clock.now())], []);
+  assert.deepEqual([...heldRefusals(path.join(path.dirname(file), 'none.json'), NOW)], []);
 });

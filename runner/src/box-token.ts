@@ -2,7 +2,7 @@
 // `claude auth status` calls any token signed in, so a dead cloud token only
 // shows when a turn is refused (errorKind auth). The runner holds the thread
 // (Runner.holdForToken) and this tells the backend (boxes:tokenRefused, which
-// kills that token so the card comes back on Mike's Mac), then asks every 30
+// quarantines this box’s grant so its token card comes back), then asks every 30
 // seconds for its login's token (boxes:boxCloudToken). One set later than
 // the box's own is written where claude-main's CLI reads it, and the thread
 // carries on (Runner.tokenReplaced).
@@ -91,8 +91,19 @@ export class BoxTokenWatch {
       const w = this.o.waiting();
       if (!w) return;
       if (this.o.held()) return this.arm(this.o.everyMs ?? TOKEN_POLL_MS);
-      // A record from before the version was kept: the token on the box is the one refused.
-      const refused = w.refusedSetAt ?? this.own();
+      // A legacy wait cannot identify which token failed, especially after
+      // a restore installed a fresh one. Retry the installed token once;
+      // any new refusal records its exact version before reporting it.
+      if (w.refusedSetAt === undefined) {
+        if (this.own() > 0) {
+          this.o.replaced();
+          return;
+        }
+        // Very old boot secrets have no token version either. Fetch the
+        // backend-approved snapshot first so any subsequent failure can
+        // identify it instead of retrying an unknown version forever.
+      }
+      const refused = w.refusedSetAt ?? 0;
       // Already newer on the box (an exchange since the refusal): go, telling nobody.
       if (this.own() > refused) {
         this.o.log.info('box: the cloud token on the box is newer than the one refused; carrying on', { setAt: this.own() });
@@ -100,7 +111,7 @@ export class BoxTokenWatch {
         return;
       }
       if (w.refusedSetAt !== undefined && !w.reported) {
-        await this.o.post('mutation', 'boxes:tokenRefused', { key: this.o.key, setAt: w.refusedSetAt });
+        await this.o.post('mutation', 'boxes:tokenRefused', { key: this.o.key, setAt: refused });
         this.o.markReported();
       }
       const got = (await this.o.post('action', 'boxes:boxCloudToken', { key: this.o.key })) as { token?: unknown; setAt?: unknown } | null;

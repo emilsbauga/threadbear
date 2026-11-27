@@ -1,4 +1,4 @@
-// The review as a canvas (the `reviewCanvas` experiment): a board of the
+// The review as a canvas: a board of the
 // options you drag and zoom round, the agent's handwritten notes and arrows
 // on the pictures, a tour that flies from picture to picture in the agent's
 // order, and tools to circle, highlight or pin a part, each a numbered chip

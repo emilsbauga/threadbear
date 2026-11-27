@@ -56,7 +56,8 @@ When('I expand the folder row {string}', async function (this: ThreadbearWorld, 
 });
 
 Then('the folder shows {int} rows in all', async function (this: ThreadbearWorld, rows: number) {
-  await this.until(`${rows} rows drawn`, (d) => summary(d).includes(`rows drawn ${rows}`));
+  // Whole number only: "rows drawn 6" is also the start of "rows drawn 60".
+  await this.until(`${rows} rows drawn`, (d) => new RegExp(`rows drawn ${rows}[,)]`).test(summary(d)));
 });
 
 When('I double-click the folder row {string}', async function (this: ThreadbearWorld, name: string) {

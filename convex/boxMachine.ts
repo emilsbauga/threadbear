@@ -64,7 +64,7 @@ export const box = defineMachine(
       stillWaking: 'A box of the thread may hold work newer than its save, and the wake has gone on less than fifteen minutes.',
       wakeOverdue: 'It has been waking more than fifteen minutes, and the event is about the newest attempt.',
       hasSave: 'The thread has a save to come back from.',
-      hasToken: "Its login has a cloud token that no box's turn has been refused on.",
+      hasToken: "Its login has a valid owner-set cloud token; other boxes’ reports do not affect it.",
     },
     states: {
       start: {

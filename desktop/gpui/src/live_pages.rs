@@ -446,13 +446,17 @@ fn card(page: &LivePage, window: &mut Window, cx: &mut App) -> AnyElement {
         .child(
             div()
                 .flex_none()
+                .max_w(px(200.))
+                .truncate()
                 .text_size(px(size::DETAIL))
                 .text_color(secondary)
                 .child(threadbear_core::highlights::last_component(&page.path).to_owned()),
         )
         .children(big)
         .child(button);
-    let width = f32::from(window.viewport_size().width).min(style::MAX_CONTENT_WIDTH);
+    // In points, as `px` zooms them.
+    let width = (f32::from(window.viewport_size().width) / style::zoom_scale())
+        .min(style::MAX_CONTENT_WIDTH);
     // Never taller than the transcript has room for, header and a margin
     // included, or the page would never be wholly in view to show.
     let room =
@@ -469,7 +473,7 @@ fn card(page: &LivePage, window: &mut Window, cx: &mut App) -> AnyElement {
         }
         Some(_) => v_flex()
             .w_full()
-            .h(px(height.min(120.)))
+            .min_h(px(height.min(120.)))
             .items_center()
             .justify_center()
             .px(px(PAD))
@@ -484,7 +488,7 @@ fn card(page: &LivePage, window: &mut Window, cx: &mut App) -> AnyElement {
             let why = FAILED.with(|f| f.borrow().get(&page.path).cloned());
             v_flex()
                 .w_full()
-                .h(px(height.min(120.)))
+                .min_h(px(height.min(120.)))
                 .items_center()
                 .justify_center()
                 .gap(px(6.))
@@ -510,7 +514,10 @@ fn card(page: &LivePage, window: &mut Window, cx: &mut App) -> AnyElement {
         .bg(fill)
         .border(gpui_kit::px(0.5))
         .border_color(edge)
-        .overflow_hidden()
+        // No overflow_hidden: the page measures the transcript's room from
+        // the clip around it (web_panels::placed), and clipped to the card
+        // it measured the card, shrinking it to the least each frame (Mike,
+        // 25 Nov: the page squashed to a strip).
         // Not the start of a selection in the reply around it.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(header)

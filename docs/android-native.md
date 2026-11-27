@@ -193,7 +193,7 @@ for them to be built from source in the recipe.
    Mac's one-use code for a token (`tokens:claim`) and checking it with
    `phone:me`. No `threadbear://pair` link opens the app: any app can
    claim the scheme (Daybreak 127), so one sent to it outright is refused.
-2. Inbox: Starred, Inbox, Running, Hibernating, Archived headings (the last
+2. Inbox: Coordinators (when enabled), Starred, Inbox, Running, Hibernating, Archived headings (the last
    three folded at first), rows like the iPhone's: project tile, title,
    place, status word or time, unread dot. Swipe to archive, long-press for
    Star/Hibernate. Offline/connection line at the top.

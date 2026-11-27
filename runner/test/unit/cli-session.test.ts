@@ -516,6 +516,7 @@ test('only cli-session.ts writes a thread`s CLI', () => {
     'slot.ts': ['out'], // a worktree slot's spare, as the record's fields
     'folder-cache.ts': ['this'],
     'projects.ts': ['out'],
+    'coordinators.ts': ['row'], // a coordinator's project task records
     'handover.ts': ['this'],
     'adapters/codex/appserver.ts': ['this'],
     'adapters/acp/connection.ts': ['this'],

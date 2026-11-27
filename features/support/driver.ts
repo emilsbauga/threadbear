@@ -77,6 +77,8 @@ export type Dump = {
     loading?: boolean;
     /** The Threads panel has the keyboard, for its arrows and Esc (GPUI only). */
     keyboard?: boolean;
+    /** The section key currently being dragged to reorder, if any (GPUI only). */
+    dragging?: string | null;
   };
   /** The line under the bar when the thread can't go on where it is (LimitBanner). */
   limit?: { text: string; button?: string | null; carryOn?: string | null } | null;

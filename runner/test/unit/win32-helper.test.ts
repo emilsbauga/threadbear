@@ -41,9 +41,13 @@ test('the helper answers each question by its id, keeps running, and says why wh
   }
 });
 
+// Only the warm limit is short: a new node can take seconds to start on a
+// loaded machine (bruce, 26 Nov), so each new helper's first answer gets
+// PATIENCE_MS, and a ping warms the first one before the hang.
 test("a question it doesn't answer in time fails, and the next one gets a new helper", async () => {
-  const h = standIn(300);
+  const h = standIn(300, PATIENCE_MS);
   try {
+    assert.equal(await h.ask('ping'), 'pong');
     await assert.rejects(h.ask('hang'), /in time/);
     assert.equal(await h.ask('ping'), 'pong');
   } finally {
@@ -282,4 +286,118 @@ test("a CLI recorded with an estimate counts only once an exact reading matches 
   read.set(4242, undefined);
   await assert.rejects(reg.threadOfPid(4242, T + 3n), StaleProcess);
   reg.remove(4242);
+});
+
+// Daybreak finding 177: the runner reads the environments above a
+// connection, which on Windows only a read of each process's PEB gives.
+test('environ answers parse: a block, one Windows won\'t show, one gone', async () => {
+  const { parseEnviron } = await import('../../src/win32-helper.ts');
+  const block = Buffer.from('A=1\0THREADBEAR_THREAD_KEY=' + 'a'.repeat(64) + '\0\0', 'utf16le').toString('base64');
+  const envs = parseEnviron(`e 10 ${block}\r\nx 11\ng 12\ne 99 ${block}\n`, [10, 11, 12]);
+  assert.equal(envs.get(10), `\0A=1\0THREADBEAR_THREAD_KEY=${'a'.repeat(64)}\0`);
+  assert.equal(envs.get(11), '', "another user's or an elevated process: nothing of a thread's");
+  assert.equal(envs.has(12), false, 'gone: left out, so the lookup is no answer');
+  assert.equal(envs.has(99), false, 'not asked for');
+  assert.throws(() => parseEnviron('x 10\nx 10\n', [10]), /twice/);
+  // What's past the block's end (a removed variable's old bytes) isn't read.
+  const stale = Buffer.from('A=1\0\0THREADBEAR_THREAD_ID=gone\0\0', 'utf16le').toString('base64');
+  assert.equal(parseEnviron(`e 20 ${stale}\n`, [20]).get(20), '\0A=1\0');
+});
+
+test('on Windows the helper reads another process\'s environment, and says when one has gone', onlyOnWindows('The helper is PowerShell, which only Windows has'), async () => {
+  const { win32Helper, parseEnviron } = await import('../../src/win32-helper.ts');
+  const { threadMarksIn } = await import('../../src/peer.ts');
+  const key = 'b'.repeat(64);
+  const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},600000)'], { stdio: 'ignore', windowsHide: true, env: { ...process.env, THREADBEAR_THREAD_KEY: key, THREADBEAR_THREAD_ID: 'th1', NOTE: 'x THREADBEAR_THREAD_ID=not-me' } });
+  try {
+    const gone = 4_294_967_292; // a pid nothing has
+    const pids = [child.pid!, gone];
+    // Until the child has started far enough to have its environment.
+    let envs = new Map<number, string>();
+    for (const until = Date.now() + PATIENCE_MS; Date.now() < until && !threadMarksIn(envs.get(child.pid!) ?? '').keys.length; ) {
+      envs = parseEnviron(await win32Helper().ask('environ', { pids: pids.join(',') }), pids);
+    }
+    assert.deepEqual(threadMarksIn(envs.get(child.pid!)!), { keys: [key], ids: ['th1'], emptyKey: false });
+    assert.equal(envs.has(gone), false);
+  } finally {
+    child.kill();
+    win32Helper().stop();
+  }
+});
+
+test("jobsOf answers parse: each process's Threadbear jobs, or that it couldn't be opened or has gone", async () => {
+  const { parseJobs } = await import('../../src/win32-helper.ts');
+  const a = 'Local\\threadbear-job-' + 'a'.repeat(32);
+  const jobs = parseJobs(`j 10 threadbear-job-${'a'.repeat(32)}\r\nj 11\nx 12\ng 13\nj 14 nope\n`, [10, 11, 12, 13, 14]);
+  assert.deepEqual(jobs.get(10), [a]);
+  assert.deepEqual(jobs.get(11), []);
+  assert.equal(jobs.has(12), false, "one it can't open even to ask (it denied that to itself): no answer");
+  assert.equal(jobs.has(13), false, 'gone: left out, so the lookup is no answer');
+  assert.equal(jobs.has(14), false, 'a name that is no job name: no answer');
+});
+
+test("on Windows the helper finds a thread's job on what its CLI starts, whatever its parents", onlyOnWindows('The helper is PowerShell, which only Windows has'), async () => {
+  const { win32Helper, parseJobs } = await import('../../src/win32-helper.ts');
+  const name = `Local\\threadbear-job-${(await import('node:crypto')).randomBytes(16).toString('hex')}`;
+  // The "CLI": started, put in a job, then starts a child (as a tool command would).
+  const cli = spawn(process.execPath, ['-e', "process.stdin.once('data',()=>{const c=require('child_process').spawn(process.execPath,['-e','setTimeout(()=>{},600000)'],{stdio:'ignore'});console.log(c.pid)});setTimeout(()=>{},600000)"], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+  try {
+    const notAfter = String((BigInt(Date.now() + 60_000) + 11_644_473_600_000n) * 10_000n);
+    await win32Helper().ask('jobAssign', { pid: cli.pid!, name, notAfter });
+    const child = await new Promise<number>((r) => { cli.stdout!.once('data', (d) => r(Number(String(d).trim()))); cli.stdin!.write('go\n'); });
+    const pids = [cli.pid!, child, process.pid];
+    const jobs = parseJobs(await win32Helper().ask('jobsOf', { pids: pids.join(',') }), pids);
+    assert.ok(jobs.get(cli.pid!)?.includes(name), 'the CLI is in its job');
+    assert.ok(jobs.get(child)?.includes(name), 'and what it started');
+    assert.equal(jobs.get(process.pid)?.includes(name), false, 'and nothing else');
+    // The helper stopped (a question it took too long over) and started
+    // again: the CLI holds a handle to its job, so it keeps its name.
+    win32Helper().stop();
+    const again = parseJobs(await win32Helper().ask('jobsOf', { pids: pids.join(',') }), pids);
+    assert.ok(again.get(child)?.includes(name), 'still found after the helper started again');
+    // The helper gone and then the CLI: the job's last handle goes, and
+    // what the CLI started goes with it rather than run on in a job with
+    // no name (Codex's second review).
+    win32Helper().stop();
+    cli.kill();
+    const alive = () => { try { process.kill(child, 0); return true; } catch { return false; } };
+    for (const until = Date.now() + PATIENCE_MS; Date.now() < until && alive(); ) await new Promise((r) => setImmediate(r));
+    assert.equal(alive(), false, 'what the CLI started has ended');
+  } finally {
+    await win32Helper().ask('jobEnd', { name }).catch(() => undefined);
+    cli.kill();
+    win32Helper().stop();
+  }
+});
+
+// The helper's own variables (its stdin and stdout, its jobs, its kernel32
+// type) are set once: an op that assigned $in took the helper's stdin away
+// and it exited after its first answer (finding 177's jobsOf, caught on a
+// Windows machine). PowerShell has no block scope inside a switch.
+test("no op in the helper reuses the helper's own variables", () => {
+  const text = fs.readFileSync(HELPER_SCRIPT, 'utf8');
+  for (const name of ['in', 'out', 'jobs', 'K', 'type', 'asm', 'line', 'req']) {
+    const sets = [...text.matchAll(new RegExp(`(?:^|[\\s(;])\\$${name}\\s*=(?!=)`, 'gm'))].length;
+    assert.ok(sets <= 1, `$${name} is assigned ${sets} times`);
+  }
+});
+
+// Codex's third review: a launcher (Codex's Node one) starts the real CLI
+// before the helper has put the launcher in its job. What it started by
+// then goes in with it.
+test('on Windows what a CLI started before it went in its job goes in too', onlyOnWindows('The helper is PowerShell, which only Windows has'), async () => {
+  const { win32Helper, parseJobs } = await import('../../src/win32-helper.ts');
+  const name = `Local\\threadbear-job-${(await import('node:crypto')).randomBytes(16).toString('hex')}`;
+  const cli = spawn(process.execPath, ['-e', "const c=require('child_process').spawn(process.execPath,['-e','setTimeout(()=>{},600000)'],{stdio:'ignore'});console.log(c.pid);setTimeout(()=>{},600000)"], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+  try {
+    const child = await new Promise<number>((r) => cli.stdout!.once('data', (d) => r(Number(String(d).trim()))));
+    const notAfter = String((BigInt(Date.now() + 60_000) + 11_644_473_600_000n) * 10_000n);
+    await win32Helper().ask('jobAssign', { pid: cli.pid!, name, notAfter });
+    const jobs = parseJobs(await win32Helper().ask('jobsOf', { pids: String(child) }), [child]);
+    assert.ok(jobs.get(child)?.includes(name), 'the child started before the job is in it');
+  } finally {
+    await win32Helper().ask('jobEnd', { name }).catch(() => undefined);
+    cli.kill();
+    win32Helper().stop();
+  }
 });

@@ -724,3 +724,29 @@ test('a release/ tag not named for a day is not the last release', async () => {
   git(r.w.mike, 'branch', 'release/2026-10-01');
   assert.equal(await r.publisher(r.w.mikeKey.priv).publishOnce(), tagFor(new Date(r.now)));
 });
+
+test("Mike asking for today's release tags the newest green commit at once, with no hour's wait", async () => {
+  const w = world();
+  asGitHub(w.mike, w.root);
+  fs.mkdirSync(path.join(w.mike, '.github', 'workflows'), { recursive: true });
+  const c0 = commit(w.mike, '.github/workflows/build.yml', 'Build on GitHub');
+  const tip = commit(w.mike, 'b.txt', 'Still building');
+  git(w.mike, 'push', '-q', 'origin', 'main');
+  const committed = Number(git(w.mike, 'log', '-1', '--format=%ct')) * 1000;
+  // A minute after the last landing, the runner just restarted onto it.
+  const clock = new FakeClock(committed + 60_000);
+  const ran = (sha: string, status: string, conclusion: string | null): CiRun => ({ workflow: '7', name: 'Build', status, conclusion, attempt: 1, file: '.github/workflows/build.yml', sha });
+  const history = [ran(tip, 'in_progress', null), ran(c0, 'completed', 'success')];
+  const up = upstreamFor(w.mike, w.home, clock, {
+    publish: { publish: true, signingKey: w.mikeKey.priv },
+    runningMainSettled: () => false,
+    ciRuns: async (_repo: string, sha: string) => history.filter((r) => r.sha === sha),
+    ciHistory: async () => history,
+  });
+  assert.equal(await up.publishOnce(), undefined, 'the hourly look waits for things to settle');
+  const tag = await up.publishOnce({ now: true });
+  assert.equal(tag, tagFor(new Date(clock.now())));
+  assert.equal(git(w.mike, 'rev-parse', `${tag}^{commit}`), c0, "the tip's checks are still running, so the green commit before it");
+  assert.ok(git(w.mike, 'ls-remote', 'origin', `refs/tags/${tag}`));
+  assert.equal(await up.publishOnce({ now: true }), undefined, 'once a day');
+});

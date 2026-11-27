@@ -4,9 +4,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeHarness, tick, tmpDir } from '../helpers/fakes.ts';
-import { ConvexSync, forBackend, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
-import type { Project, ThreadSummary } from '../../src/protocol.ts';
+import { FakeAccounts, FakeAdapter, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
+import { ConvexSync, forBackend, RELAY_CARDS_API_VERSION, ASKED_API_VERSION, LINKS_API_VERSION, PROJECTS_DIFF_API_VERSION, STARS_API_VERSION, NETWORK_WAIT_API_VERSION, OPTION_NOTES_API_VERSION, NEXT_PICK_API_VERSION, BACKEND_API_VERSION, MAC_RUNNER_STATS_API_VERSION, TURNS_API_VERSION, ICONS_API_VERSION, RUNNER_ICON_API_VERSION, SCHEDULES_API_VERSION, SHARE_API_VERSION, WOKE_API_VERSION, STARTED_BY_API_VERSION, SECTIONS_API_VERSION, MODELS_API_VERSION, REPLY_IMAGES_API_VERSION, REPLY_IMAGES_LOOKBACK_MS, REPLY_IMAGES_SCANS_PER_FLUSH, toAccountDoc, PRESENCE_MS, SYNC_COALESCE_MS, HEARTBEAT_MS, SHARED_USAGE_POLL_MS, SYNC_BATCH, ensureRunnerId, toThreadDoc, convexPoster, convexUploader, pictureName, type ThreadDoc } from '../../src/sync.ts';
+import type { ModelChoice, Project, ThreadSummary } from '../../src/protocol.ts';
+import { phoneCommands } from '../../src/handover.ts';
 import { Scheduler, type ScheduleBackend } from '../../src/schedules.ts';
 import { nullLogger, type Logger } from '../../src/log.ts';
 import { AT_MAC_IDLE_MS, isAtMac } from '../../src/presence.ts';
@@ -263,6 +264,15 @@ test('view follows hibernate and den; cost is to the cent; working comes from ba
   assert.ok(noNotes.asks?.every((a) => !('optionNotes' in a)));
   assert.deepEqual(noNotes.asks?.[0]?.options, ['Same thread', 'New thread']);
   assert.equal(forBackend(card, OPTION_NOTES_API_VERSION, now), card);
+  // Done card pick-one follow-ups go up from NEXT_PICK_API_VERSION and are stripped for older backends.
+  const pickNext = toThreadDoc({ ...base, needs: 'nothing', asksSeq: 51 }, 'r', now, undefined, undefined, ['Option A', 'Option B'], undefined, undefined, undefined, 'one', 1);
+  assert.deepEqual(pickNext.next, ['Option A', 'Option B']);
+  assert.equal(pickNext.nextPick, 'one');
+  assert.equal(pickNext.nextSuggested, 1);
+  const olderNext = forBackend(pickNext, NEXT_PICK_API_VERSION - 1, now);
+  assert.deepEqual(olderNext.next, ['Option A', 'Option B']);
+  assert.ok(!('nextPick' in olderNext) && !('nextSuggested' in olderNext));
+  assert.equal(forBackend(pickNext, NEXT_PICK_API_VERSION, now), pickNext);
   // Nothing the phone doesn't need.
   assert.ok(!('lastSeq' in inbox) && !('contextTokens' in inbox) && !('panels' in inbox));
 });
@@ -748,8 +758,7 @@ type Fake = { h: ReturnType<typeof makeHarness>; sync: ConvexSync; calls: Call[]
 // What the fake deployment's photos were fetched from, across setupFull calls in a test.
 const downloads: string[] = [];
 
-function setupFull(opts: { elsewhereThread?: (threadId: string) => ThreadSummary | undefined; heads?: { threadId: string; lastSeq: number }[]; taken?: Set<string>; failApply?: boolean | 'async'; log?: Logger; apiVersion?: number; hold?: (fn: string, args: Record<string, unknown>) => Promise<void> | undefined; holdDownload?: (url: string) => Promise<void> | undefined; answer?: (fn: string, args: Record<string, unknown>) => unknown } = {}): Fake {
-  const h = makeHarness();
+function setupFull(opts: { elsewhereThread?: (threadId: string) => ThreadSummary | undefined; heads?: { threadId: string; lastSeq: number }[]; taken?: Set<string>; failApply?: boolean | 'async'; log?: Logger; apiVersion?: number; hold?: (fn: string, args: Record<string, unknown>) => Promise<void> | undefined; holdDownload?: (url: string) => Promise<void> | undefined; answer?: (fn: string, args: Record<string, unknown>) => unknown } = {}, h = makeHarness()): Fake {
   const calls: Call[] = [];
   // In the order they finish, with hold() keeping some back.
   const landed: Call[] = [];
@@ -807,6 +816,18 @@ function setupFull(opts: { elsewhereThread?: (threadId: string) => ThreadSummary
         applied.push(`yearToken ${accountId} ${JSON.stringify(p)}`);
         return { state: 'waiting', url: 'https://claude.com/cai/oauth/authorize?state=x' };
       },
+      useReset: async (accountId) => {
+        applied.push(`useReset ${accountId}`);
+        return { outcome: 'reset' };
+      },
+      loginsSealKey: () => {
+        applied.push('sealKey');
+        return 'AAAA';
+      },
+      loginsShare: async (logins) => {
+        applied.push(`share ${logins.length}`);
+        return { logins: [], removed: [] };
+      },
       threadCommands: (id) => {
         applied.push(`commands ${id}`);
         return h.runner.threadCommands(id);
@@ -847,7 +868,7 @@ function setupFull(opts: { elsewhereThread?: (threadId: string) => ThreadSummary
       },
       create: (p) => {
         applied.push(`create ${p.text} ${p.origin}${p.model ? ` ${p.model}` : ''}${p.effort ? ` ${p.effort}` : ''}`);
-        return h.runner.create(p);
+        return phoneCommands(h.runner).create(p);
       },
       share: (id, p) => {
         applied.push(`share ${id} ${p.access}${p.newLink ? ' new' : ''}`);
@@ -1356,6 +1377,88 @@ test('commands: a create from the phone can name its model and effort; an effort
   ]);
   await tick(10);
   assert.deepEqual(applied, ['create one phone haiku high', 'create two phone']);
+});
+
+test('commands: website and iPhone create with only a model id use a login that offers it', async (t) => {
+  const claude = new FakeAdapter();
+  const codex = new FakeAdapter('codex');
+  const opencode = new FakeAdapter('opencode');
+  const h = makeHarness(undefined, {
+    pools: [
+      { id: 'claude', title: 'Claude', accountIds: ['claude-main', 'claude-3'] },
+      { id: 'codex', title: 'Codex', accountIds: ['codex-main', 'codex-extra'] },
+    ],
+  }, {
+    adapters: { claude, codex, opencode },
+    accounts: new FakeAccounts([
+      ...withCodex().map((account) => account.id === 'claude-main'
+        ? { ...account, models: [{ id: 'opus', model: 'claude-open', title: 'Opus' }] }
+        : account),
+      { id: 'codex-extra', provider: 'codex', title: 'Extra', configDir: '/tmp/codex-extra', models: [{ id: 'gpt-extra', model: 'gpt-extra', title: 'Extra', effortLevels: ['high'] }] },
+      {
+        id: 'opencode-main', provider: 'opencode', title: 'OpenCode', configDir: '/tmp/opencode',
+        models: ['gpt-open', 'claude-open', 'open/router'].map((id) => ({ id, model: id, title: id })),
+      },
+    ]),
+  });
+  const { sync, calls, push } = setupFull({}, h);
+  t.after(() => sync.stop());
+  sync.start();
+  await sync.flushNow();
+  push([
+    { commandId: 'web', kind: 'create', args: { text: 'Website', model: 'gpt-extra', effort: 'high' }, createdAt: 1 },
+    { commandId: 'ios-gpt', kind: 'create', args: { text: 'iPhone', cwd: h.cfg.defaults.cwd, model: 'gpt-open' }, createdAt: 2 },
+    { commandId: 'ios-claude', kind: 'create', args: { text: 'iPhone', model: 'claude-open' }, createdAt: 3 },
+    { commandId: 'web-other', kind: 'create', args: { text: 'Website', model: 'open/router' }, createdAt: 4 },
+  ]);
+  await tick(10);
+  const finished = calls.filter(({ fn }) => fn === 'sync:finishCommand');
+  assert.equal(finished.length, 4);
+  assert.deepEqual(codex.sessions.map(({ opts }) => [opts.account.id, opts.model, opts.effort]), [['codex-extra', 'gpt-extra', 'high']]);
+  assert.deepEqual(opencode.sessions.map(({ opts }) => [opts.account.id, opts.model]), [
+    ['opencode-main', 'gpt-open'],
+    ['opencode-main', 'claude-open'],
+    ['opencode-main', 'open/router'],
+  ]);
+  assert.equal(claude.sessions.length, 0);
+  assert.deepEqual(h.runner.list().filter((thread) => thread.provider === 'opencode').map((thread) => thread.poolId), [undefined, undefined, undefined]);
+});
+
+test('commands: a known Opus can start while an iPhone create waits for OpenCode models', async (t) => {
+  const claude = new FakeAdapter();
+  const open = new FakeAdapter('opencode');
+  const catalog = Promise.withResolvers<ModelChoice[]>();
+  let probes = 0;
+  open.models = async () => {
+    probes++;
+    return catalog.promise;
+  };
+  const h = makeHarness(undefined, {}, {
+    adapters: { claude, opencode: open },
+    accounts: new FakeAccounts([
+      { id: 'claude-main', provider: 'claude', title: 'Claude', configDir: '/tmp/claude', models: [{ id: 'opus', model: 'claude-opus-4-6', title: 'Opus' }] },
+      { id: 'opencode-main', provider: 'opencode', title: 'OpenCode', configDir: '/tmp/open' },
+    ]),
+  });
+  const { sync, calls, push } = setupFull({}, h);
+  t.after(() => sync.stop());
+  sync.start();
+  await sync.flushNow();
+  const results = () => calls.filter((c) => c.fn === 'sync:finishCommand').map((c) => [c.args.commandId, c.args.ok]);
+  push([
+    { commandId: 'web', kind: 'create', args: { text: 'Website', model: 'opus' }, createdAt: 1 },
+    { commandId: 'phone', kind: 'create', args: { text: 'iPhone', cwd: h.cfg.defaults.cwd, model: 'gpt-open' }, createdAt: 2 },
+  ]);
+  await tick(10);
+  assert.deepEqual(results(), [['web', true]]);
+  assert.equal(claude.last.opts.model, 'opus');
+  assert.equal(open.sessions.length, 0);
+  assert.equal(probes, 1, 'the command joins the startup probe');
+  catalog.resolve([{ id: 'gpt-open', model: 'gpt-open', title: 'GPT in OpenCode' }]);
+  await tick(10);
+  assert.deepEqual(results(), [['web', true], ['phone', true]]);
+  assert.equal(open.last.opts.model, 'gpt-open');
+  assert.equal(h.runner.list().length, 2);
 });
 
 test('an archive command an agent sent (by: "agent") says an agent archived it; one without, the user', async () => {
@@ -4436,6 +4539,25 @@ test("a runner's message row goes with its wakeReason only from API 98", async (
 // Year-long token… from the Mac's Runners panel (year-token-maker.ts): only
 // a command the main Mac queued (from: "mac") reaches the maker; the phone's
 // can't, and the answer goes back as the call's result.
+// Use a reset for a login only this runner has (rpc.ts useResetElsewhere):
+// only the main Mac's click spends it, never a phone's command.
+test("accounts.useReset calls: the main Mac's spend a reset here, nobody else's", async () => {
+  const { sync, push, applied, calls } = setupFull();
+  sync.start();
+  await sync.flushNow();
+  push([{ commandId: 'r1', kind: 'call', args: { method: 'accounts.useReset', params: { accountId: 'codex-1' }, from: 'mac' }, createdAt: 1 }]);
+  await tick(10);
+  push([{ commandId: 'r2', kind: 'call', args: { method: 'accounts.useReset', params: { accountId: 'codex-1' } }, createdAt: 2 }]);
+  await tick(10);
+  assert.deepEqual(applied.filter((a) => a.startsWith('useReset')), ['useReset codex-1']);
+  const r1 = calls.find((c) => c.fn === 'sync:finishCommand' && c.args.commandId === 'r1')!;
+  assert.equal(JSON.parse(String(r1.args.result)).outcome, 'reset');
+  const r2 = calls.find((c) => c.fn === 'sync:finishCommand' && c.args.commandId === 'r2')!;
+  assert.equal(r2.args.ok, false);
+  assert.match(String(r2.args.note), /Only the main Mac/);
+  await sync.stop();
+});
+
 test("accounts.yearToken calls: the main Mac's reach the maker, nobody else's", async () => {
   const { sync, push, applied, calls } = setupFull();
   sync.start();
@@ -4451,6 +4573,36 @@ test("accounts.yearToken calls: the main Mac's reach the maker, nobody else's", 
   const y2 = calls.find((c) => c.fn === 'sync:finishCommand' && c.args.commandId === 'y2')!;
   assert.equal(y2.args.ok, false);
   assert.match(String(y2.args.note), /Only the main Mac/);
+  await sync.stop();
+});
+
+// Use this Mac's Claude logins (login-share.ts): only a command the owner
+// key queued (from: "mac") reaches this runner's key or its login folders.
+test("logins.sealKey and logins.share calls: only the main Mac's reach them, and only fresh", async () => {
+  const { sync, push, applied, calls, h } = setupFull();
+  sync.start();
+  await sync.flushNow();
+  const now = h.clock.now();
+  push([{ commandId: 's1', kind: 'call', args: { method: 'logins.sealKey', params: {}, from: 'mac' }, createdAt: now }]);
+  await tick(10);
+  push([{ commandId: 's2', kind: 'call', args: { method: 'logins.share', params: { logins: [{ email: 'a@example.com', box: 'AAAA' }] }, from: 'mac' }, createdAt: now }]);
+  await tick(10);
+  push([{ commandId: 's3', kind: 'call', args: { method: 'logins.share', params: { logins: [] } }, createdAt: now }]);
+  await tick(10);
+  push([{ commandId: 's4', kind: 'call', args: { method: 'logins.sealKey', params: {} }, createdAt: now }]);
+  await tick(10);
+  // Left waiting while this runner was away: an old one could put back logins switched off since.
+  push([{ commandId: 's5', kind: 'call', args: { method: 'logins.share', params: { logins: [{ email: 'a@example.com', box: 'AAAA' }] }, from: 'mac' }, createdAt: now - 6 * 60_000 }]);
+  await tick(10);
+  assert.deepEqual(applied.filter((a) => a === 'sealKey' || a.startsWith('share')), ['sealKey', 'share 1']);
+  const done = (id: string) => calls.find((c) => c.fn === 'sync:finishCommand' && c.args.commandId === id)!;
+  assert.equal(JSON.parse(String(done('s1').args.result)).key, 'AAAA');
+  assert.equal(done('s2').args.ok, true);
+  for (const id of ['s3', 's4']) {
+    assert.equal(done(id).args.ok, false);
+    assert.match(String(done(id).args.note), /Only the main Mac/);
+  }
+  assert.match(String(done('s5').args.note), /a while ago/);
   await sync.stop();
 });
 
@@ -4568,4 +4720,18 @@ test("a thread Mike puts away doesn't need him on the phone's row, and does agai
   await sync.flushNow();
   assert.deepEqual([last().view, last().needsYou], ['den', false]);
   await sync.stop();
+});
+
+test('heartbeats mirror effective pools only after the backend can take them', async () => {
+  for (const apiVersion of [100, 101]) {
+    const { h, sync, calls } = setup({ answer: (fn) => fn === 'sync:heartbeat' ? { apiVersion } : null });
+    h.cfg.pools = [{ id: 'custom', title: 'Custom', accountIds: ['claude-3'] }];
+    sync.start();
+    await tick();
+    h.clock.advance(HEARTBEAT_MS);
+    await tick();
+    const runner = calls.filter((c) => c.fn === 'sync:heartbeat').at(-1)!.args.runner as { usagePools?: unknown[] };
+    assert.deepEqual(runner.usagePools, apiVersion >= 101 ? [{ id: 'custom', title: 'Custom', accountIds: ['claude-3'] }] : undefined);
+    await sync.stop();
+  }
 });

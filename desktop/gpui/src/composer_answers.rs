@@ -35,6 +35,9 @@ impl Composer {
             .iter()
             .filter_map(|(&ask, &pick)| {
                 let index = usize::try_from(ask).ok()?;
+                if !card.can_answer(index) {
+                    return None;
+                }
                 let the_ask = card.asks.get(index)?;
                 let label = picked_answer_label(the_ask, pick, self.card.notes.get(&ask))?;
                 Some((

@@ -40,6 +40,9 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -355,10 +358,12 @@ fun AsksCard(
 @Composable
 fun DoneCard(
     next: List<String>, ticked: Set<Int>, busy: Boolean, tick: (Int) -> Unit, send: () -> Unit, archive: () -> Unit,
+    nextPick: String? = null, nextSuggested: Int? = null,
     looseEnds: List<PhoneLooseEnd> = emptyList(), openThread: (String) -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
     val accent = LocalSignals.current.accent
+    val pickOne = nextPick == "one" && next.size > 1
     CardFrame {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Line.CheckCircle, null, Modifier.size(18.dp), tint = colors.onSurfaceVariant)
@@ -388,20 +393,43 @@ fun DoneCard(
             }
         }
         if (next.isNotEmpty()) {
-            Text("Or carry on", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+            Text(if (pickOne) "Or pick one" else "Or carry on", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             next.forEachIndexed { i, step ->
                 val on = i in ticked
+                val suggested = pickOne && nextSuggested == i
                 Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(enabled = !busy) { tick(i) }.padding(vertical = 6.dp),
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .semantics { selected = on }
+                        .clickable(enabled = !busy, role = if (pickOne) Role.RadioButton else Role.Checkbox) { tick(i) }
+                        .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.Top,
                 ) {
-                    Box(
-                        Modifier.padding(top = 2.dp).size(18.dp).clip(CircleShape)
-                            .then(if (on) Modifier.background(accent) else Modifier.border(1.5.dp, colors.outline, CircleShape)),
-                        contentAlignment = Alignment.Center,
-                    ) { if (on) Icon(Line.Check, null, Modifier.size(12.dp), tint = Color.White) }
+                    if (pickOne) {
+                        Box(
+                            Modifier.padding(top = 2.dp).size(18.dp).clip(CircleShape)
+                                .border(1.5.dp, if (on) accent else colors.outline, CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (on) Box(Modifier.size(8.dp).clip(CircleShape).background(accent))
+                        }
+                    } else {
+                        Box(
+                            Modifier.padding(top = 2.dp).size(18.dp).clip(CircleShape)
+                                .then(if (on) Modifier.background(accent) else Modifier.border(1.5.dp, colors.outline, CircleShape)),
+                            contentAlignment = Alignment.Center,
+                        ) { if (on) Icon(Line.Check, null, Modifier.size(12.dp), tint = Color.White) }
+                    }
                     Spacer(Modifier.width(12.dp))
-                    Text(step, style = MaterialTheme.typography.bodyLarge)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(step, style = MaterialTheme.typography.bodyLarge)
+                        if (suggested) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Line.StarFilled, null, Modifier.size(11.dp), tint = Color(0xFFDBB354))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Recommended", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                            }
+                        }
+                    }
                 }
             }
             if (ticked.isNotEmpty()) Pill("Send", send, Modifier.fillMaxWidth(), filled = true, spinning = busy)

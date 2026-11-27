@@ -10,7 +10,7 @@ import { ErrorCode, RpcError } from '../../src/protocol.ts';
 import { nullLogger } from '../../src/log.ts';
 import type { CheckResult } from '../../src/schedule-check.ts';
 import { readRunnerJson } from '../../src/config.ts';
-import { convexPoster, toOwnedScheduleDoc, SCHEDULE_POOLS_API_VERSION, SCHEDULE_PROVIDER_API_VERSION } from '../../src/sync.ts';
+import { convexPoster, toOwnedScheduleDoc, SCHEDULE_POOLS_API_VERSION, SCHEDULE_PROVIDER_API_VERSION, SCHEDULE_STAR_API_VERSION } from '../../src/sync.ts';
 import { keptCheckFile } from '../../src/schedule-check.ts';
 import { dropScheduled, scheduledSendMethods, sendScheduled } from '../../src/handover.ts';
 import { DRAIN_MAX_OLD_MS, DRAIN_SETTLE_MS } from '../../src/runner.ts';
@@ -927,6 +927,35 @@ test("a schedule on a pool of several kinds keeps the kind its model was picked 
   sched.stop();
 });
 
+// Mike's daily brief (25 Nov): each morning's thread should land in
+// Starred, above the Inbox, without starring it by hand.
+test('a new-thread schedule can start each of its threads starred', async () => {
+  const { h, sched } = setup();
+  const m = scheduleMethods(sched);
+  const { thread } = idleThread(h);
+  await assert.rejects(async () => m['schedules.create']({ text: 'x', cron: '@daily', threadId: thread.id, starThreads: true }), /starThreads is for a schedule that starts a new thread/);
+  await assert.rejects(async () => m['schedules.create']({ text: 'x', cron: '@daily', starThreads: 'yes' }), /starThreads must be a boolean/);
+
+  const sc = ((await m['schedules.create']({ text: 'Write the daily brief', cron: '30 6 * * *', starThreads: true })) as { schedule: { id: string; starThreads?: boolean } }).schedule;
+  assert.equal(sc.starThreads, true);
+  const first = await sched.runNow(sc.id);
+  assert.ok(h.runner.get(first.threadId!).starredAt, 'its thread starts starred');
+
+  // Off again, the next run's thread isn't; other changes leave it alone.
+  assert.equal((await sched.update({ scheduleId: sc.id, title: 'Brief' })).starThreads, true);
+  assert.equal(((await m['schedules.update']({ scheduleId: sc.id, starThreads: false })) as { schedule: { starThreads?: boolean } }).schedule.starThreads, undefined);
+  const second = await sched.runNow(sc.id);
+  assert.equal(h.runner.get(second.threadId!).starredAt, undefined);
+  const toThread = await sched.create({ text: 'y', cron: '@daily', threadId: thread.id });
+  await assert.rejects(sched.update({ scheduleId: toThread.id, starThreads: true }), /star the thread itself/);
+
+  // A backend older than 100 would turn the whole row down.
+  const row = { ...sched.find(sc.id), starThreads: true, runnerId: 'r1' };
+  assert.equal(toOwnedScheduleDoc(row, SCHEDULE_STAR_API_VERSION).starThreads, true);
+  assert.ok(!('starThreads' in toOwnedScheduleDoc(row, SCHEDULE_STAR_API_VERSION - 1)));
+  sched.stop();
+});
+
 test('the methods check what they are given', async () => {
   const { h, sched } = setup();
   const m = scheduleMethods(sched);
@@ -988,6 +1017,12 @@ test('agents schedule messages to their own thread by default', async () => {
   assert.deepEqual([(await sched.find(dailyId)).accountId, (await sched.find(dailyId)).poolId], [undefined, 'claude']);
   await call('update_schedule', { scheduleId: dailyId, pool: null });
   assert.equal((await sched.find(dailyId)).poolId, undefined);
+  // Starring each new thread, from a recipe's setup or later.
+  assert.equal((await call('schedule_message', { text: 'x', when: '1h', star: true })).error, true, 'star is for new threads');
+  assert.match((await call('update_schedule', { scheduleId: dailyId, star: true })).text, /, starred/);
+  assert.equal((await sched.find(dailyId)).starThreads, true);
+  await call('update_schedule', { scheduleId: dailyId, star: false });
+  assert.equal((await sched.find(dailyId)).starThreads, undefined);
   const viaPool = await call('schedule_message', { text: 'Evening summary', cron: '0 18 * * *', new_thread: true, pool: 'claude' });
   assert.match(viaPool.text, /claude pool/, viaPool.text);
   assert.equal((await call('schedule_message', { text: 'x', when: '1h', pool: 'claude' })).error, true, 'pool is for new threads');

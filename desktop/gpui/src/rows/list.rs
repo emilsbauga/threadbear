@@ -191,6 +191,7 @@ pub fn transcript_list(
         .min_h_0()
         .min_w_0()
         .overflow_hidden()
+        .child(crate::web_panels::transcript_mark(Some(state.entity_id())))
         .child(
             div()
                 .id("transcript-viewport")
@@ -205,6 +206,7 @@ pub fn transcript_list(
                     ),
                 ),
         )
+        .child(crate::web_panels::transcript_mark(None))
         // Rows slide under the fades instead of being cut off, and the scroll
         // bar's strip on the right stays whole.
         .child(fade(background, FadeEdge::Top))
@@ -263,3 +265,7 @@ fn fade(background: Hsla, edge: FadeEdge) -> Div {
         }
     }
 }
+
+#[cfg(all(test, feature = "automation"))]
+#[path = "list_wheel_tests.rs"]
+mod wheel_tests;

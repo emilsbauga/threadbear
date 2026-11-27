@@ -595,3 +595,12 @@ test('the virtual runners watch starts and stops with a refresh, as the experime
   assert.equal(heard.at(-1)!.services, undefined, 'the app hears they went');
   index.stop();
 });
+
+test('the sidebar keeps pool identity and omits it for older backends', () => {
+  const { h } = setup();
+  const { thread } = h.runner.create({ text: 'Pool usage', accountId: 'claude-3' });
+  const pooled = { ...thread, poolId: 'personal' };
+  assert.equal(toIndexRow(pooled).poolId, 'personal');
+  assert.equal(toIndexRow(pooled, true, true, true, true, true, true, false).poolId, undefined);
+  assert.equal(toIndexRow({ ...pooled, poolId: undefined }).poolId, undefined);
+});

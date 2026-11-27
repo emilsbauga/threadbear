@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { CodexAdapter, CodexSession, codexModelChoices, type CodexAdapterDeps } from '../../src/adapters/codex/adapter.ts';
+import { CodexAdapter, CodexSession, codexModelChoices, coordinatorMcpLeaks, coordinatorMcpOff, type CodexAdapterDeps } from '../../src/adapters/codex/adapter.ts';
 import { OVERSIZED_LINE } from '../../src/adapters/codex/appserver.ts';
 import { FILE_CHANGE_RULE } from '../../src/adapters/codex/approvals.ts';
 import { TOOL_GUIDANCE } from '../../src/adapters/codex/tools.ts';
@@ -1287,4 +1287,61 @@ test('/review with a folder move still to send is a turn, which carries the move
   assert.equal(req.params.cwd, other);
   assert.equal(h.conn.sent('review/start').length, 0);
   await h.session.end();
+});
+
+// A Codex coordinator stays read-only: plugins and apps off for its process,
+// config.toml's servers off for its thread, Agent Archive kept, and it
+// refuses to start while any other server still offers tools.
+const coordinatorRole = { role: 'coordinator' as const, checkTool: () => undefined };
+
+test('a Codex coordinator starts with only Agent Archive among its MCP servers', async () => {
+  const f = await fake();
+  const adapter = new CodexAdapter({ codexBinary: () => f.bin, registry: new ProcessRegistry(tmp(), nullLogger), log: nullLogger, toolsFor: () => [], mcpServers: () => ({ 'agent-archive': { command: '/bin/node', args: ['archive.js', 'mcp'] } }) });
+  const h = await open({ adapter, coordinator: coordinatorRole });
+  assert.deepEqual(h.conn.hello.argv, ['app-server', '--disable', 'plugins', '--disable', 'apps']);
+  const read = await h.conn.request('config/read');
+  assert.equal((read.params as { cwd: string }).cwd, h.home);
+  h.conn.respond(read.id, { config: { mcp_servers: { node_repl: {}, connectors: {}, 'agent-archive': {} } } });
+  const req = await h.conn.request('thread/start');
+  const cfg = (req.params as { config: Record<string, unknown> }).config;
+  assert.equal(cfg['mcp_servers.node_repl.enabled'], false);
+  assert.equal(cfg['mcp_servers.connectors.enabled'], false);
+  assert.equal('mcp_servers.agent-archive.enabled' in cfg, false);
+  assert.equal(cfg['mcp_servers.agent-archive.command'], '/bin/node');
+  assert.ok(Array.isArray(cfg['mcp_servers.agent-archive.enabled_tools']));
+  h.conn.respond(req.id, threadResult('th-1'));
+  const status = await h.conn.request('mcpServerStatus/list');
+  assert.equal((status.params as { threadId: string }).threadId, 'th-1');
+  h.conn.respond(status.id, { data: [
+    { name: 'agent-archive', runtimeStatus: 'connected', tools: { search_archive: {} } },
+    { name: 'node_repl', runtimeStatus: 'disabled', tools: {} },
+  ], nextCursor: null });
+  await waitFor(() => h.rec.kinds().includes('session'));
+  await h.session.end();
+});
+
+test('a Codex coordinator that would still have a writable MCP server refuses to start', async () => {
+  const h = await open({ coordinator: coordinatorRole });
+  const read = await h.conn.request('config/read');
+  h.conn.respond(read.id, { config: { mcp_servers: {} } });
+  const req = await h.conn.request('thread/start');
+  h.conn.respond(req.id, threadResult('th-1'));
+  const status = await h.conn.request('mcpServerStatus/list');
+  h.conn.respond(status.id, { data: [{ name: 'google-tasks', runtimeStatus: 'connected', tools: { add_task: {} } }] });
+  const err = await h.rec.exited;
+  assert.match(String(err?.message), /google-tasks/);
+  assert.equal(h.rec.kinds().includes('session'), false);
+});
+
+test('Codex coordinator lockdown helpers', () => {
+  const kept = coordinatorMcpOff({ 'agent-archive': { command: 'x', args: [], env: null, environment_id: 'local', enabled: true, tool_timeout_sec: null }, 'cua-driver': {} }, true);
+  assert.equal(kept['mcp_servers.cua-driver.enabled'], false);
+  assert.ok(Array.isArray(kept['mcp_servers.agent-archive.enabled_tools']), 'kept, with only its read tools');
+  assert.equal(coordinatorMcpOff({ 'agent-archive': { command: 'x', environment_id: 'remote-box' } }, true)['mcp_servers.agent-archive.enabled'], false, 'another environment: off');
+  assert.deepEqual(coordinatorMcpOff({ 'agent-archive': { command: 'x' } }, false), { 'mcp_servers.agent-archive.enabled': false }, "not Threadbear's own: off");
+  assert.deepEqual(coordinatorMcpOff({ 'agent-archive': { command: 'x', env: { NODE_OPTIONS: '--require=/evil.cjs' } } }, true), { 'mcp_servers.agent-archive.enabled': false }, 'an env that changes how it runs: off');
+  assert.deepEqual(coordinatorMcpLeaks([{ name: 'x', runtimeStatus: 'disabled', tools: {} }, { name: 'agent-archive', runtimeStatus: 'connected', tools: { search_archive: {} } }], true), []);
+  assert.deepEqual(coordinatorMcpLeaks([{ name: 'agent-archive', runtimeStatus: 'connected', tools: { write_file: {} } }], true), ['agent-archive'], 'only its read tools');
+  assert.deepEqual(coordinatorMcpLeaks([{ name: 'agent-archive', runtimeStatus: 'connected', tools: { search_archive: {} } }], false), ['agent-archive'], 'not kept: must be off');
+  assert.deepEqual(coordinatorMcpLeaks([{ name: 'y', runtimeStatus: null, tools: {} }], true), ['y'], 'unknown status is not proof it is off');
 });

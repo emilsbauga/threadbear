@@ -157,6 +157,12 @@ pub struct TranscriptModel {
     /// Something the working line depends on changed, so the rows to the end
     /// need rebuilding.
     tail_dirty: bool,
+    /// The open turn and the item count when `rows` were last built. A turn
+    /// starting or ending changes rows far above the new items: a waiting
+    /// card floats to the end or goes back to its place, and a finished turn
+    /// that runs again stops being a finished stretch.
+    built_open_turn: Option<String>,
+    built_items: usize,
     /// The thread's background sub-agents and jobs, from its summary.
     background: Vec<BackgroundTask>,
     /// The thread's working folder.
@@ -827,6 +833,8 @@ impl TranscriptModel {
         self.dirty_insert = None;
         self.dirty_update_end = 0;
         self.tail_dirty = false;
+        self.built_open_turn = self.open_turn.clone();
+        self.built_items = self.items.len();
     }
 
     fn mark_updated(&mut self, item_index: usize) {
@@ -850,6 +858,21 @@ impl TranscriptModel {
                     self.dirty_update_end = self.dirty_update_end.max(footer + 1);
                 }
             }
+        }
+    }
+
+    /// A turn id starting or ending again changes how its earlier items are
+    /// drawn: a finished turn that runs again (the mock runner's streams
+    /// all say `turn_stream`) is no longer a finished stretch, and its rows
+    /// all start at that stretch's first item, far above the new ones. The
+    /// nightly random walk saw its reply drawn twice, 21 and 24 Nov 2026.
+    fn mark_turn(&mut self, turn: &str) {
+        if let Some(k) = self
+            .items
+            .iter()
+            .position(|i| i.turn_id.as_deref() == Some(turn))
+        {
+            self.mark_inserted(k);
         }
     }
 
@@ -966,6 +989,10 @@ impl TranscriptModel {
                     review: review.clone(),
                     ..UserMessage::default()
                 };
+                if message.is_from_runner() {
+                    message.review_note =
+                        super::review_note::ReviewNote::parse(&message.text).map(Box::new);
+                }
                 // Only one that started its own turn can be cut back to; one
                 // sent into a running turn went into that turn.
                 message.editable = message.is_mike()
@@ -1580,7 +1607,7 @@ impl TranscriptModel {
                     self.plan_steps_turn = Some(key.clone());
                 }
                 self.open_turn = Some(key.clone());
-                self.started_turns.insert(key.clone());
+                let reused = !self.started_turns.insert(key.clone());
                 if let Some(date) = parse_iso8601(&event.ts) {
                     self.turn_starts.insert(key.clone(), date);
                 }
@@ -1609,6 +1636,9 @@ impl TranscriptModel {
                 }
                 // Nothing new to show but the working line (and a live group).
                 self.mark_inserted(self.items.len());
+                if reused {
+                    self.mark_turn(&key);
+                }
             }
 
             EventPayload::TurnCompleted(completion) => {
@@ -1619,7 +1649,9 @@ impl TranscriptModel {
                 } else {
                     completion.turn_id.clone()
                 };
-                self.completed_turns.insert(key.clone());
+                if !self.completed_turns.insert(key.clone()) {
+                    self.mark_turn(&key);
+                }
                 if self.plan_taking_steps.is_some()
                     && self.plan_steps_turn.as_deref() == Some(key.as_str())
                 {
@@ -1699,6 +1731,8 @@ impl TranscriptModel {
                         let card_id = format!("ak:{seq}");
                         let mut card = AsksCard::new(seq, Vec::new());
                         card.next = completion.next.clone();
+                        card.next_pick = completion.next_pick.clone();
+                        card.next_suggested = completion.next_suggested;
                         card.picked_next = self.next_picks.get(&seq).cloned().unwrap_or_default();
                         card.explain_next =
                             self.next_explains.get(&seq).cloned().unwrap_or_default();
@@ -1714,14 +1748,33 @@ impl TranscriptModel {
                 }
             }
 
-            EventPayload::AsksTicked { asks_seq, ticked } => {
+            EventPayload::AsksTicked {
+                asks_seq,
+                ticked,
+                resolved,
+            } => {
                 if let Some(card_id) = self.asks_row_for_seq.get(asks_seq).cloned() {
-                    let ticked: BTreeSet<i64> = ticked.iter().copied().collect();
-                    self.update(&card_id, move |content| {
+                    let mut all_resolved = false;
+                    self.update(&card_id, |content| {
                         if let RowContent::Asks(card) = content {
-                            card.ticked = ticked;
+                            card.resolved.extend(
+                                resolved
+                                    .iter()
+                                    .copied()
+                                    .filter(|i| (0..card.asks.len() as i64).contains(i)),
+                            );
+                            card.ticked = ticked
+                                .iter()
+                                .copied()
+                                .chain(card.resolved.iter().copied())
+                                .collect();
+                            all_resolved =
+                                !card.asks.is_empty() && card.resolved.len() == card.asks.len();
                         }
                     });
+                    if all_resolved && self.open_asks_row.as_deref() == Some(card_id.as_str()) {
+                        self.close_open_asks();
+                    }
                 }
             }
 
@@ -1810,13 +1863,7 @@ impl TranscriptModel {
     pub(crate) fn is_work_row(row: &Row) -> bool {
         match &row.content {
             RowContent::Tool(tool) => !Self::is_taken_end_turn(tool),
-            RowContent::Note(_)
-                if row.content.is_wake_note()
-                    || row.content.is_login_note()
-                    || row.content.is_saved_message_note() =>
-            {
-                false
-            }
+            RowContent::Note(_) if row.content.is_standalone_note() => false,
             RowContent::Reasoning(_) | RowContent::Note(_) => true,
             RowContent::Approval(item) => item.is_allowed(),
             _ => false,
@@ -2239,19 +2286,16 @@ impl TranscriptModel {
     /// What stays out of a finished turn's line of work: Mike's messages,
     /// the reply, errors, reviews waiting on him, pictures the agent made,
     /// the footer and the card. The runner's messages fold in: they're how
-    /// the work carried on. The note an edit of Mike's leaves stays.
+    /// the work carried on, all but a review coming back, whose checklist
+    /// shows what was done about each finding (review_note.rs). The note an
+    /// edit of Mike's leaves stays.
     fn stays_out(&self, k: usize, replies: &HashSet<usize>) -> bool {
         let item = &self.items[k];
-        if replies.contains(&k)
-            || item.id.starts_with("rw:")
-            || item.content.is_wake_note()
-            || item.content.is_login_note()
-            || item.content.is_saved_message_note()
-        {
+        if replies.contains(&k) || item.id.starts_with("rw:") || item.content.is_standalone_note() {
             return true;
         }
         match &item.content {
-            RowContent::User(message) => !message.is_from_runner(),
+            RowContent::User(message) => !message.is_from_runner() || message.review_note.is_some(),
             RowContent::Error { .. }
             | RowContent::Footer(_)
             | RowContent::Asks(_)
@@ -2414,6 +2458,21 @@ impl TranscriptModel {
         low
     }
 
+    /// The first item of the row on show that item `i` falls in: `i` when a
+    /// row starts there (or it's past what the rows were built from), else
+    /// the start of the row before it.
+    fn old_row_start(&self, i: usize) -> usize {
+        let f = self.first_row(i);
+        if f < self.row_starts.len() && self.row_starts[f] == i {
+            return i;
+        }
+        let inside = f < self.row_starts.len() || i < self.built_items;
+        match f.checked_sub(1).map(|p| self.row_starts[p]) {
+            Some(before) if inside && before < i => before,
+            _ => i,
+        }
+    }
+
     /// Brings `rows` up to date with the items changed since the last call
     /// and says what changed. New items rebuild from the first run they
     /// touch to the end (nearly always just the current turn); changes in
@@ -2443,6 +2502,31 @@ impl TranscriptModel {
                 start = start.min(self.block_start(added));
             }
         }
+        // Another turn open: a waiting card with no tool floats to the end,
+        // or goes back to its place, wherever it is (the nightly random walk
+        // saw one drawn in both, 21 Nov 2026). And the working line, even
+        // when the turn's end only changed a footer already there.
+        if self.open_turn != self.built_open_turn {
+            self.tail_dirty = true;
+            for &k in self
+                .pending_cards
+                .keys()
+                .filter_map(|id| self.item_index.get(id))
+            {
+                start = start.min(k);
+            }
+        }
+        // Rebuild from where both the new runs and the rows on show begin:
+        // a row from before `start` that stood for items from `start` on
+        // (a finished stretch's rows all start at its first item) would be
+        // kept and its items drawn again under it.
+        loop {
+            let from = self.old_row_start(self.run_start(start as isize).min(start));
+            if from == start {
+                break;
+            }
+            start = from;
+        }
         let bounded = self.dirty_insert.is_none() && !self.tail_dirty;
         if bounded {
             end = self.items.len().min(self.dirty_update_end);
@@ -2463,11 +2547,16 @@ impl TranscriptModel {
         let (built_rows, built_starts) = self.build_rows(start, Some(end), !bounded);
 
         let mut change = TranscriptChange::default();
-        let mut kept: HashSet<&str> = HashSet::with_capacity(built_rows.len());
+        // Old rows kept in place, in order. One that moved (a waiting card
+        // floating to the end) goes and comes back, so a list replaying the
+        // change ends up in the same order.
+        let mut kept: HashSet<usize> = HashSet::with_capacity(built_rows.len());
+        let mut last_kept: Option<usize> = None;
         for (offset, row) in built_rows.iter().enumerate() {
-            kept.insert(&row.id);
             match self.index.get(&row.id) {
-                Some(&old) if old >= first && old < last => {
+                Some(&old) if old >= first && old < last && last_kept.is_none_or(|k| old > k) => {
+                    kept.insert(old);
+                    last_kept = Some(old);
                     let previous = &self.rows[old];
                     if previous.version != row.version || previous.in_group != row.in_group {
                         change.updated.insert(first + offset);
@@ -2479,17 +2568,20 @@ impl TranscriptModel {
             }
         }
         for old in first..last {
-            if !kept.contains(self.rows[old].id.as_str()) {
+            if !kept.contains(&old) {
                 change.removed.insert(old);
                 let id = self.rows[old].id.clone();
                 self.index.remove(&id);
             }
         }
-        drop(kept);
         let shifted_all = built_rows.len() != last - first;
         let built_count = built_rows.len();
         self.rows.splice(first..last, built_rows);
         self.row_starts.splice(first..last, built_starts);
+        if !bounded {
+            self.built_open_turn = self.open_turn.clone();
+            self.built_items = self.items.len();
+        }
         let shifted = if shifted_all {
             self.rows.len()
         } else {
@@ -2577,7 +2669,29 @@ impl TranscriptModel {
                     .iter()
                     .rev()
                     .find_map(|(index, done)| done.review.as_ref().map(|review| (*index, review)));
-                let review_row: Option<Row> = reviewed.map(|(index, review)| {
+                // The runner's messages that brought the reviews back draw
+                // their findings as a checklist (review_note.rs), so they
+                // take the ledger to fill in what the agent did about each.
+                // When they show every finding in it, the ledger's own row
+                // would only say it all again, so it goes; it stays for what
+                // only it can say (a round no review looked at, a review
+                // with no verdict) and for a note paged out of view.
+                let noted: Vec<i64> = turn
+                    .clone()
+                    .filter_map(|k| match &self.items[k].content {
+                        RowContent::User(m) => m.review_note.as_ref(),
+                        _ => None,
+                    })
+                    .flat_map(|note| note.findings.iter().map(|f| f.id))
+                    .collect();
+                let noted_all = reviewed.is_some_and(|(_, review)| {
+                    !noted.is_empty()
+                        && !review.unstructured
+                        && !review.unchecked
+                        && review.findings.iter().all(|f| noted.contains(&f.id))
+                });
+                let reviewed_in_rows = reviewed.filter(|_| !noted_all);
+                let review_row: Option<Row> = reviewed_in_rows.map(|(index, review)| {
                     let footer = &self.items[index];
                     let id = format!(
                         "lr:{}",
@@ -2599,6 +2713,7 @@ impl TranscriptModel {
                         .min()
                         .unwrap_or(index)
                 });
+                let turn_rows_from = out.len();
                 for k in turn.clone() {
                     let row = &self.items[k];
                     if self.is_floating_card(k) || self.is_unshown(k) {
@@ -2717,6 +2832,24 @@ impl TranscriptModel {
                     } else {
                         out.push(row.clone());
                         starts.push(turn.start);
+                    }
+                }
+                if let Some((_, review)) = reviewed {
+                    for row in &mut out[turn_rows_from..] {
+                        let RowContent::User(message) = &row.content else {
+                            continue;
+                        };
+                        if message.review_note.is_none() {
+                            continue;
+                        }
+                        let mut message = message.clone();
+                        message.review_ledger = Some(Box::new(review.clone()));
+                        *row = derived(
+                            &row.id,
+                            row.seq,
+                            row.turn_id.clone(),
+                            RowContent::User(message),
+                        );
                     }
                 }
                 i = turn.end;

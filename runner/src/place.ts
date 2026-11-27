@@ -65,19 +65,20 @@ import type { WakeWhen } from './wake-when.ts';
 export const FAR_OFF = '9999-12-31T00:00:00.000Z';
 
 export const PLACE_FIELDS = [
-  'snoozedUntil', 'snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp',
+  'snoozedUntil', 'snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'snoozedByAgent',
   'snoozedAt', 'woke', 'wakeChecked', 'archivedAt', 'archivedBy', 'archiveVerdict', 'unarchivedBySchedule', 'keptOut',
 ] as const;
 export type PlaceField = (typeof PLACE_FIELDS)[number];
 export type PlaceFields = Pick<ThreadRecord, PlaceField>;
 
 // The fields that make up a sleep, which every end of one clears.
-const SLEEP_FIELDS = ['snoozedUntil', 'snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp'] as const;
-type SleepDetail = Pick<ThreadRecord, 'snoozedUntilRestart' | 'untilRelease' | 'wakeWhen' | 'waitingOn' | 'hibernatedForApp'>;
+const SLEEP_FIELDS = ['snoozedUntil', 'snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'snoozedByAgent'] as const;
+type SleepDetail = Pick<ThreadRecord, 'snoozedUntilRestart' | 'untilRelease' | 'wakeWhen' | 'waitingOn' | 'hibernatedForApp' | 'snoozedByAgent'>;
 export type Wait = NonNullable<ThreadRecord['waitingOn']>[number];
 
 export type SleepFor =
-  | { kind: 'time' }
+  // `by`: its agent hibernated it (end_turn's snooze, update_thread), not Mike.
+  | { kind: 'time'; by?: 'agent' }
   // `release`: only a start on another release than this wakes it.
   | { kind: 'restart'; release?: string }
   | { kind: 'words'; wakeWhen: WakeWhen }
@@ -111,7 +112,7 @@ export type Place =
   | { kind: 'archived'; at: string; by?: ArchivedBy; verdict?: ArchiveVerdict; sleep?: Sleep; marks: Marks };
 
 export type PlaceEvent =
-  | { kind: 'snooze'; until: { kind: 'time'; at: string } | { kind: 'restart'; release?: string } }
+  | { kind: 'snooze'; until: { kind: 'time'; at: string; by?: 'agent' } | { kind: 'restart'; release?: string } }
   | { kind: 'unsnooze' }
   | { kind: 'wordsAsked'; said: string; by?: 'agent' }
   | { kind: 'wordsAnswered'; said: string; until?: string; topic?: string; by?: 'agent' }
@@ -156,9 +157,10 @@ export function placeOf(rec: PlaceFields): Place {
 }
 
 function sleepFor(rec: PlaceFields): SleepFor {
-  const has = (['snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp'] as const).filter((k) => rec[k] !== undefined);
+  const has = (['snoozedUntilRestart', 'untilRelease', 'wakeWhen', 'waitingOn', 'hibernatedForApp', 'snoozedByAgent'] as const).filter((k) => rec[k] !== undefined);
   const only = (...ks: string[]) => has.length > 0 && has.every((k) => ks.includes(k));
   if (!has.length) return { kind: 'time' };
+  if (only('snoozedByAgent') && rec.snoozedByAgent === true) return { kind: 'time', by: 'agent' };
   if (only('snoozedUntilRestart', 'untilRelease') && rec.snoozedUntilRestart === true && rec.snoozedUntil === FAR_OFF && (rec.untilRelease === undefined || typeof rec.untilRelease === 'string')) {
     return rec.untilRelease !== undefined ? { kind: 'restart', release: rec.untilRelease } : { kind: 'restart' };
   }
@@ -188,6 +190,7 @@ export function placeFields(place: Place): { [K in PlaceField]: PlaceFields[K] |
     const f = sleep.for;
     switch (f.kind) {
       case 'time':
+        if (f.by === 'agent') out.snoozedByAgent = true;
         break;
       case 'restart':
         out.snoozedUntilRestart = true;
@@ -258,7 +261,7 @@ export function movePlace(place: Place, e: PlaceEvent, now: number): PlaceMove {
       // from when it first went away.
       const snoozedAt = placeBucket(place, now) === 'snoozed' ? marks.snoozedAt : iso;
       const sleep: Sleep = e.until.kind === 'time'
-        ? { until: e.until.at, for: { kind: 'time' } }
+        ? { until: e.until.at, for: e.until.by === 'agent' ? { kind: 'time', by: 'agent' } : { kind: 'time' } }
         : { until: FAR_OFF, for: e.until.release ? { kind: 'restart', release: e.until.release } : { kind: 'restart' } };
       return ok(withSleep(place, sleep, { ...drop(marks, 'woke', 'stray'), ...keep('snoozedAt', snoozedAt), ...strayWithout(marks, SLEEP_FIELDS) }));
     }

@@ -14,6 +14,7 @@ import { boxStateV } from './boxStates';
 import { requiredUnlessStepping } from './stepping';
 import { tokenStateV } from './cloudTokenStates';
 import { installStateV } from './relayInstallStates';
+import { grantStateV } from './boxTokenGrantStates';
 
 // A thread's sharing, as the runner mirrors it (ThreadShare in
 // docs/protocol.md): "link" is readable by anyone with /s/<slug>; "off"
@@ -40,6 +41,13 @@ export const messageButton = v.object({
   pressedThreadId: v.optional(v.string()),
   failed: v.optional(v.string()),
 });
+
+export const usagePool = v.object({ id: v.string(), title: v.string(), accountIds: v.array(v.string()) });
+// API 104: a Codex login's usage resets (with when they were read, so the
+// newest read wins on every runner) and the hint to use one
+// (docs/protocol/settings.md, "Telling Mike about resets").
+export const usageResets = v.object({ available: v.number(), nextExpiresAt: v.optional(v.string()), readAt: v.optional(v.string()) });
+export const resetHint = v.object({ why: v.string(), available: v.number(), nextExpiresAt: v.optional(v.string()) });
 
 export const threadFields = {
   threadId: v.string(),
@@ -80,6 +88,7 @@ export const threadFields = {
   archivedAt: v.optional(v.string()),
   // Mike starred it: the phone's Starred section. Since API 27.
   starredAt: v.optional(v.string()),
+  coordinatorProjectId: v.optional(v.string()),
   costUsd: v.optional(v.number()),
   projects: v.optional(v.array(v.object({ id: v.string(), title: v.string() }))),
   working: v.optional(v.string()), // the working line: what the CLI is doing in the background
@@ -115,6 +124,10 @@ export const threadFields = {
   asksSeq: v.optional(v.number()),
   // A finished turn's suggested follow-ups (end_turn's `next`), since API 14.
   next: v.optional(v.array(v.string())),
+  // "one" when `next` items are mutually exclusive directions (API 103); absent means multi-pick.
+  nextPick: v.optional(v.literal('one')),
+  // Index into `next` of the agent's recommendation when nextPick is "one" (API 103).
+  nextSuggested: v.optional(v.number()),
   // The done card's loose ends (docs/protocol/threads.md, "Loose ends"; experiment
   // looseEnds), since API 73: what the runner found still open on a thread
   // whose last turn needs nothing, for the phone's done card. kind is
@@ -250,6 +263,7 @@ export const appSchema = defineSchema({
     startedAt: v.string(),
     draining: v.boolean(),
     threadCount: v.number(),
+    usagePools: v.optional(v.array(usagePool)), // since API 101
     // Whether Mike is at this Mac (the Mac app connected and the keyboard or
     // mouse used in the last two minutes), from sync:setPresence (API 3).
     // Only believed while lastSeenAt is recent: a sleeping Mac counts as away.
@@ -503,6 +517,10 @@ export const appSchema = defineSchema({
     .index('by_machine', ['providerBoxId']),
   reapQueued: defineTable({ providerBoxId: v.string(), at: v.number(), job: v.optional(v.string()) }).index('by_box', ['providerBoxId']),
 
+  boxTokenGrants: defineTable({
+    boxId: v.id('boxes'), login: v.string(), keyHash: v.string(), sealedToken: v.string(), grantState: grantStateV,
+  }).index('by_box', ['boxId']).index('by_login_state', ['login', 'grantState.kind', 'grantState.afterSetAt']),
+
   cloudTokens: defineTable({
     login: v.string(),
     sealed: v.string(),
@@ -560,6 +578,7 @@ export const appSchema = defineSchema({
     title: v.string(),
     cwd: v.string(),
     accountId: v.string(),
+    poolId: v.optional(v.string()), // since API 101
     provider: v.string(),
     model: v.optional(v.string()),
     status: v.string(),
@@ -573,6 +592,7 @@ export const appSchema = defineSchema({
     starredAt: v.optional(v.string()), // since API 27
     backlogged: v.optional(v.boolean()),
     backlog: v.optional(v.boolean()),
+    coordinatorProjectId: v.optional(v.string()), // since API 102
     // Who started it, when that wasn't Mike: the row's byline. Since API 23.
     startedBy: v.optional(v.object({ kind: v.string(), label: v.string(), icon: v.optional(v.string()), threadTitle: v.optional(v.string()), why: v.optional(v.string()) })),
     // What Mike last said to it, one line: the Mac row's "You: ...". Since API 32.
@@ -1248,6 +1268,8 @@ export const appSchema = defineSchema({
     // Since API 97: with poolId, the kind of login ("opencode") a pool of
     // several kinds starts its threads on.
     provider: v.optional(v.string()),
+    // Since API 100: each thread it starts begins starred.
+    starThreads: v.optional(v.boolean()),
     claim: v.optional(v.object({ holder: v.string(), until: v.number() })),
     runRequestedAt: v.optional(v.string()),
     // When what a runner reads last changed (API 48), for sync:schedulesSince.
@@ -1341,6 +1363,7 @@ export const appSchema = defineSchema({
     loginEndsAt: v.optional(v.string()),
     signedOut: v.optional(v.boolean()),
     yearToken: v.optional(v.object({ madeAt: v.optional(v.string()) })),
+    resetHint: v.optional(resetHint),
     usage: v.optional(
       v.object({
         windows: v.array(v.object({ kind: v.string(), title: v.string(), remainingPercent: v.number(), resetsAt: v.optional(v.string()), detail: v.optional(v.string()) })),
@@ -1349,6 +1372,7 @@ export const appSchema = defineSchema({
         stale: v.optional(v.boolean()),
         blocked: v.optional(v.boolean()),
         notice: v.optional(v.string()),
+        resets: v.optional(usageResets),
       }),
     ),
   })

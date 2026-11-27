@@ -162,6 +162,26 @@ pub fn tree_from_rev_parse(output: &str) -> String {
         .join("+")
 }
 
+/// What a look at main does, by runner.json's followMain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// Compare main with what's running, and build what's new.
+    Follow,
+    /// followMain is off: nothing is built or dropped, but a build staged by
+    /// hand (`desktop/scripts/stage-update.sh`) is still noticed, so Restart
+    /// to Update is offered for it. It used to sit unseen until a quit.
+    StagedOnly,
+}
+
+/// Only an explicit false turns following off.
+pub fn look(follow_main: Option<bool>) -> Look {
+    if follow_main == Some(false) {
+        Look::StagedOnly
+    } else {
+        Look::Follow
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Nothing,
@@ -556,6 +576,13 @@ pub fn build_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_staged_by_hand_is_still_noticed_with_follow_main_off() {
+        assert_eq!(look(Some(false)), Look::StagedOnly);
+        assert_eq!(look(Some(true)), Look::Follow);
+        assert_eq!(look(None), Look::Follow);
+    }
 
     fn info(origin: Option<&str>) -> BuildInfo {
         BuildInfo {

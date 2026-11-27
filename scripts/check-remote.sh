@@ -173,10 +173,13 @@ if [ "${1:-}" = "--on-host" ]; then
 
   # node_modules per package-lock, kept between runs (the newest three of
   # each). npm ci only when the lockfile is new.
-  # --runner (the runner's self-update) needs only the runner's: a broken
-  # lockfile elsewhere mustn't hold the runner back (Codex, 9 Nov).
+  # --runner (the runner's self-update) needs only the runner's and the
+  # root's: a broken lockfile elsewhere mustn't hold the runner back (Codex,
+  # 9 Nov), but the runner's tests load convex/server and the state machines
+  # library from the root's (test/helpers/convex-memory.ts). Without it the
+  # self-update failed on backend-stones.test.ts (26 Nov).
   dep_dirs=". runner mock-runner features"
-  case " $* " in *" --runner "*) dep_dirs="runner" ;; esac
+  case " $* " in *" --runner "*) dep_dirs=". runner" ;; esac
   for dir in $dep_dirs; do
     [ -f "$src/$dir/package-lock.json" ] || continue
     name="$(printf '%s' "$dir" | tr -c 'a-zA-Z0-9' '-')"

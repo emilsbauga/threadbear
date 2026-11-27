@@ -31,3 +31,12 @@ Feature: Quietly archived threads
     When I choose Should Have Shown Me for "Morning brief"
     Then the error bar says "Couldn't bring it back just now. Try again in a moment."
     And the "Archived" section lists "Morning brief"
+
+  # The lines come after the turn, and folded into its work out of sight
+  # until 25 Nov 2026 (RowContent::is_place_note).
+  @sidebar.quiet @swift-pending
+  Scenario: A quietly archived thread says so, and says why when it comes back
+    When I open the thread "Morning brief"
+    Then the transcript shows the line "Archived by Quiet inbox on Tue 24 Nov, 8:10 pm: it finished with nothing for you"
+    When I choose Should Have Shown Me for "Morning brief"
+    Then the transcript shows the line "Brought back from the archive by you on Wed 25 Nov, 9:40 am: Quiet inbox shouldn't have hidden it."

@@ -55,10 +55,10 @@ export function newTbClient(cfg: Config, url: string = runnerUrl(cfg), opts: Run
 }
 
 // A thread's tb (its key in its environment) pointed at another runner's
-// data dir, on Windows (Daybreak finding 177). A Mac's or Linux's runner
-// looks at the environments above a connection and turns away one under
-// another runner's thread itself (peer.ts, ForeignPeer); Windows can't read
-// another process's environment, so there tb asks first.
+// data dir, on Windows (Daybreak finding 177). Every runner turns away a
+// connection under another runner's thread itself (peer.ts, ForeignPeer; on
+// Windows by its thread's job); there tb also asks first, for a plainer
+// refusal.
 // A thread id with no key (a CLI from before thread keys, or a patch's
 // action) can't ask, so it's refused.
 function crossHome(home: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): { key?: string; threadId: string; mine: string } | undefined {
@@ -105,7 +105,8 @@ export async function crossHomeRefusal(home: string, env: NodeJS.ProcessEnv = pr
 // tell. A thread's shell can wipe its own environment but not its CLI's, so
 // the walk reads each parent's. Every look uses a fixed program or /proc,
 // never PATH, and one that fails makes the answer `unresolved`, never "under
-// none". Windows can't read another process's environment: unresolved.
+// none". tb on Windows doesn't read another process's environment (the
+// runner's helper does, for the runner): unresolved.
 // `unresolved` keeps the keys found before the look failed: tb's own
 // environment's at least.
 export type TbCaller = { kind: 'thread'; keys: ThreadKeyFound[] } | { kind: 'owner' } | { kind: 'unresolved'; why: string; keys: ThreadKeyFound[] };
@@ -135,7 +136,7 @@ export async function tbCaller(env: NodeJS.ProcessEnv = process.env, deps: Calle
   // tb's own environment, read as its parents' are.
   take(['', ...MARK_NAMES.filter((n) => env[n] !== undefined).map((n) => `${n}=${env[n]}`), ''].join('\0'));
   const platform = deps.platform ?? process.platform;
-  if (platform === 'win32' && !deps.envOf) return { kind: 'unresolved', why: "Windows can't show another process's environment", keys };
+  if (platform === 'win32' && !deps.envOf) return { kind: 'unresolved', why: "tb on Windows doesn't read another process's environment", keys };
   const envOf = deps.envOf ?? (platform === 'linux' ? linuxEnv : psEnv);
   try {
     const rows: { pid: number; ppid: number; pgid?: number; sid?: number }[] = await (deps.table ?? (platform === 'linux' ? () => procTable() : psTable))();

@@ -491,7 +491,26 @@
 //    (onThreads, landing, appRestart) is in view "inbox" though hibernating.
 //    A runner sends it only to a backend of 99 or later. An older app ignores
 //    it, and leaves out those three, as it skips a hibernating inbox row.
-// 100: combined fork API, retaining Backlog, intake and recap alongside upstream 99.
-//    The fork already used 98 without wakeReason or waitState, so those fields
-//    are sent only from 100 here.
-export const API_VERSION = 100;
+// 100: an owned schedule can carry `starThreads`: each thread it starts
+//    begins starred. A runner sends it only to a backend of 100 or later;
+//    an older runner starts them unstarred.
+// 101: sidebar rows carry poolId and heartbeats carry effective usagePools,
+//    read owner-only by relay:remotePools, so Usage follows a remote thread's pool.
+// 102: thread and sidebar rows carry optional coordinatorProjectId. Clients
+//    show it in Coordinators before Starred; archived still wins.
+// 103: thread rows can carry nextPick ("one") and nextSuggested (index into
+//    next) for mutually exclusive done-card follow-ups. A runner sends them
+//    only to a backend of 103 or later; older apps ignore them.
+// 104: an accounts row can carry `resetHint` (why a usage reset is worth
+//    using now, how many are left, when the soonest expires) and
+//    `usage.resets` with its `readAt`, so other runners merge the newest read
+//    of a login's resets and the phone, the website and another Mac draw the
+//    hint. relay:queueCommand's `call` takes accounts.useReset, the Mac's Use
+//    a reset for a login only that runner has. A runner sends the fields only
+//    to a backend of 104 or later.
+// 105: relay:queueCommand's `call` takes logins.sealKey and logins.share,
+//    the Runners panel's Use this Mac's Claude logins (docs/protocol/settings.md,
+//    "This Mac's logins on another runner"): owner key only, and a share
+//    carries each login sealed to that runner's key, never in the clear.
+// 106: fork Backlog, intake and recap alongside upstream 105.
+export const API_VERSION = 106;

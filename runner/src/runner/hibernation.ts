@@ -6,7 +6,7 @@ import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
 import type { PermissionMode, ReviewFinding, ThreadSummary } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
-import { LATE_CHECKS_MAX, LATE_CHECK_LOST, SAID_MAX, WAKE_SYSTEM, awayFor, hibernateNote, lateCheckPrompt, lateChecksOf, lateNews, lateSleepMs, lateWait, lateWhy, localWhen, readWakeAnswer, topicCheckNews, wakePrompt, type LateWait } from '../wake-when.ts';
+import { LATE_CHECKS_MAX, LATE_CHECK_LOST, SAID_MAX, WAKE_SYSTEM, awayFor, hibernateNote, lateCheckPrompt, lateChecksOf, lateNews, lateSleepMs, lateWait, lateWhy, localWhen, parseWakeTime, readWakeAnswer, topicCheckNews, wakePrompt, type LateWait } from '../wake-when.ts';
 import type { ThreadState } from '../runner.ts';
 import { NO_WAKE_TIME } from './timings.ts';
 import { parseWhen } from '../when.ts';
@@ -49,11 +49,29 @@ export const hibernationPart = {
     const said = params.said.trim();
     if (!said) throw new RpcError(ErrorCode.badParams, 'Say when it should wake.');
     if (said.length > SAID_MAX) throw new RpcError(ErrorCode.badParams, `That's more than ${SAID_MAX} characters.`);
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const by = params.by === 'agent' ? ('agent' as const) : undefined;
+    // Plain time expressions ("tomorrow", "2h", "in 2 hours", "tonight",
+    // "Friday 9am", "at the weekend", …) are worked out locally right away,
+    // so they cost no tokens and still work when every login is out of room
+    // or small-model calls are off. Only topics and fuzzy phrases go to the
+    // model.
+    const local = parseWakeTime(said, this.clock.now());
+    if (local) {
+      if ('error' in local) throw new RpcError(ErrorCode.other, `Couldn't work out when to wake it: ${local.error}`);
+      this.update({ threadId: st.rec.id, snoozedUntil: local.until, noted: true });
+      this.park(st, { kind: 'wordsAsked', said, ...(by ? { by } : {}) });
+      this.park(st, { kind: 'wordsAnswered', said, until: local.until, ...(by ? { by } : {}) });
+      this.markDirty(st);
+      this.emit(st, { type: 'system.note', text: hibernateNote(local, said, timeZone, by) });
+      this.armSnoozeTimer();
+      if (by) this.recheckStarter(st);
+      this.log.info('hibernated in words (local)', { threadId: st.rec.id, until: local.until });
+      return { thread: this.summary(st), ...local };
+    }
     const models = this.models;
     if (!models) throw new RpcError(ErrorCode.other, 'Model calls are off in this runner.');
-    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const gist = this.threadGist(st.rec.id, { recent: 0 });
-    const by = params.by === 'agent' ? ('agent' as const) : undefined;
     // Its agent's own words wake it later (wakeForTopic): kept to the access
     // it had as it wrote them (runner/ceiling.ts).
     if (by) {
@@ -616,6 +634,10 @@ export const hibernationPart = {
       const t = Date.parse(st.rec.snoozedUntil);
       if (t > now) next = Math.min(next, t);
       else if (noTurns && this.checksAtLatest(st)) next = Math.min(next, now + 60_000);
+      // Its agent's snooze, while main.ts is starting: not before the
+      // schedules are in, as one booked keeps its wake quiet (wake). Looked
+      // at again once it has started.
+      else if (this.holdWaits && this.agentTimeSnooze(st)) next = Math.min(next, now + 60_000);
       else {
         // One thread that can't be woken (its log can't be written) doesn't
         // stop the others' wakes or the timer: it's tried again in an hour.
@@ -724,6 +746,8 @@ export const hibernationPart = {
   // turn ends says), and what it had queued starts with the check's send.
   wake(this: Runner, st: ThreadState, cause: 'time' | 'restart' | { why: string }, check = false): void {
     const { rec } = st;
+    // Read before the wake ends the sleep: its agent's own plain snooze.
+    const agentSnooze = cause === 'time' && this.agentTimeSnooze(st);
     // Archived since it went to sleep: its hibernation just ends, quietly.
     // Waking it there gave it a "Woke up" and an unread mark in the
     // archive, and started any message it had queued while still archived
@@ -745,14 +769,47 @@ export const hibernationPart = {
       : cause === 'restart'
         ? `Woke up${away}, as the runner restarted.`
         : away ? `Woke up after hibernating for ${awayFor(ms)}.` : 'Woke up from hibernating.';
+    // Its agent's fallback snooze running out isn't news while a schedule
+    // will bring it back: it's marked quietWake, not
+    // unread, and the summary counts it as wanting Mike only while no such
+    // schedule is booked, worked out afresh from the schedules each time
+    // (so a start, a move or schedules arriving late can't strand it).
+    // Marked unread, it sat in the inbox all night, then dropped out the
+    // moment Mike opened it (25 Nov 2026: an agent's 6 h snooze ran out
+    // next to its every-10-minutes release check). Mike's own snooze, a
+    // waitFor or app wait timing out, and a thread with anything else for
+    // him still come back unread.
+    const quiet = agentSnooze && !check && this.quietWake(st);
     // Starting "Woke up" is what gives it the bear in the app (RowContent.isWakeNote).
-    this.emit(st, { type: 'system.note', text });
+    // One staying under Hibernating gets the line for that instead (sayScheduled).
+    if (!(quiet && this.scheduled(rec.id))) this.emit(st, { type: 'system.note', text });
+    // Already drawn under Hibernating for its schedule (its time passed
+    // while a start held the wake), so no move will say it: said here.
+    else if (st.rt.waitState === 'scheduled') queueMicrotask(() => this.sayScheduled(st, true));
     // Its "Woke up" mark, until Mike looks (place.ts, wake).
     this.park(st, { kind: 'wake' });
-    if (!check) st.rec.forceUnread = true;
+    if (quiet) st.rec.quietWake = true;
+    else if (!check) st.rec.forceUnread = true;
     st.rec.updatedAt = this.isoNow();
     this.markDirty(st);
     if (!check) this.kickQueue(st);
+  },
+
+  // It sleeps until a time its agent set, and for nothing else.
+  agentTimeSnooze(this: Runner, st: ThreadState): boolean {
+    const place = placeOf(st.rec);
+    return place.kind !== 'inbox' && place.sleep?.for.kind === 'time' && place.sleep.for.by === 'agent';
+  },
+
+  // Nothing in it would want Mike once its sleep ends: no ask, failed
+  // turn, wait for room, queued message, unread reply, pending review or
+  // unread mark of its own. An unread reply that said needs nothing is no
+  // news either: a turn that ends with a snooze is seldom read before it
+  // sleeps (Gemini's review).
+  quietWake(this: Runner, st: ThreadState): boolean {
+    const { rec } = st;
+    return rec.status === 'idle' && rec.needs?.needs !== 'you' && !rec.waitingForRoom && !rec.queue.length && !rec.forceUnread && !st.rt.turn
+      && (rec.lastTurnCompletedSeq <= rec.lastSeenSeq || this.saidNothing(rec)) && !rec.reviews?.some((r) => r.status === 'pending');
   },
 
   // Moves where a thread is parked (place.ts): the only way its record's
@@ -760,14 +817,25 @@ export const hibernationPart = {
   // it is (a caller checked something else) leaves it, and is logged.
   park(this: Runner, st: ThreadState, e: PlaceEvent): boolean {
     const res = parkRecord(st.rec, e, this.clock.now());
-    if (!res.ok) this.log.warn('a thread move refused', { threadId: st.rec.id, event: e.kind, why: res.reason });
+    if (!res.ok) {
+      this.log.warn('a thread move refused', { threadId: st.rec.id, event: e.kind, why: res.reason });
+      return false;
+    }
     // A new sleep: why it last woke by itself is old news (wakeAtTime).
-    else if (e.kind === 'snooze') delete st.rec.wakeNews;
-    return res.ok;
+    if (e.kind === 'snooze') delete st.rec.wakeNews;
+    // A quiet wake (wake) lasts until Mike looks, a turn starts (startTurn)
+    // or it's put away again: left on a thread hibernated or archived
+    // since, it would bring it back unread when its schedule went. Not on
+    // a message, which may sit queued or fail to start (the reviews, 25 Nov 2026).
+    if (PUT_AWAY_MOVES.has(e.kind)) delete st.rec.quietWake;
+    return true;
   },
 };
 
 export type HibernationPart = RunnerPart<typeof hibernationPart>;
+
+// The moves that put a thread away or take it out of the archive.
+const PUT_AWAY_MOVES = new Set<PlaceEvent['kind']>(['snooze', 'unsnooze', 'wordsAsked', 'wordsAnswered', 'wordsFailed', 'waitOn', 'forApp', 'archive', 'unarchive', 'scheduleRunEnded']);
 
 // "\"Convex I/O\" finishes", "\"Convex I/O\" reports the saving", joined.
 function waitsLine(list: { title: string; until?: string }[]): string {

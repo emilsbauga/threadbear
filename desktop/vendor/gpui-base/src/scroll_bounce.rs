@@ -5,7 +5,7 @@ use crate::{OngoingScrollExt as _, ScrollbarHandle};
 use gpui::{
     AnyElement, App, Bounds, ContentMask, DispatchPhase, Element, ElementId, Global,
     GlobalElementId, Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, LayoutId,
-    OngoingScroll, Pixels, ScrollDelta, ScrollEvent, TouchPhase, Window, point, px,
+    OngoingScroll, Pixels, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase, Window, point, px,
 };
 #[cfg(not(target_family = "wasm"))]
 use std::time::Instant;
@@ -403,7 +403,15 @@ impl Element for ScrollBounce {
             let mut before = 0.;
             let mut allow_end_bounce = false;
             window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
-                let ScrollDelta::Pixels(mut delta) = event.delta else {
+                // Lines and every mouse wheel scroll without a stretch, as in
+                // the wheel handler below.
+                let pixels = match event.delta {
+                    ScrollDelta::Pixels(delta) if event.source != ScrollSource::Wheel => {
+                        Some(delta)
+                    }
+                    _ => None,
+                };
+                let Some(mut delta) = pixels else {
                     if phase == DispatchPhase::Capture && hitbox.should_handle_scroll(window) {
                         let mut state = state.borrow_mut();
                         let displaced = state.physics.offset() != 0.;
@@ -575,7 +583,14 @@ impl Element for ScrollBounce {
                     return;
                 }
                 let before = handle.offset();
-                let changed = if !bounces || matches!(event.delta, ScrollDelta::Lines(_)) {
+                // A mouse wheel never stretches the edge, smooth or not: with
+                // no finger to let go, the stretch only played out after the
+                // wheel stopped, and the text eased back in pixel steps for
+                // half a second at every end it reached, which read as the
+                // edge sticking (Mike's mouse, 25 Nov).
+                let wheel = matches!(event.delta, ScrollDelta::Lines(_))
+                    || event.source == ScrollSource::Wheel;
+                let changed = if !bounces || wheel {
                     let displaced = state.overscroll.offset() != 0.;
                     state.overscroll.reset();
                     let mut offset = before;

@@ -32,10 +32,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Runner, ThreadState } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
-import type { ArchiveVerdict, LooseEnd } from '../protocol.ts';
+import type { ArchivedBy, ArchiveVerdict, LooseEnd, PersistedEvent } from '../protocol.ts';
 import { experimentOn } from '../experiments.ts';
+import { placeOf } from '../place.ts';
 import { latestMessages } from './card-review.ts';
 import { OPUS } from '../models/index.ts';
+import { quietArchivedNote } from '../place-notes.ts';
 
 export const INBOX_GUESS = 'inboxGuess';
 // Acting on the guess (experiment quietInboxMine, part of the quiet inbox):
@@ -74,8 +76,9 @@ const LABELS: Partial<Record<ArchiveVerdict, 'skip' | 'show' | 'unsure'>> = { di
 // this" picks it would have caught 13 (Opus). Replayed on the same picks,
 // this one caught 69 and hid 1 of his 8 "Glad I saw this" (a short "yes,
 // we're done" to his "anything else?"). It was written from those picks,
-// so the week after is the real test.
-export const GUESS_PROMPT = 2;
+// so the week after is the real test. 3 (25 Nov 2026): a reminder he set
+// himself is a show (the X bookmark note Opus hid, below).
+export const GUESS_PROMPT = 3;
 export const GUESS_SYSTEM = `You help the user of Threadbear, an app that runs AI coding agents in threads, keep their inbox short. A thread's agent has just finished a turn and says it needs nothing more from the user. Decide whether the user needs to read its reply, or whether the thread could have gone straight to the archive unread.
 
 The user runs many threads at once and archives most finished ones after a glance: about nine in ten, they later say they didn't need to see. Each one they open costs them a few seconds of reloading what it was about. So "skip" is the usual answer. Answer "show" only when the reply holds something they'd be sorry to have missed.
@@ -86,6 +89,7 @@ Answer "show" when:
 - The user asked a real question and the reply is a considered answer they're waiting on: an analysis, a recommendation, a comparison with numbers, an explanation of a trade-off. Not a reply that only says "yes, done" or "no, fixed it".
 - Something is broken now and needs the user, or something they'll notice later went wrong (a post that failed, data lost, money spent, a release that didn't go out).
 - The reply asks or invites them to decide or do something soon.
+- The user started the thread as a reminder to themselves to look into something (a bookmarked post, a saved link): the reply is what they meant to come back to.
 
 Answer "skip" for:
 - Receipts: the user told the agent to do something and the reply says it's done, landed, merged, fixed or sent.
@@ -114,7 +118,12 @@ export function readGuess(text: string): { skip: boolean; why: string } | undefi
   }
 }
 
-export const QUIET_ARCHIVED_NOTE = "Archived quietly: it finished with nothing for you, and a model judged you didn't need to see it.";
+// Tools whose threads are reminders Mike set himself: bookmarking an X post
+// means "look into this later" (25 Nov 2026, after the quiet inbox hid one's
+// note as routine), so the quiet inbox never archives them. Matched on the
+// `--from` label mikerosoft-tools/x-bookmarks gives `tb new`.
+const REMINDER_TOOLS = new Set(['X bookmarks']);
+const isReminder = (rec: { startedBy?: { kind: string; label: string } }): boolean => rec.startedBy?.kind === 'tool' && REMINDER_TOOLS.has(rec.startedBy.label);
 
 const clip = (text: string, most: number): string => (text.length <= most ? text : `${text.slice(0, Math.floor(most * 0.6))}\n[... ${text.length - most} characters left out ...]\n${text.slice(-Math.floor(most * 0.4))}`);
 
@@ -136,6 +145,40 @@ export function guessPrompt(runner: Runner, st: ThreadState, reply: string, tag 
     .join('\n\n');
 }
 
+// Who put a thread away, on a `revive` line (noteRevive). "quiet" is the
+// quiet inbox (quietArchive), "threadbear" anything else it does itself.
+type PutAwayBy = 'quiet' | 'user' | 'agent' | 'threadbear' | 'unknown';
+const BY: Record<ArchivedBy, PutAwayBy> = { mike: 'user', agent: 'agent', threadbear: 'threadbear' };
+// How far back the thread's log is read for the grey line that put it
+// away: nothing much is said in a thread while it's put away.
+const REVIVE_LOOK_BACK = 400;
+
+// A hibernating thread's record keeps who asked only for some waits.
+function hibernatedBy(rec: ThreadState['rec']): PutAwayBy | undefined {
+  if (rec.hibernatedForApp) return 'threadbear';
+  if (rec.waitingOn?.length) return 'agent'; // end_turn's waitFor
+  if (rec.wakeWhen) return rec.wakeWhen.by === 'agent' ? 'agent' : 'user';
+  return undefined;
+}
+
+// The latest grey line that archived or hibernated it (place-notes.ts, the
+// Archive menu's, end_turn's and the quiet inbox's own).
+function putAwayNote(events: PersistedEvent[], from: 'archived' | 'hibernated'): string | undefined {
+  const head = from === 'archived' ? /^(Archived|Back in the archive)/ : /^Hibernat/;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === 'system.note' && typeof e.text === 'string' && head.test(e.text)) return e.text;
+  }
+  return undefined;
+}
+
+function byLine(note: string): PutAwayBy | undefined {
+  if (/\bby you\b|you next talk about|You said "/.test(note)) return 'user';
+  if (/\bby an agent\b|the agent was asked|The agent said "/.test(note)) return 'agent';
+  if (/\bby Threadbear\b|Threadbear app restarts/.test(note)) return 'threadbear';
+  return undefined;
+}
+
 export const inboxGuessPart = {
   // After a turn that finished for good with nothing for Mike (beside
   // settleQuietly). `reply`: what the agent said; `next`: whether it
@@ -145,7 +188,7 @@ export const inboxGuessPart = {
     try {
       if (!experimentOn(this.cfg.home, INBOX_GUESS)) return;
       // Another lab's review of a change archives itself: nothing to learn.
-      if (rec.reviewOf) return;
+      if (rec.reviewOf || rec.coordinatorHelperFor || this.coordinators?.forThread(rec.id)) return;
       // So does a helper nobody's touched, when it finishes clean
       // (quiet-inbox.ts). One that stays, for its follow-ups or something
       // left open, is in his inbox like any other, and he answers for it
@@ -244,7 +287,11 @@ export const inboxGuessPart = {
   // does (settleQuietly). Only Opus decides: Haiku alone, or a rule's
   // guess (always a show), never archives. Not one he's starred, already
   // looked at the done card of, or brought back out of the archive once
-  // (keptOut, which "Should have shown me" sets too): those are his.
+  // (keptOut, which "Should have shown me" sets too), nor a reminder he set
+  // himself (isReminder), nor one he asked for as its own thread
+  // (detached): those are his. A detached reply is often the answer he
+  // wanted, and the model treats a report from another thread as a skip
+  // (26 Nov 2026, the perpetual spinach lookup).
   quietArchive(this: Runner, st: ThreadState, seq: number, guesses: Guess[]): void {
     const { rec, rt } = st;
     if (!experimentOn(this.cfg.home, QUIET_INBOX_MINE)) return;
@@ -252,7 +299,7 @@ export const inboxGuessPart = {
     // default model, labelled so (models/index.ts), which doesn't count.
     const strong = guesses.find((g) => g.strong && (g.by === OPUS || g.by.startsWith(`${OPUS} on `)));
     if (!strong?.skip || guesses.some((g) => g.by === 'rule')) return;
-    if (rec.starredAt || rec.keptOut || rec.reviewOf || rec.lastSeenSeq >= seq) return;
+    if (rec.detached || rec.starredAt || rec.keptOut || rec.reviewOf || rec.coordinatorHelperFor || rec.lastSeenSeq >= seq || isReminder(rec) || this.coordinators?.forThread(rec.id)) return;
     // A design review waiting on his answer is his to see (Codex's review).
     if (rec.reviews?.some((r) => r.status === 'pending')) return;
     // The models took a moment: anything since decides instead, as in
@@ -262,7 +309,7 @@ export const inboxGuessPart = {
     // A thread it started that's gone back to work since git looked.
     if (this.childEnds(st).length) return;
     const why = strong.why.replace(/\s+/g, ' ').trim();
-    this.emit(st, { type: 'system.note', text: `${QUIET_ARCHIVED_NOTE} ${why}` });
+    this.emit(st, { type: 'system.note', text: quietArchivedNote({ why, now: this.clock.now(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
     this.update({ threadId: rec.id, archived: true, archivedBy: 'threadbear', noted: true });
     // After the archive, which clears any older mark (parkRecord).
     rec.quietlyArchived = { at: this.isoNow(), why, seq };
@@ -292,6 +339,37 @@ export const inboxGuessPart = {
     const label = verdict && LABELS[verdict];
     const guesses = rec.inboxGuess?.seq === seq ? rec.inboxGuess.guesses : undefined;
     this.writeInboxGuess({ kind: 'archive', threadId: rec.id, seq, ...(label ? { label } : {}), ...(guesses ? { guesses } : {}) });
+  },
+
+  // Mike writing to a thread that's archived or hibernating, which brings
+  // it back (sendTo, before the message moves it): a `revive` line saying
+  // who put it away, when and why, so the quiet inbox's review can see the
+  // threads he wanted back that no Archive menu pick would show. Written
+  // with or without quietInboxMine. The log is read after the send has
+  // gone on, so it never waits on this.
+  noteRevive(this: Runner, st: ThreadState, text: string): void {
+    const { rec } = st;
+    try {
+      const place = placeOf(rec);
+      if (place.kind === 'inbox' || !experimentOn(this.cfg.home, INBOX_GUESS)) return;
+      const from = place.kind === 'archived' ? 'archived' : 'hibernated';
+      const quiet = from === 'archived' ? rec.quietlyArchived : undefined;
+      const byRecord: PutAwayBy | undefined = quiet ? 'quiet' : from === 'archived' ? (rec.archivedBy && BY[rec.archivedBy]) : hibernatedBy(rec);
+      const base = { kind: 'revive', at: this.isoNow(), threadId: rec.id, from, putAwayAt: (from === 'archived' ? rec.archivedAt : rec.snoozedAt) ?? null };
+      const upTo = rec.lastSeq;
+      setImmediate(() => {
+        let note: string | undefined;
+        try {
+          note = putAwayNote(this.store.log(rec.id).read(upTo - REVIVE_LOOK_BACK + 1, upTo), from);
+        } catch {
+          // The line is still worth having without its why.
+        }
+        const putAwayBy = byRecord ?? (note && byLine(note)) ?? 'unknown';
+        this.writeInboxGuess({ ...base, putAwayBy, putAwayWhy: quiet?.why ?? note ?? null, text: text.slice(0, 300) });
+      });
+    } catch (e) {
+      this.log.warn("couldn't note a thread brought back", { threadId: rec.id, error: String(e) });
+    }
   },
 
   writeInboxGuess(this: Runner, line: Record<string, unknown>): void {

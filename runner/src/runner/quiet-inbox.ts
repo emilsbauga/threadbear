@@ -62,9 +62,13 @@ export const quietInboxPart = {
   // with: never written in (answering its card counts), starred, or taken
   // back out of the archive. A tool's, a schedule's or the librarian's is
   // often the thing he wants to read, and has no thread holding its result.
+  // So is one he asked for as its own thread (`detached`, create_thread's
+  // nested: false): it isn't part of the starter's work, and the reply is
+  // often the answer he wanted. 26 Nov 2026: the daily brief's perpetual
+  // spinach lookup was archived before he saw where to buy it.
   helperNobodyTouched(this: Runner, st: ThreadState): boolean {
     const { rec } = st;
-    if (rec.startedBy?.kind !== 'thread' || rec.starredAt || rec.keptOut || rec.reviewOf) return false;
+    if (rec.startedBy?.kind !== 'thread' || rec.detached || rec.starredAt || rec.keptOut || rec.reviewOf) return false;
     // Its first message is its starter's brief, whatever it looks like (`tb
     // new` from an agent's shell has no "Sent by the agent" line, so
     // rec.asked can't be trusted for it). Anything of Mike's after that

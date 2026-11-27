@@ -287,7 +287,6 @@ impl Threadbear {
             thread_id: thread_id.to_owned(),
             cwd: thread.map(|t| t.cwd.clone()).unwrap_or_default(),
             cache: reviews(cx).drafts.clone(),
-            canvas: self.remote.experiments.iter().any(|e| e == "reviewCanvas"),
         };
         let title: SharedString = review.title.clone().into();
         let app = cx.entity();
@@ -404,8 +403,6 @@ struct Parts {
     thread_id: String,
     cwd: String,
     cache: SharedDraftCache,
-    /// The review as a board (the `reviewCanvas` experiment).
-    canvas: bool,
 }
 
 // ---------------------------------------------------------------- the window
@@ -451,7 +448,7 @@ pub(crate) struct ReviewWindow {
     tabs_scroll: ScrollHandle,
     /// The option whose tab was last scrolled to, so the tabs follow the stage.
     tabs_follow: Option<usize>,
-    /// The review as a board (the `reviewCanvas` experiment, canvas.rs).
+    /// The review as a board (canvas.rs).
     pub(crate) canvas: Option<canvas::CanvasState>,
     /// The reply box on screen, from its last paint, for scripts that click
     /// in it.
@@ -561,7 +558,7 @@ impl ReviewWindow {
             more_open: false,
             tabs_scroll: ScrollHandle::new(),
             tabs_follow: None,
-            canvas: parts.canvas.then(canvas::CanvasState::new),
+            canvas: Some(canvas::CanvasState::new()),
             reply_box: Default::default(),
             closed: false,
             _poll: poll,
@@ -2084,7 +2081,7 @@ impl ReviewWindow {
             "pageFailed": self.stage.page_failed_reason(),
             // What Open live would open, for the option on show.
             "live": s.shown_option().filter(|_| s.mode == ReviewMode::Single).and_then(|o| o.url.clone()).unwrap_or_default(),
-            // The board (the reviewCanvas experiment): the tour's stop, the
+            // The board: the tour's stop, the
             // notes switch, the tool, how many of the agent's notes are on
             // the pictures, and Mike's marks as "1 circle A 0".
             "canvas": self.canvas_state(),

@@ -47,6 +47,25 @@ pub fn marks(
         .collect()
 }
 
+/// Where each Markdown link's address is, the `(...)` after a `]`, as the #
+/// thread picker puts in (`[Title](thread:<id>)`): an address isn't words, so
+/// it's never marked as misspelt or corrected.
+pub fn link_targets(text: &str) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(at) = text[from..].find("](") {
+        let start = from + at + 2;
+        match text[start..].find([')', '\n']) {
+            Some(len) if text[start + len..].starts_with(')') => {
+                found.push(start..start + len);
+                from = start + len + 1;
+            }
+            _ => from = start,
+        }
+    }
+    found
+}
+
 /// The one character typed to make `new` from `old`, ending at `caret`, when
 /// it ends a word (a space, a new line or punctuation): what sets off an
 /// autocorrection or a text replacement, and a quote or dash substitution.
@@ -892,5 +911,12 @@ mod tests {
             type_through(&mut ac, &["hé café", "hé caf", "hé cafe"]),
             vec![reverted("cafe", "café")]
         );
+    }
+
+    #[test]
+    fn link_addresses_are_skipped() {
+        let text = "See [Rex names](thread:90ebc199-0d6b) and [x](y\nz) then ](done)";
+        let got: Vec<&str> = link_targets(text).into_iter().map(|r| &text[r]).collect();
+        assert_eq!(got, ["thread:90ebc199-0d6b", "done"]);
     }
 }

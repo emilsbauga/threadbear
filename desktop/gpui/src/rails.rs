@@ -483,10 +483,7 @@ impl Threadbear {
         let mut views = vec![];
         let mode = self.mode;
         // The view on show; its button's square slides to it from the last.
-        // The Canvas page is up in place of the list (thread_canvas.rs).
-        let on_canvas = self.thread_canvas.showing;
         let lit_id: SharedString = match mode {
-            _ if on_canvas => "rail-canvas",
             SidebarMode::Inbox => "rail-threads",
             SidebarMode::Scheduled => "rail-scheduled",
             SidebarMode::Projects => "rail-projects",
@@ -504,7 +501,7 @@ impl Threadbear {
             "rail-threads",
             "bubble.left.and.bubble.right",
             "Threads",
-            mode == SidebarMode::Inbox && !on_canvas,
+            mode == SidebarMode::Inbox,
         ));
         button.tip = self.shortcut_tip("Threads", ShortcutCommand::ShowInbox);
         button.hint = self.shortcut_display(ShortcutCommand::ShowInbox);
@@ -522,7 +519,7 @@ impl Threadbear {
                 "rail-scheduled",
                 "clock",
                 "Scheduled",
-                mode == SidebarMode::Scheduled && !on_canvas,
+                mode == SidebarMode::Scheduled,
             ));
             button.tip = self.shortcut_tip("Scheduled", ShortcutCommand::ShowScheduled);
             button.hint = self.shortcut_display(ShortcutCommand::ShowScheduled);
@@ -545,7 +542,7 @@ impl Threadbear {
                 "rail-projects",
                 "square.stack.3d.up",
                 "Projects",
-                mode == SidebarMode::Projects && !on_canvas,
+                mode == SidebarMode::Projects,
             ));
             button.tip = self.shortcut_tip("Projects", ShortcutCommand::ShowProjects);
             button.hint = self.shortcut_display(ShortcutCommand::ShowProjects);
@@ -565,7 +562,7 @@ impl Threadbear {
                 "rail-librarian",
                 "books.vertical",
                 "Librarian",
-                mode == SidebarMode::Librarian && !on_canvas,
+                mode == SidebarMode::Librarian,
             ));
             button.tip = self.shortcut_tip("Librarian", ShortcutCommand::ShowLibrarian);
             button.hint = self.shortcut_display(ShortcutCommand::ShowLibrarian);
@@ -590,7 +587,7 @@ impl Threadbear {
                 "rail-recipes",
                 "book",
                 "Recipes",
-                mode == SidebarMode::Recipes && !on_canvas,
+                mode == SidebarMode::Recipes,
             ));
             button.tip = "Recipes: techniques worth keeping, set up for you by an agent".into();
             button.badge = self
@@ -608,22 +605,6 @@ impl Threadbear {
                     window.focus(&this.sidebar.focus, cx);
                     crate::web_panels::keyboard_to_app(window);
                 },
-                cx,
-            ));
-        }
-        // Canvas, with its experiment on (thread_canvas.rs): every live
-        // thread on one board, in place of the list and the thread.
-        if self.thread_canvas_on() {
-            let mut button = view_button(RailButton::new(
-                "rail-canvas",
-                "rectangle.3.group",
-                "Canvas",
-                on_canvas,
-            ));
-            button.tip = "Canvas: every live thread on one board, by project".into();
-            views.push(rail_button(
-                button,
-                |this, window, cx| this.show_thread_canvas(window, cx),
                 cx,
             ));
         }
@@ -712,9 +693,10 @@ impl Threadbear {
         );
         button.face = Some(pot);
         button.tip = tip;
-        // A login signed out, or whose sign-in ends within days: its row in
-        // the panel says which, with Sign in… (usage.rs).
-        button.dot = threadbear_core::usage::sign_in_needed(&self.logins.accounts, crate::now_ms());
+        // A login signed out, or whose sign-in ends within days, or with a
+        // usage reset worth using: its row in the panel says which, with
+        // Sign in… or Use a reset (usage.rs).
+        button.dot = threadbear_core::usage::usage_dot(&self.logins.accounts, crate::now_ms());
         let usage = rail_button(
             button,
             |this, _, cx| this.toggle_under_threads(shell::USAGE, cx),

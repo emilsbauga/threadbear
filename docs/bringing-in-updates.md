@@ -241,9 +241,12 @@ that failed, a patch you had to fix. Leave out anything about their own
 work (project names, what their changes are for, file paths of theirs). It
 drafts a short report for Mike from facts the code picks: which release
 came in and how far behind main was, how often each of Threadbear's own
-runner errors came up since the last check-up, how long `tb land`'s checks
-took (how many, typical and slowest, the slowest steps), whether the runner's build
-of main is failing, and which of Mike's patches won't load. It names only
+runner errors came up since the last check-up (grouped into bursts, with
+allowlisted causes and release-verified RPC methods or `runner/src/` files),
+whether a release rolled back, tripped the restart guard, or is low on disk,
+how long `tb land`'s checks took (how many, typical and slowest, the slowest
+steps), whether the runner's build of main is failing, and which of Mike's
+patches won't load. It names only
 what's in Mike's code; anything of theirs is just a count, and the draft is
 scrubbed of secrets and their home folder.
 

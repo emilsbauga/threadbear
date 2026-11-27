@@ -29,7 +29,7 @@ import { forTerminal } from '../src/terminal-text.ts';
 
 type Ev = { seq: number; type: string; text?: string; outcome?: string; asks?: { action: string; options?: string[]; optionNotes?: string[] }[] };
 type Runner = { id: string; name: string; online: boolean };
-type Login = { id: string; provider: string; models?: { id: string }[]; usage?: { blocked?: boolean; windows?: { remainingPercent?: number; resetsAt?: string }[] } };
+type Login = { id: string; provider: string; signedOut?: boolean; models?: { id: string }[]; usage?: { blocked?: boolean; windows?: { remainingPercent?: number; resetsAt?: string }[] } };
 
 // A login's usage limit isn't Threadbear breaking: on 25 Nov every runner's
 // claude-main was out for the week and all three checks failed with "its
@@ -95,8 +95,8 @@ process.exit(results.every((x) => x.ok) ? 0 : 1);
 async function check(r: Runner): Promise<void> {
   const logins = (await step("reading its logins", () => read('remoteThreads.logins', { runnerId: r.id }))) as { accounts: Login[] };
   const claudes = logins.accounts.filter((a) => a.provider === 'claude');
-  const claude = claudes.find((a) => !a.usage?.blocked);
-  if (claudes.length && !claude) return say(true, `${r.name}: skipped, every Claude login there is out of usage${resets(claudes)}`);
+  const claude = claudes.find((a) => !a.signedOut && !a.usage?.blocked);
+  if (claudes.length && !claude && claudes.every((a) => a.usage?.blocked)) return say(true, `${r.name}: skipped, every Claude login there is out of usage${resets(claudes)}`);
   const haiku = claude?.models?.find((m) => /haiku/i.test(m.id))?.id;
   const made = (await step('starting a thread there', () => client.call('threads.create', { runnerId: r.id, text: BRIEF, title: 'Canary: Threadbear daily check', ...(claude ? { accountId: claude.id } : {}), ...(haiku ? { model: haiku } : {}) }))) as { thread: { id: string } };
   const id = made.thread.id;

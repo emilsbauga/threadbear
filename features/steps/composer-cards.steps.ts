@@ -259,3 +259,19 @@ Then('the runner was told I archived {string} as {string}', async function (this
   assert.equal(last?.threadId, this.thread(d, title)?.id);
   assert.equal(last?.verdict ?? '', verdict);
 });
+
+// The done card's Archive button, by its label: Archive, or the way back
+// out of Archived on a thread that's already there.
+Then("the done card's button is {string}", async function (this: ThreadbearWorld, label: string) {
+  await this.until('the Done card', (d) => d.composer.card?.[0] === 'Done');
+  const others = ['Archive this thread', 'Unarchive this thread'].filter((l) => l !== label);
+  let seen: string[] = [];
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const labels = JSON.parse(await this.app.do({ cmd: 'labels' })) as { label: string }[];
+    seen = labels.map((control) => control.label);
+    if (seen.includes(label) && !others.some((l) => seen.includes(l))) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.fail(`the done card's button wasn't "${label}": ${seen.filter((l) => l.endsWith('this thread')).join(', ')}`);
+});

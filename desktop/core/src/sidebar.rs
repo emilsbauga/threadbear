@@ -555,6 +555,27 @@ fn wake_time(t: &ThreadSummary) -> Option<i64> {
     t.snoozed_until_ms().filter(|&until| until < FAR_OFF)
 }
 
+/// The most of a waited-on thread's title "Waiting on" shows.
+const WAIT_TITLE_MAX: usize = 28;
+
+/// `title` cut to at most `max` letters at a word break, with "…" after it.
+fn short_title(title: &str, max: usize) -> String {
+    let title = title.trim();
+    if title.chars().count() <= max {
+        return title.to_string();
+    }
+    // One letter over, so a word that ends right at `max` stays whole.
+    let over: String = title.chars().take(max + 1).collect();
+    let at_word = match over.rfind(' ') {
+        Some(i) if i > max / 2 => &over[..i],
+        _ => &over[..over.char_indices().nth(max).map_or(over.len(), |(i, _)| i)],
+    };
+    format!(
+        "{}…",
+        at_word.trim_end_matches([' ', ',', ':', ';', '-', '.'])
+    )
+}
+
 /// What a Hibernating row shows where its time would be, and the tooltip
 /// with the rest (`WakeWords.row`): a topic, or Thinking… while the runner
 /// works out when. Nil for one hibernated the ordinary way.
@@ -567,10 +588,13 @@ pub fn wake_row<Tz: TimeZone>(t: &ThreadSummary, now: &DateTime<Tz>) -> Option<(
         .collect();
     let left: Vec<&WaitingOn> = waiting.iter().filter(|w| !w.done).collect();
     if let Some(first) = left.first() {
+        // Short, as it sits beside a row's title or the done card's Archive;
+        // the tip has the whole of it (25 Nov: a 90-letter title ran on).
+        let short = short_title(&first.title, WAIT_TITLE_MAX);
         let names = if left.len() == 1 {
-            format!("\"{}\"", first.title)
+            format!("\"{short}\"")
         } else {
-            format!("\"{}\" and {} more", first.title, left.len() - 1)
+            format!("\"{short}\" and {} more", left.len() - 1)
         };
         let what = if left.iter().all(|w| w.until.is_none()) {
             let joined = left
@@ -1686,6 +1710,14 @@ mod tests {
             (out.text.as_str(), out.kind),
             ("Waiting on \"Fix main's CI\"", TrailingKind::Background)
         );
+        // A long title is cut short at a word, the tip has all of it.
+        let long = "CLI: add the Convex guidance note to AGENTS.md when an agent runs dev or deploy (draft PR)";
+        let waiting_long = thread(
+            json!({ "needs": "nothing", "snoozedUntil": "2026-11-10T09:00:00Z", "waitingOn": [{ "threadId": "x", "title": long }] }),
+        );
+        let out = trailing(&waiting_long, &look, RowMode::Inbox, &now, None);
+        assert_eq!(out.text, "Waiting on \"CLI: add the Convex guidance…\"");
+        assert!(out.tip.unwrap().contains(long));
         let for_app = thread(
             json!({ "needs": "nothing", "snoozedUntil": "2026-11-10T09:00:00Z", "awaitingAppRestart": true }),
         );

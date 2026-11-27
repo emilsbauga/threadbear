@@ -11,7 +11,7 @@
 // tests can pin one.
 use crate::inbox::parse_ms;
 use crate::logins::{provider_title, Account, Pool};
-use crate::new_thread::{clock, day_name, login_name, percent, pool_providers, reset_time};
+use crate::new_thread::{clock, day_name, login_name, percent, pool_providers};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Timelike};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -333,13 +333,7 @@ fn same_day<Tz: TimeZone>(a: i64, b: i64, zone: &Tz) -> bool {
     }
 }
 
-/// `AccountUsageText.resetTime`: "now", "3:40 pm", "Thu 1 pm", "12 Nov".
-pub fn reset_words<Tz: TimeZone>(at: i64, now: i64, zone: &Tz) -> String {
-    match (local(at, zone), local(now, zone)) {
-        (Some(at), Some(now)) => reset_time(&at, &now),
-        _ => String::new(),
-    }
-}
+pub use crate::new_thread::reset_words;
 
 /// `AccountUsageText.clock`: "3:40 pm", "1 pm" on the hour.
 pub fn clock_words<Tz: TimeZone>(at: i64, zone: &Tz) -> String {
@@ -1181,7 +1175,11 @@ pub fn icon_tooltip_with_sign_ins<Tz: TimeZone>(
     zone: &Tz,
 ) -> String {
     let mut tip = icon_tooltip(groups, now, zone);
-    for line in sign_in_lines(accounts, now, zone) {
+    // Then a login with a usage reset worth using (reset_hint.rs).
+    for line in sign_in_lines(accounts, now, zone)
+        .into_iter()
+        .chain(crate::reset_hint::icon_lines(accounts, now, zone))
+    {
         tip.push('\n');
         tip.push_str(&line);
     }
@@ -1227,14 +1225,83 @@ fn tooltip_line<Tz: TimeZone>(group: &Group, now: i64, zone: &Tz) -> Option<Stri
 
 // ---- The honey pot (HoneyLevel) ----
 
-/// How full the honey pot is, 0 to 1: the room left on the login the next
-/// new thread would use, the tighter of its 5-hour and weekly windows.
+/// One login's fill level, 0 to 1: the tighter of its 5-hour and weekly
+/// windows. A pool uses the best available login's level.
 /// Unknown or at its limit is an empty pot; the tooltip and the panel say
 /// the rest.
 pub fn honey_level(usage: Option<&Usage>) -> f64 {
     match usage {
         Some(u) if !u.blocked => room(u).map_or(0., |r| (r / 100.).clamp(0., 1.)),
         _ => 0.,
+    }
+}
+
+/// The pot and its tooltip share the same accounts and pool ordering.
+pub struct HoneyIcon {
+    pub level: f64,
+    pub login: Option<String>,
+    pub tip: String,
+}
+
+pub fn thread_honey<Tz: TimeZone>(
+    pools: &[Pool],
+    accounts: &[Account],
+    pool_id: Option<&str>,
+    account_id: &str,
+    now: i64,
+    zone: &Tz,
+) -> HoneyIcon {
+    let mut groups = groups(pools, accounts);
+    let group = pool_id.and_then(|id| groups.iter().position(|g| g.pool.is_some() && g.id == id));
+    if let Some(index) = group {
+        let selected = groups.remove(index);
+        groups.insert(0, selected);
+    }
+    let pool = pool_id.and_then(|id| pools.iter().find(|p| p.id == id));
+    let best = accounts
+        .iter()
+        .filter(|a| pool.map_or(a.id == account_id, |p| p.account_ids.contains(&a.id)))
+        .filter(|a| !a.signed_out)
+        .max_by(|a, b| honey_level(usage(a).as_ref()).total_cmp(&honey_level(usage(b).as_ref())));
+    // A pinned login can have less room than the pools it belongs to.
+    if group.is_none() {
+        let title = pool.map_or_else(
+            || {
+                if account_id.is_empty() {
+                    "No login selected".to_owned()
+                } else {
+                    login_name(account_id, accounts)
+                }
+            },
+            |p| p.title.clone(),
+        );
+        groups.insert(
+            0,
+            Group {
+                id: account_id.to_owned(),
+                title,
+                pool: None,
+                providers: vec![ProviderLogins {
+                    provider: String::new(),
+                    accounts: best.into_iter().collect(),
+                }],
+            },
+        );
+    }
+    let mut tip = icon_tooltip_with_sign_ins(&groups, accounts, now, zone);
+    if let Some(group) = groups
+        .first()
+        .filter(|g| tooltip_line(g, now, zone).is_none())
+    {
+        tip.insert_str(
+            "Usage".len(),
+            &format!("\n{}: usage not available", group.title),
+        );
+    }
+    HoneyIcon {
+        level: best.map_or(0., |a| honey_level(usage(a).as_ref())),
+        login: best.map(|a| a.id.clone()),
+        tip,
     }
 }
 
@@ -1680,6 +1747,34 @@ pub struct LoginRow {
     pub five_hour: Option<Chip>,
     /// No reading: why, in place of "Nothing known yet".
     pub unknown: Option<Unknown>,
+    /// A usage reset worth using now (reset_hint.rs): its line and Use a
+    /// reset, shown open or shut, as a sign-in that's ending is.
+    pub reset: Option<ResetLine>,
+}
+
+/// A login's reset hint on its Usage row: "2 resets left, the next expires
+/// 9 Dec", Use a reset's tip, and whether it's about to expire (orange)
+/// rather than the login being out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResetLine {
+    pub words: String,
+    pub tip: String,
+    pub expiring: bool,
+}
+
+/// The row's reset line, from the runner's hint.
+pub fn reset_line<Tz: TimeZone>(
+    account: &Account,
+    accounts: &[Account],
+    now: i64,
+    zone: &Tz,
+) -> Option<ResetLine> {
+    let hint = crate::reset_hint::hint(account, now)?;
+    Some(ResetLine {
+        words: crate::reset_hint::row_words(hint, now, zone),
+        tip: crate::reset_hint::use_tip(account, accounts, hint, now, zone),
+        expiring: crate::reset_hint::expiring(hint),
+    })
 }
 
 /// A small window's room as a chip: "5-hour 91%", coloured as its meter's
@@ -1876,6 +1971,12 @@ pub fn sign_in_needed(accounts: &[Account], now: i64) -> bool {
         .any(|a| (a.signed_out && !a.plan_ended) || sign_in_ends(a, now).is_some())
 }
 
+/// The Usage button's dot: a sign-in that needs Mike, or a usage reset worth
+/// using (reset_hint.rs). Its tooltip says which.
+pub fn usage_dot(accounts: &[Account], now: i64) -> bool {
+    sign_in_needed(accounts, now) || crate::reset_hint::any(accounts, now)
+}
+
 /// "Sign-in ends Tue 6 pm", "Sign-in ends 3:40 pm" today.
 pub fn sign_in_ends_words<Tz: TimeZone>(at: i64, now: i64, zone: &Tz) -> String {
     if at <= now {
@@ -1903,16 +2004,7 @@ pub fn sign_in_lines<Tz: TimeZone>(accounts: &[Account], now: i64, zone: &Tz) ->
         .collect()
 }
 
-/// "claude-1 (mike@example.com)": both, so Mike knows which login and which
-/// account to sign in as. Just the id when the name is the id.
-pub fn sign_in_label(account: &Account) -> String {
-    let name = account.name();
-    if name == account.id || name.is_empty() {
-        account.id.clone()
-    } else {
-        format!("{} ({name})", account.id)
-    }
-}
+pub use crate::logins::sign_in_label;
 
 /// One provider's logins in a card, named only when the card mixes
 /// providers.
@@ -1999,8 +2091,9 @@ pub fn cards_named<Tz: TimeZone>(
                         logins: section
                             .accounts
                             .iter()
-                            .map(|a| {
-                                login_row(
+                            .map(|a| LoginRow {
+                                reset: reset_line(a, accounts, now, zone),
+                                ..login_row(
                                     a,
                                     &name(&section.provider),
                                     own.get(&a.id).map(String::as_str),
@@ -2091,6 +2184,7 @@ fn login_row<Tz: TimeZone>(
             .then(|| unknown_reason(&account.provider, provider_name)),
         meters,
         more,
+        reset: None,
     }
 }
 
@@ -2340,6 +2434,67 @@ mod tests {
             account_ids: logins.iter().map(|l| l.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn honey_follows_the_pool_and_keeps_its_tooltip_first() {
+        let mut accounts = vec![
+            login("low", "claude", None, 20., false, None),
+            login("high", "claude", Some(60.), 90., false, None),
+            login("work", "claude", None, 95., false, None),
+        ];
+        let pools = vec![
+            pool("main", "Main", &["low", "high"]),
+            pool("work", "Work", &["work"]),
+        ];
+        let icon = thread_honey(&pools, &accounts, Some("main"), "low", at(13, 0), &zone());
+        assert_eq!(icon.level, 0.6);
+        assert_eq!(icon.login.as_deref(), Some("high"));
+        assert_eq!(icon.tip.lines().nth(1), Some("Main: 60% left"));
+        let icon = thread_honey(&pools, &accounts, Some("work"), "work", at(13, 0), &zone());
+        assert_eq!(icon.level, 0.95);
+        assert_eq!(icon.tip.lines().nth(1), Some("Work: 95% left"));
+        let pinned = thread_honey(&pools, &accounts, None, "low", at(13, 0), &zone());
+        assert_eq!(pinned.level, 0.2);
+        let old = thread_honey(&[], &accounts, Some("claude"), "low", at(13, 0), &zone());
+        assert_eq!(old.level, 0.2);
+        assert_eq!(old.tip.lines().nth(1), Some("low: 20% left"));
+        let missing = [pool("missing", "Missing", &["removed-login"])];
+        let icon = thread_honey(
+            &missing,
+            &accounts,
+            Some("missing"),
+            "low",
+            at(13, 0),
+            &zone(),
+        );
+        assert_eq!(icon.level, 0.);
+        assert_eq!(
+            icon.tip.lines().nth(1),
+            Some("Missing: usage not available")
+        );
+        let empty = thread_honey(&[], &[], None, "", at(13, 0), &zone());
+        assert_eq!(
+            empty.tip.lines().nth(1),
+            Some("No login selected: usage not available")
+        );
+        accounts[1].signed_out = true;
+        let icon = thread_honey(&pools, &accounts, Some("main"), "low", at(13, 0), &zone());
+        assert_eq!(icon.level, 0.2);
+        accounts[0].signed_out = true;
+        let icon = thread_honey(&pools, &accounts, Some("main"), "low", at(13, 0), &zone());
+        assert_eq!(icon.level, 0.);
+        assert_eq!(icon.tip.lines().nth(1), Some("Main: usage not available"));
+        accounts[0].signed_out = false;
+        accounts[0].usage.as_mut().unwrap()["blocked"] = json!(true);
+        assert_eq!(
+            thread_honey(&pools, &accounts, Some("main"), "low", at(13, 0), &zone()).level,
+            0.
+        );
+        assert_eq!(
+            thread_honey(&[], &[], Some("main"), "low", at(13, 0), &zone()).level,
+            0.
+        );
     }
 
     // ---- Ported from the Swift app's UsageStatsTests ----

@@ -2,7 +2,7 @@
 // the summary first, then a line a runner ("mac-mini: Online, up 1d, 51ae514",
 // with " *" after the name where new threads start), and under each, indented,
 // its figures while its details are open and the threads running on it.
-import { Then, When } from '@cucumber/cucumber';
+import { Given, Then, When } from '@cucumber/cucumber';
 import assert from 'node:assert/strict';
 import { okValue, type Dump } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
@@ -80,4 +80,14 @@ When('I copy {string}', async function (this: ThreadbearWorld, words: string) {
 Then('the app opened the claude.ai page for that token', async function (this: ThreadbearWorld) {
   const opened = JSON.parse(okValue(await this.app.do({ cmd: 'opened' }))) as string[];
   assert.ok(opened.some((u) => u.startsWith('https://claude.com/cai/oauth/authorize?')), `opened: ${opened.join(' | ')}`);
+});
+
+// Use this Mac's Claude logins: the mock holds the send until let through,
+// so the switch's in-progress state can be looked at.
+Given('the runner holds shared logins', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'mock', method: 'holdShares', params: {} });
+});
+
+When('the runner lets the shared logins through', async function (this: ThreadbearWorld) {
+  await this.app.do({ cmd: 'mock', method: 'releaseShares', params: {} });
 });

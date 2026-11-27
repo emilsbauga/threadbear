@@ -233,21 +233,21 @@ the machine stops.
   the login's token was set, kept in `box.json`. `claude auth status`
   calls any token signed in, so a dead one only shows when a turn is
   refused (errorKind `auth`). In box mode that turn sends
-  `boxes:tokenRefused({ key, setAt })`, says so once in the thread
+  `boxes:tokenRefused({ key, setAt })`, quarantines only its own token grant, says so once in the thread
   (`system.note`), and the thread waits (`waitingForToken` on its record,
   kept across restarts, with `refusedSetAt`, the version refused, and
   `reported` once the backend has heard; no pool move, as a box has one
   login). A refusal not yet heard is sent again on the next start or
   poll, always with `refusedSetAt`, never a version installed since. While
   it waits the runner asks `boxes:boxCloudToken({ key })` (an action, box key
-  only: the login's token and `setAt` while it's `valid`, else null) every
+  only: a token already issued to that box, or explicitly approved by an owner-set replacement, else null) every
   30 seconds. Any token newer than the refused one lifts the hold: one the
   box already has (a box restored from a save whose exchange installed a
   newer token goes at once, telling nobody), or one set later, which is written over
   claude-main's `threadbear-token.json` (0600) and into `box.json`, the
   thread's CLI is closed so the next turn starts on it, and the thread
   carries on by itself with the runner's carry-on message, as after a
-  sign-in. A message from Mike meanwhile waits behind it.
+  sign-in. A legacy saved wait without a refused version retries the installed token once, so a new boot token is never guessed to have failed. Boot secrets without a token version fetch an approved snapshot first. A message from Mike meanwhile waits behind it. A box report never marks the login-wide token dead: unrelated threads keep starting. `boxTokenGrants` holds each box key’s issued/refused state; setting a token as owner releases only refusals already recorded before that SET. Legacy live keys adopt one token grant from the canonical backend box row and the owner-set token, including older runners whose refusal was already marked reported. Later replacements require the same recorded-refusal and owner-SET checks as new boxes. Each issued grant retains its approved sealed token, so a later SET cannot overwrite an undelivered replacement. Boot-token replays obey the same grant and never hand out a later token on their own.
 - **Superseded.** Any call refused with `kind: "auth"` (the box key
   unknown: a newer box for the thread has traded its boot token, or the
   box was lost, failed or archived) means this box no longer has the

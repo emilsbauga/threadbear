@@ -18,6 +18,15 @@ class ModelsTest {
          "pendingApproval":{"approvalId":"q1","kind":"question","questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B","description":"bee"}]}]}}
     """
 
+    @Test fun badCoordinatorMetadataKeepsTheOrdinaryThread() {
+        for (hint in listOf("null", "12", "{}", "\"\"", "\"  \"")) {
+            val t = PhoneThread.read(obj(row.replace("\"threadId\":", "\"coordinatorProjectId\":$hint,\"threadId\":")))
+            assertNull(t.coordinatorProjectId)
+            assertEquals("t", t.threadId)
+        }
+        assertNull(PhoneThread.read(obj(row)).coordinatorProjectId)
+    }
+
     @Test fun threadRowsDecodeWithTheirCards() {
         val t = PhoneThread.read(obj(row))
         assertEquals(0, t.asks?.first()?.suggestedIndex)
@@ -28,6 +37,37 @@ class ModelsTest {
         assertEquals("misc", t.placeText)
         val q = assertIs<PendingApproval.Questions>(t.pendingApproval)
         assertEquals("bee", q.questions[0].options[1].description)
+    }
+
+    @Test fun pickOneFollowUpsAndRecommendedIndex() {
+        val pickOne = PhoneThread.read(obj(row.replace(
+            """"next":["Ship it"]""",
+            """"next":["Option A","Option B"],"nextPick":"one","nextSuggested":1.0""",
+        )))
+        assertEquals("one", pickOne.nextPick)
+        assertTrue(pickOne.nextPickOne)
+        assertEquals(1, pickOne.nextSuggestedIndex)
+
+        val badCases = listOf(
+            """"next":["A","B"],"nextPick":"one","nextSuggested":1e100""",
+            """"next":["A","B"],"nextPick":"one","nextSuggested":2""",
+            """"next":["A","B"],"nextPick":"one","nextSuggested":-1""",
+            """"next":["A","B"],"nextPick":"one","nextSuggested":0.5""",
+            """"next":["A"],"nextPick":"one","nextSuggested":0""",
+            """"next":["A","B"],"nextSuggested":0""",
+            """"next":["A","B"],"nextPick":"any","nextSuggested":0""",
+            """"next":["A","B"],"nextPick":"one","nextSuggested":"0"""",
+        )
+        for (bad in badCases) {
+            val decoded = PhoneThread.read(obj(row.replace(""""next":["Ship it"]""", bad)))
+            assertNull(decoded.nextSuggestedIndex, bad)
+        }
+
+        val singlePickOne = PhoneThread.read(obj(row.replace(
+            """"next":["Ship it"]""",
+            """"next":["Only one"],"nextPick":"one"""",
+        )))
+        assertTrue(!singlePickOne.nextPickOne)
     }
 
     @Test fun approvalsSecretsAndUnknownKinds() {

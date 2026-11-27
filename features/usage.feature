@@ -109,6 +109,21 @@ Feature: The Usage panel and its honey pot
     When "claude-main"'s week resets
     Then the honey pot is 100% full, for "claude-main"
 
+  @rail.honeypot @swift-pending
+  Scenario: Switching threads makes the pot follow each thread's pool
+    When a usage thread "Pool allowance" uses "claude-4" in pool "claude"
+    And I open the thread "Pool allowance"
+    Then the honey pot is 78% full, for "claude-main"
+    And the honey pot's first allowance is "Claude: 78% left"
+    When a usage thread "Work allowance" uses "claude-2" in pool "work"
+    And I open the thread "Work allowance"
+    Then the honey pot is 95% full, for "claude-2"
+    And the honey pot's first allowance is "Work: 95% left"
+    When I open the thread "Pool allowance"
+    And "claude-main" is down to 5% of its week
+    Then the honey pot is 12% full, for "claude-3"
+    And the honey pot's first allowance is "Claude: 12% left"
+
   # From Claude Code 2.1.325 a sign-in ends 28 days after it was made, and
   # claude-1's ended unnoticed on 14 Nov 2026. The frozen Swift app has none of it.
   @usage.sign-in @swift-pending
@@ -147,3 +162,34 @@ Feature: The Usage panel and its honey pot
     Then in the "Claude" card, "alex+3@example.com" says "Plan ended"
     And the honey pot has no dot
 
+
+  # Mike, 26 Nov 2026: his gmail Codex login sat at 0% on every machine for
+  # days with 2 resets unused, and only a stopped thread's limit box would
+  # have offered one. The runner works out the hint (runner/src/reset-hint.ts);
+  # the app draws it where he looks anyway, quietly: no notification, no
+  # thread. The frozen Swift app has none of it.
+  @usage.resets @swift-pending
+  Scenario: A login out of room with resets left says so in Usage, on the honey pot and in the login list, and Use a reset lifts it
+    Then the honey pot has no dot
+    When "codex-main" is out of room with 2 resets left
+    And I click the honey pot in the activity bar
+    Then in the "Codex" card, "alex@example.com" offers a reset, saying "2 resets left, the next expires"
+    And the honey pot has a dot
+    And a line of the honey pot's tooltip starts "codex-main (alex@example.com): out of room, 2 resets left"
+    When a usage thread "Codex work" uses "codex-main" in pool "codex"
+    And I open the thread "Codex work"
+    Then the "model" menu has a line ending "[2 resets left: Use a reset]"
+    When I use a reset on "codex-main" in the Usage panel
+    Then in the "Codex" card, "alex@example.com" offers no reset
+    And the honey pot has no dot
+    And the "model" menu has no line ending "[2 resets left: Use a reset]"
+
+  @usage.resets @swift-pending
+  Scenario: A reset about to expire on a login that has used its week says so, and one with room to spare doesn't
+    When "codex-main" has a reset expiring in 2 days
+    And I click the honey pot in the activity bar
+    Then in the "Codex" card, "alex@example.com" offers a reset, saying "1 reset left, one expires"
+    And a line of the honey pot's tooltip starts "codex-main (alex@example.com): a reset expires"
+    When "codex-main"'s reset hint goes
+    Then in the "Codex" card, "alex@example.com" offers no reset
+    And the honey pot has no dot

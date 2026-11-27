@@ -171,6 +171,49 @@ export function parseProcesses(text: string): WinProcess[] {
   return rows;
 }
 
+// environ's answer (peer.ts): each process's environment as text, its
+// entries between NULs with one in front (as Linux's are read), or '' for
+// one Windows won't let this user read (another user's, an elevated or
+// protected process: none is a thread's CLI, which runs as the runner
+// does). One that has gone, or isn't in the answer, is left out.
+export function parseEnviron(text: string, pids: number[]): Map<number, string> {
+  const want = new Set(pids);
+  const envs = new Map<number, string>();
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^([exg]) (\d+)(?: ([A-Za-z0-9+/=]*))?\s*$/.exec(line);
+    if (!m || !want.has(Number(m[2]))) continue;
+    const pid = Number(m[2]);
+    if (envs.has(pid)) throw new Error(`the helper named process ${pid} twice`);
+    if (m[1] === 'x') envs.set(pid, '');
+    // The block ends at its first empty entry: what follows in the
+    // allocation can be what was there before a variable was removed.
+    else if (m[1] === 'e') envs.set(pid, '\0' + Buffer.from(m[3] ?? '', 'base64').toString('utf16le').split('\0\0')[0] + '\0');
+  }
+  return envs;
+}
+
+// jobsOf's answer (peer.ts): the Threadbear jobs each process is in, by
+// their full names (Local\threadbear-job-<hex>). One that couldn't be
+// opened even to ask its session (which Windows allows for any process of
+// this user, elevated or protected, so it's one that denied it to itself:
+// Codex's and Gemini's reviews), has gone, isn't in the answer, or names
+// something that isn't a job's name, is left out: no answer.
+export function parseJobs(text: string, pids: number[]): Map<number, string[]> {
+  const want = new Set(pids);
+  const jobs = new Map<number, string[]>();
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^([jxg]) (\d+)(?: (\S+))?\s*$/.exec(line);
+    if (!m || !want.has(Number(m[2]))) continue;
+    const pid = Number(m[2]);
+    if (jobs.has(pid)) throw new Error(`the helper named process ${pid} twice`);
+    if (m[1] !== 'j') continue;
+    const names = m[3] ? m[3].split(',') : [];
+    if (!names.every((n) => /^threadbear-job-[0-9a-f]{32}$/.test(n))) continue;
+    jobs.set(pid, names.map((n) => `Local\\${n}`));
+  }
+  return jobs;
+}
+
 // A snapshot's answer: each connection's client end (its own address and
 // port, the server's, and the pid holding it), and every process.
 export type WinConnection = { localAddress: string; localPort: number; remoteAddress: string; remotePort: number; pid: number };

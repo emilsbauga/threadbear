@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import type { Dump } from '../support/driver.ts';
 import type { ThreadbearWorld } from '../support/world.ts';
 
-type Login = { name: string; open?: boolean; provider?: string | null; status?: string | null; logo?: string; line?: string | null; ring?: number | null; why?: string | null; signInEnds?: string | null; yearToken?: string | null; tokenButton?: boolean; findWork?: boolean; findingWork?: boolean; meters: { title: string; left: string; verdict?: string | null }[]; more: string[] };
+type Login = { name: string; reset?: { line: string; tip: string; expiring: boolean; busy: boolean } | null; open?: boolean; provider?: string | null; status?: string | null; logo?: string; line?: string | null; ring?: number | null; why?: string | null; signInEnds?: string | null; yearToken?: string | null; tokenButton?: boolean; findWork?: boolean; findingWork?: boolean; meters: { title: string; left: string; verdict?: string | null }[]; more: string[] };
 type Usage = {
   shown: boolean;
   icon: { percent: number; login?: string | null; tip: string; dot?: boolean };
@@ -228,3 +228,57 @@ When("a Gemini login with its plan's usage is added", async function (this: Thre
   };
   await this.app.do({ cmd: 'mock', method: 'accounts', params: { accounts: [...accounts, { id: 'antigravity-main', provider: 'antigravity', title: 'Gemini', plan: 'Google AI Ultra', configDir: '~/.gemini/antigravity-acp', models: [], usage }] } });
 });
+
+When('a usage thread {string} uses {string} in pool {string}', async function (this: ThreadbearWorld, title: string, accountId: string, poolId: string) {
+  await this.app.do({ cmd: 'mock', method: 'thread', params: { id: `usage-${poolId}`, title, accountId, poolId } });
+});
+
+Then("the honey pot's first allowance is {string}", async function (this: ThreadbearWorld, line: string) {
+  await this.until(`the first allowance is ${line}`, (d) => usage(d)?.icon.tip.split('\n')[1] === line);
+});
+
+/**
+ * A Codex login's usage resets and the runner's hint to use one
+ * (docs/protocol/settings.md, "Telling Mike about resets"). The mock doesn't
+ * work the hint out: it's set here as the runner would send it.
+ */
+async function setResets(world: ThreadbearWorld, account: string, change: (a: Record<string, any>) => void) {
+  const { accounts } = answer(await world.app.do({ cmd: 'mock', method: 'accounts', params: {} })) as { accounts: Record<string, any>[] };
+  const a = accounts.find((x) => x.id === account);
+  assert.ok(a, `no ${account} on the mock`);
+  change(a);
+  await world.app.do({ cmd: 'mock', method: 'accounts', params: { accounts } });
+}
+
+When('{string} is out of room with {int} resets left', async function (this: ThreadbearWorld, account: string, left: number) {
+  const expires = new Date(Date.now() + 12 * 86_400_000).toISOString();
+  await setResets(this, account, (a) => {
+    a.usage = { ...a.usage, blocked: true, windows: a.usage.windows.map((w: any) => (w.kind === 'weekly' ? { ...w, remainingPercent: 0 } : w)), resets: { available: left, nextExpiresAt: expires } };
+    a.resetHint = { why: 'out', available: left, nextExpiresAt: expires };
+  });
+});
+
+When('{string} has a reset expiring in {int} days', async function (this: ThreadbearWorld, account: string, days: number) {
+  const expires = new Date(Date.now() + days * 86_400_000).toISOString();
+  await setResets(this, account, (a) => {
+    a.usage = { ...a.usage, resets: { available: 1, nextExpiresAt: expires } };
+    a.resetHint = { why: 'expiring', available: 1, nextExpiresAt: expires };
+  });
+});
+
+When("{string}'s reset hint goes", async function (this: ThreadbearWorld, account: string) {
+  await setResets(this, account, (a) => delete a.resetHint);
+});
+
+Then('in the {string} card, {string} offers a reset, saying {string}', async function (this: ThreadbearWorld, card: string, name: string, words: string) {
+  await this.until(`${name} in ${card} offering a reset`, (d) => !!login(d, card, name)?.reset?.line.startsWith(words) && /^Restores /.test(login(d, card, name)?.reset?.tip ?? ''));
+});
+
+Then('in the {string} card, {string} offers no reset', async function (this: ThreadbearWorld, card: string, name: string) {
+  await this.until(`${name} in ${card} offering no reset`, (d) => !!login(d, card, name) && !login(d, card, name)?.reset);
+});
+
+When('I use a reset on {string} in the Usage panel', async function (this: ThreadbearWorld, account: string) {
+  await this.app.do({ cmd: 'usage', useReset: account });
+});
+

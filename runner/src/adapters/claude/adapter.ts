@@ -9,7 +9,7 @@ import type { Account, ContextUsage, EffortLevel, ModelChoice, PermissionMode, Q
 import { isEffortLevel } from '../../protocol.ts';
 import fs from 'node:fs';
 import type { AgentAdapter, AgentSession, RewindRequest, RewindResult, SessionSink, StartSessionOptions, UserInput } from '../types.ts';
-import { RewindRefusedError } from '../types.ts';
+import { MODEL_LIST_TIMEOUT_MS, RewindRefusedError } from '../types.ts';
 import type { SlashCommand } from '../../slash-commands.ts';
 import { frontmatter } from '../../claude-trust.ts';
 import { cutPointBefore, sessionTranscriptPath } from '../../transcripts.ts';
@@ -25,6 +25,7 @@ import { RUNNER_VERSION } from '../../config.ts';
 import { stripModelSuffix } from '../../accounts.ts';
 import { END_TURN_FULL_NAME, END_TURN_NUDGE, endTurnMessageStands, endTurnWantsReply, needsFromTool, ONE_REPLY_END_TURN_NUDGE, ONE_REPLY_WRITE_NUDGE, missingLinksNudge, owedReplyAfterCompact, replyAsks, replyAsksNudge, WakeRead } from '../../needs.ts';
 import { missingFileLinks } from '../../highlights.ts';
+import { HELPER_REPORT, coordinatorTool, isHelperQuestionTool } from './coordinator.ts';
 
 // Variables a parent Claude Code session sets for its own children. If the
 // runner was started from inside one (tests, a terminal in T3), they would
@@ -164,7 +165,8 @@ export class ClaudeAdapter implements AgentAdapter {
   // Asks the account's CLI what its model picker offers. Starting the CLI
   // with no prompt is enough: it answers initialize without a turn (under
   // a second, no tokens), and is closed straight after.
-  async models(account: Account): Promise<ModelChoice[]> {
+  async models(account: Account, signal = AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS)): Promise<ModelChoice[]> {
+    signal.throwIfAborted();
     const { deps } = this;
     const never = { async *[Symbol.asyncIterator]() { await new Promise<never>(() => {}); } } as AsyncIterable<SDKUserMessage>;
     const abort = new AbortController();
@@ -179,10 +181,14 @@ export class ClaudeAdapter implements AgentAdapter {
     };
     const queryFn = deps.queryFn ?? sdkQuery;
     const q = queryFn({ prompt: never, options });
+    const cancelled = Promise.withResolvers<never>();
+    const onAbort = () => cancelled.reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
     try {
-      const init = await q.initializationResult();
+      const init = await Promise.race([q.initializationResult(), cancelled.promise]);
       return modelChoices(init.models ?? []);
     } finally {
+      signal.removeEventListener('abort', onAbort);
       try {
         q.close();
       } catch {
@@ -457,6 +463,7 @@ class ClaudeSession implements AgentSession {
   private notStarted = new Map<string, number>();
   private lifecycle = false;
 
+
   constructor(opts: StartSessionOptions, sink: SessionSink, deps: ClaudeAdapterDeps) {
     this.opts = opts;
     this.sink = sink;
@@ -500,10 +507,12 @@ class ClaudeSession implements AgentSession {
       hooks: {
         Stop: [{ hooks: [(input) => this.onStop(input)] }],
         PostToolUse: [{ matcher: END_TURN_FULL_NAME, hooks: [async (input) => this.onEndTurn(input)] }],
+
         // Every Edit and Write, in every mode, a sub-agent's too: where the
         // mode it ran on is recorded, and where one that writes code is
         // made to ask outside Full access (onEditCall).
         PreToolUse: [
+          ...(opts.coordinator ? [{ hooks: [async (input: HookInput) => this.onCoordinatorTool(input)] }] : []),
           // The same hook refuses a queued call Mike denied on a card
           // (onQueuedCall), before any allow rule or Auto's classifier could
           // let it through: only tools that can queue, so the rest don't
@@ -519,13 +528,14 @@ class ClaudeSession implements AgentSession {
           ...(opts.heldGrants ? [{ hooks: [async () => (this.askEvery ? { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'ask' as const, permissionDecisionReason: "The folder's permission rules aren't trusted for this thread." } } : {})] }] : []),
         ],
         SessionStart: [{ hooks: [async (input) => this.onCompact(input)] }],
+
       },
       abortController: this.abort,
       spawnClaudeCodeProcess: groupSpawner(deps.registry, deps.log, (line) => this.stderr(line), opts.threadId),
     };
     const servers = deps.mcpServersFor?.(opts.threadId);
     if (servers && Object.keys(servers).length) options.mcpServers = servers;
-    this.hasEndTurn = Object.keys(servers ?? {}).some((k) => END_TURN_FULL_NAME.startsWith(`mcp__${k}__`));
+    this.hasEndTurn = opts.coordinator?.role === 'helper' ? false : Object.keys(servers ?? {}).some((k) => END_TURN_FULL_NAME.startsWith(`mcp__${k}__`));
     if (opts.model) options.model = opts.model;
     const effort = claudeEffort(opts.effort);
     if (effort) options.effort = effort;
@@ -542,6 +552,33 @@ class ClaudeSession implements AgentSession {
     const queryFn = deps.queryFn ?? sdkQuery;
     this.q = queryFn({ prompt: this.input, options });
     void this.pump();
+  }
+
+  private onCoordinatorTool(input: HookInput): { hookSpecificOutput?: { hookEventName: 'PreToolUse'; permissionDecision?: 'deny'; permissionDecisionReason?: string; updatedInput?: Record<string, unknown> } } {
+    if (input.hook_event_name !== 'PreToolUse' || !this.opts.coordinator) return {};
+    const args = input.tool_input && typeof input.tool_input === 'object' && !Array.isArray(input.tool_input) ? input.tool_input as Record<string, unknown> : {};
+    const gate = this.coordinatorCheck(input.tool_name, args, input.agent_id, input.tool_use_id);
+    if (gate.reason) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: gate.reason } };
+    return gate.updatedInput ? { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: gate.updatedInput } } : {};
+  }
+
+  private coordinatorCheck(name: string, input: Record<string, unknown>, agentId?: string, toolUseId?: string): { reason?: string; updatedInput?: Record<string, unknown> } {
+    const host = this.opts.coordinator;
+    if (!host) return {};
+    const isHelper = host.role === 'helper' || Boolean(agentId);
+    const gate = coordinatorTool(name, input, isHelper);
+    const helperId = host.role === 'helper' ? this.opts.threadId : agentId;
+    try {
+      const reason = host.checkTool({ name, input: gate.updatedInput ?? input, agentId: helperId, toolUseId });
+      if (reason) return { reason };
+      if (isHelper && helperId && isHelperQuestionTool(name)) {
+        const qs = normaliseQuestions(input.questions);
+        if (qs.length) host.helperQuestion?.(helperId, qs);
+      }
+      return gate;
+    } catch {
+      return { reason: 'The runner could not verify this coordinator operation. Stop and report the problem; the operation was not allowed.' };
+    }
   }
 
   private async onStop(input: HookInput): Promise<{ decision?: 'block'; reason?: string }> {
@@ -596,8 +633,8 @@ class ClaudeSession implements AgentSession {
   // after a compaction, and what it adds is the first thing the agent reads.
   private onCompact(input: HookInput): { hookSpecificOutput?: { hookEventName: 'SessionStart'; additionalContext: string } } {
     if ((input as { source?: string }).source !== 'compact') return {};
-    if (!this.oneReply || !this.owedReply) return {};
-    return { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: owedReplyAfterCompact(this.owedReply) } };
+    const additionalContext = [this.opts.coordinator?.context?.(), this.oneReply && this.owedReply ? owedReplyAfterCompact(this.owedReply) : undefined].filter(Boolean).join('\n\n');
+    return additionalContext ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } } : {};
   }
 
   private forgetEndTurn(): void {
@@ -921,6 +958,11 @@ class ClaudeSession implements AgentSession {
     input: Record<string, unknown>,
     o: { signal: AbortSignal; suggestions?: PermissionUpdate[]; toolUseID: string; title?: string; suppressAlwaysAllowRule?: boolean; agentID?: string; decisionReason?: string; decisionReasonType?: string },
   ): Promise<PermissionResult> {
+    if (this.opts.coordinator) {
+      const gate = this.coordinatorCheck(name, input, o.agentID, o.toolUseID);
+      if (gate.reason) return { behavior: 'deny', message: gate.reason, toolUseID: o.toolUseID };
+      if (gate.updatedInput) input = gate.updatedInput;
+    }
     // A subagent's tool calls stay inside its Agent call (the normaliser
     // drops them), so there's no tool.call to wait for or point at.
     const sub = Boolean(o.agentID);
@@ -951,6 +993,7 @@ class ClaudeSession implements AgentSession {
     }
     if (this.deps.neverAsk?.has(name) && !this.deps.alwaysAsk?.has(name)) return { behavior: 'allow', updatedInput: input, toolUseID: o.toolUseID };
     if (this.mode === 'full' && !this.deps.alwaysAsk?.has(name)) return { behavior: 'allow', updatedInput: input, toolUseID: o.toolUseID };
+    if (this.opts.coordinator && (sub || this.opts.coordinator.role === 'helper')) return { behavior: 'deny', message: HELPER_REPORT, toolUseID: o.toolUseID };
     // "Plan first": the plan goes to Mike as a plan card, and this call
     // waits on it like any approval. Approving it answers with the mode to
     // leave plan mode for (setMode below), as the CLI's own prompt does.

@@ -27,9 +27,11 @@ landing); one change they ask for by name can be cherry-picked.
 
 - Never read or copy OAuth tokens or Keychain credentials; only spawn the official
   `claude` and `codex` binaries under Mike's own logins. Exception: a login's year-long
-  token (`threadbear-token.json`) goes to that login's CLI, and to Convex only when Mike
-  picks it on a cloud token card (`cloudTokens.useMac`). A Make one cloud token goes only
-  to `boxes:setCloudToken`, never to disk or the log.
+  token (`threadbear-token.json`) goes to that login's CLI, to Convex in the clear only when
+  Mike picks it on a cloud token card (`cloudTokens.useMac`), and to another runner only
+  sealed to that runner's key, when Mike switches on Use this Mac's Claude logins
+  (`login-share.ts`). A Make one cloud token goes only to `boxes:setCloudToken`, never to
+  disk or the log.
 - Never kill processes you didn't start: T3 Code and other threads run the same CLIs.
 - Never restart the live runner (`deploy-runner.sh --now`, `install-runner.sh`,
   `tb restart` on it, `launchctl kickstart`, stopping its node): it ends your turn and

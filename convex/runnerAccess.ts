@@ -288,6 +288,7 @@ export const ACCESS: Record<string, Access> = {
   pictureUploadUrl: 'owner',
   discardPictures: 'owner',
   remoteAccounts: 'owner',
+  remotePools: 'owner',
   // Full sync (API 52): a runner writes its own threads' tool output, and only
   // the main Mac's runner reads another runner's.
   remoteBody: 'owner',

@@ -10,6 +10,20 @@ import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonObject
 
 class InboxTest {
+    @Test fun coordinatorsStayPutAndQuestionsCount() {
+        val asleep = thread("a", 0, snoozed = true).copy(coordinatorProjectId = "p_a", waitState = WaitState.HIBERNATING)
+        val asking = thread("b", 0, needsYou = true).copy(title = "Beta coordinator", coordinatorProjectId = "p_b", waitState = WaitState.CARD, starredAt = NOW)
+        val gone = thread("c", 0).copy(coordinatorProjectId = "p_c", archivedAt = NOW)
+        val sections = InboxSections.build(listOf(asking, gone, asleep), NOW)
+        assertEquals(listOf("a", "b"), sections.coordinators.map { it.threadId })
+        assertTrue(sections.starred.isEmpty() && sections.inbox.isEmpty() && sections.running.isEmpty())
+        assertEquals(1, sections.needsYouCount)
+        assertFalse(sections.isEmpty)
+        assertEquals(listOf("b"), ThreadSearch.of("Beta coordinator", sections, emptyList(), emptyList()).coordinators.map { it.threadId })
+        assertTrue(InboxSections.hibernating(emptyList(), listOf(asleep), emptyMap()).isEmpty())
+        assertEquals(PhoneSection.COORDINATORS, PhoneSection.entries.first())
+    }
+
     @Test fun ordersByUrgencyThenNewest() {
         val s = InboxSections.build(listOf(
             thread("done", 1),

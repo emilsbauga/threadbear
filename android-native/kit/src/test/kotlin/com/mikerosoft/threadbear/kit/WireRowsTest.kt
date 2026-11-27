@@ -110,6 +110,8 @@ class WireRowsTest {
         )
         f += under("projects", list(t.projects) { mapOf("id" to it.id, "title" to it.title) })
         f += under("next", list(t.next) { mapOf("" to it) })
+        f["nextPick"] = t.nextPick
+        f["nextSuggested"] = t.nextSuggested
         f += under("links", list(t.links) { mapOf("title" to it.title, "url" to it.url, "icon" to it.icon) })
         f["cardTurn"] = t.cardTurn
         f += under("looseEnds", list(t.looseEnds) { mapOf("kind" to it.kind, "text" to it.text, "threadId" to it.threadId, "at" to it.at) })

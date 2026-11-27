@@ -22,11 +22,12 @@ import { clear as clearMachine } from './clearMachine';
 import { box as boxMachine } from './boxMachine';
 import { cloudToken as cloudTokenMachine } from './cloudTokenMachine';
 import { relayInstall as relayInstallMachine } from './relayInstallMachine';
+import { boxTokenGrant as boxTokenGrantMachine } from './boxTokenGrantMachine';
 import { steppingFor } from './stepping';
 import { wakeIfAsleep, wakeLevelOf } from './boxHooks';
 
 // A machine whose backfill's stepping stone is being deployed is left out (stepping.ts).
-export const machines: Machines<typeof appSchema> = defineMachines(appSchema, [...(steppingFor('commandState') ? [] : [commandMachine]), ...(steppingFor('moveState') ? [] : [moveMachine]), ...(steppingFor('requestState') ? [] : [requestMachine]), ...(steppingFor('clearState') ? [] : [clearMachine]), boxMachine, ...(steppingFor('tokenState') ? [] : [cloudTokenMachine]), relayInstallMachine] as never, {
+export const machines: Machines<typeof appSchema> = defineMachines(appSchema, [...(steppingFor('commandState') ? [] : [commandMachine]), ...(steppingFor('moveState') ? [] : [moveMachine]), ...(steppingFor('requestState') ? [] : [requestMachine]), ...(steppingFor('clearState') ? [] : [clearMachine]), boxMachine, ...(steppingFor('tokenState') ? [] : [cloudTokenMachine]), relayInstallMachine, boxTokenGrantMachine] as never, {
   mutation,
   internalMutation,
   internalQuery,
@@ -42,6 +43,7 @@ export const clear = clearMachine;
 export const box = boxMachine;
 export const cloudToken = cloudTokenMachine;
 export const relayInstall = relayInstallMachine;
+export const boxTokenGrant = boxTokenGrantMachine;
 
 /**
  * A new command, pending for its runner: the machine's QUEUE, which writes

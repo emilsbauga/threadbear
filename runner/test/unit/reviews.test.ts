@@ -806,19 +806,14 @@ test('show_options tells the agent not to repeat the options in its reply', asyn
   assert.match(said,/review:[0-9a-f-]{36}/);
 });
 
-// The reviewCanvas experiment (docs/protocol/events.md, "Marks: the canvas"):
+// The review board (docs/protocol/events.md, "Marks: the canvas"):
 // the agent's marks ride on shots, Mike's on the draft.
 type Sent = { text: string; images: ImageRef[]; reviewResponse: ReviewDraft; reviewId?: string; type: string };
 type Queued = Sent & { turnId: string };
-function canvas(on = true) {
-  const f = fixture();
-  fs.writeFileSync(path.join(f.h.home, 'runner.json'), JSON.stringify({ experiments: { reviewCanvas: on } }));
-  return f;
-}
 const circle = { kind: 'circle', box: [0.1, 0.2, 0.3, 0.4], note: 'Too tight', ink: 'rose' };
 
 test('canvas: agent marks are kept on their shots, an option\'s on its path shot, with shots kept for them', () => {
-  const {h, thread, source, input} = canvas();
+  const {h, thread, source, input} = fixture();
   const {review} = h.runner.createReview(thread.id, {...input, options: [
     {id: 'A', title: 'First', path: source, marks: [circle]},
     {id: 'B', title: 'Second', path: source, shots: [{path: source, title: 'Detail', marks: [{kind: 'arrow', box: [0.5, 0.5, 0.5, 0.5]}]}]},
@@ -833,7 +828,7 @@ test('canvas: agent marks are kept on their shots, an option\'s on its path shot
 });
 
 test('canvas: agent marks are checked, with limits of 6 a picture and 30 a review', () => {
-  const {h, thread, source, input} = canvas();
+  const {h, thread, source, input} = fixture();
   const make = (marks: unknown, extra: Record<string, unknown> = {}) => h.runner.createReview(thread.id, {...input, options: [{id: 'A', title: 'First', path: source, marks, ...extra}]} as never);
   assert.throws(() => make([{...circle, box: [0.4, 0, 0.2, 1]}]), /marks\[0\] on A, picture 1: box must be \[x0, y0, x1, y1\].*x0 <= x1/);
   assert.throws(() => make([{...circle, box: [0, 0, 1.2, 1]}]), /box must be/);
@@ -850,20 +845,15 @@ test('canvas: agent marks are checked, with limits of 6 a picture and 30 a revie
   assert.equal(h.runner.get(thread.id).pendingReviews, undefined, 'no card from a bad one');
 });
 
-test('canvas: with the experiment off, marks are dropped unread and show_options doesn\'t offer them', () => {
-  const {h, thread, source, input} = canvas(false);
-  const {review} = h.runner.createReview(thread.id, {...input, options: [{id: 'A', title: 'First', path: source, marks: [{kind: 'bad'}]}]} as never);
-  assert.equal(review.options[0].shots, undefined);
-  const schema = (on: boolean) => {
-    const t = buildThreadbearTools(h.runner, thread.id, Date.now, undefined, undefined, undefined, { reviewCanvas: () => on }).find(x => x.name === 'show_options')! as unknown as { inputSchema: { options: { element: { shape: Record<string, unknown> & { shots: { unwrap: () => { element: { shape: Record<string, unknown> } } } } } } } };
-    return JSON.stringify(Object.keys(t.inputSchema.options.element.shape)) + JSON.stringify(Object.keys(t.inputSchema.options.element.shape.shots.unwrap().element.shape));
-  };
-  assert.doesNotMatch(schema(false), /marks/);
-  assert.match(schema(true), /"marks".*"marks"/);
+test('canvas: show_options offers marks on options and shots without experiment configuration', () => {
+  const {h, thread} = fixture();
+  const t = buildThreadbearTools(h.runner, thread.id).find(x => x.name === 'show_options')! as unknown as { inputSchema: { options: { element: { shape: Record<string, unknown> & { shots: { unwrap: () => { element: { shape: Record<string, unknown> } } } } } } } };
+  assert.ok(t.inputSchema.options.element.shape.marks);
+  assert.ok(t.inputSchema.options.element.shape.shots.unwrap().element.shape.marks);
 });
 
 test('canvas: Mike\'s marks are checked against the review\'s options and shots', () => {
-  const {h, thread, input} = canvas();
+  const {h, thread, input} = fixture();
   const {review} = h.runner.createReview(thread.id, input);
   const mark = {n: 1, kind: 'circle', optionId: 'A', shot: 0, box: [0.36, 0.83, 0.5, 0.92]};
   const save = (marks: unknown) => h.runner.saveReview(thread.id, review.id, 0, {notes: {}, marks} as never);
@@ -884,7 +874,7 @@ test('canvas: Mike\'s marks are checked against the review\'s options and shots'
 });
 
 test('canvas: Mike\'s marks are kept through save and respond, alone are an answer, and go to the agent as lines and cut-outs', async () => {
-  const {h, thread, source, input} = canvas();
+  const {h, thread, source, input} = fixture();
   const {review} = h.runner.createReview(thread.id, {...input, options: [input.options[0], {id: 'B', title: 'Second', path: source, shots: [{path: source, title: 'Detail'}]}, input.options[2]]});
   const pasted = h.runner.importMedia(source).image;
   const cut = h.runner.importMedia(path.join(h.home, 'mockup.png')).image;
@@ -933,7 +923,7 @@ test('canvas: Mike\'s marks are kept through save and respond, alone are an answ
 });
 
 test('canvas: a moved review keeps marks that fit and none of its cut-outs; recovery keeps only its own', () => {
-  const {h, thread, source, input} = canvas();
+  const {h, thread, source, input} = fixture();
   const {review} = h.runner.createReview(thread.id, {...input, options: [{id: 'A', title: 'First', path: source, marks: [circle]}, input.options[1], input.options[2]]} as never);
   const own = {threadId: thread.id, now: h.store.mediaDir(thread.id), final: h.store.mediaDir(thread.id)};
   const outside = {path: '/etc/hosts', mediaType: 'image/png'};

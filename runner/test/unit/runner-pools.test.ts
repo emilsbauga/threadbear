@@ -8,11 +8,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { FakeAccounts, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
+import { FakeAccounts, FakeAdapter, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
 import { checkSummary } from '../helpers/protocol-check.ts';
 import { readRunnerJson, writeRunnerJson } from '../../src/config.ts';
-import type { Account, Pool } from '../../src/protocol.ts';
+import type { Account, ModelChoice, Pool, Provider } from '../../src/protocol.ts';
 import { RpcError } from '../../src/protocol.ts';
+import { MODEL_LIST_TIMEOUT_MS } from '../../src/adapters/types.ts';
 import { CallerGate } from '../../src/rpc-gate.ts';
 import type { UsageReading } from '../../src/usage.ts';
 import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_SIGNED_OUT, type SignInSink, type UsageSink } from '../../src/runner.ts';
@@ -120,6 +121,263 @@ test("a mixed pool's new thread goes on the provider the picker's pick was under
   assert.equal(h.runner.create({ text: 'z', provider: 'codex' }).thread.provider, 'claude');
 });
 
+function listedLogin(id: string, provider: Provider, models?: ModelChoice[], pct = 90): Account {
+  return { id, provider, title: id, configDir: `/tmp/${id}`, ...(models ? { models } : {}), usage: room(pct) };
+}
+
+function modelChoice(id: string, model = id): ModelChoice {
+  return { id, model, title: id };
+}
+
+test('a named model uses the login listing it even when another login of that provider has more room', () => {
+  const cases = [
+    ['codex', 'gpt-luna', 'gpt-sol'],
+    ['claude', 'claude-fable', 'claude-opus'],
+    ['grok', 'grok-4.7', 'grok-4.5'],
+    ['antigravity', 'gemini-pro', 'gemini-flash'],
+    ['opencode', 'gpt-open', 'open/other'],
+  ] as const;
+  for (const [provider, wanted, other] of cases) {
+    const adapter = new FakeAdapter(provider);
+    const h = makeHarness(undefined, {}, {
+      adapters: { [provider]: adapter },
+      accounts: new FakeAccounts([
+        listedLogin('more-room', provider, [modelChoice(other)]),
+        listedLogin('unknown-list', provider),
+        listedLogin('offers-model', provider, [modelChoice(wanted)], 35),
+      ]),
+    });
+    const thread = h.runner.create({ text: 'Start', model: wanted }).thread;
+    assert.equal(thread.accountId, 'offers-model', provider);
+    assert.equal(thread.poolId, provider);
+    assert.equal(thread.model, wanted);
+    assert.equal(adapter.last.opts.model, wanted);
+  }
+});
+
+test('an OpenCode pool or picker hint disambiguates model ids shared with direct logins', () => {
+  const gpt = modelChoice('gpt-shared');
+  const claude = modelChoice('claude-shared');
+  const open = new FakeAdapter('opencode');
+  const h = makeHarness(undefined, { pools: [
+    { id: 'mixed', title: 'Mixed', accountIds: ['claude', 'codex', 'open'] },
+    { id: 'open', title: 'Open', accountIds: ['open'] },
+  ] }, {
+    adapters: { claude: new FakeAdapter(), codex: new FakeAdapter('codex'), opencode: open },
+    accounts: new FakeAccounts([
+      listedLogin('claude', 'claude', [claude]),
+      listedLogin('codex', 'codex', [gpt]),
+      listedLogin('open', 'opencode', [claude, gpt]),
+    ]),
+  });
+  for (const [choice, direct] of [[gpt, 'codex'], [claude, 'claude']] as const) {
+    assert.equal(h.runner.create({ text: 'Mobile', model: choice.id }).thread.accountId, direct);
+    for (const selection of [{ poolId: 'open' }, { poolId: 'mixed', provider: 'opencode' as const }, { accountId: 'open' }]) {
+      const thread = h.runner.create({ text: 'Mac', model: choice.id, ...selection }).thread;
+      assert.equal(thread.accountId, 'open');
+      assert.equal(thread.model, choice.id);
+      assert.equal(open.last.opts.model, choice.id);
+    }
+  }
+  h.runner.noteRanDry('open');
+  const outOfRoom = h.runner.create({ text: 'Mac', poolId: 'mixed', provider: 'opencode', model: gpt.id }).thread;
+  assert.equal(outOfRoom.accountId, 'open', 'the first turn keeps the chosen provider when there is no matching login with room');
+  assert.equal(open.last.opts.model, gpt.id);
+});
+
+test('an implicit model pick can leave a pool of the right provider that has no login offering it', () => {
+  const h = poolHarness({
+    accounts: [listedLogin('default', 'codex', [modelChoice('gpt-default')]), listedLogin('elsewhere', 'codex', [modelChoice('gpt-special')])],
+    pools: [
+      { id: 'default', title: 'Default', accountIds: ['default'] },
+      { id: 'elsewhere', title: 'Elsewhere', accountIds: ['elsewhere'] },
+    ],
+  });
+  const thread = h.runner.create({ text: 'Start', model: 'gpt-special' }).thread;
+  assert.equal(thread.poolId, 'elsewhere');
+  assert.equal(thread.accountId, 'elsewhere');
+  assert.equal(thread.model, 'gpt-special');
+  const named = h.runner.create({ text: 'Start', poolId: 'default', model: 'gpt-special' }).thread;
+  assert.equal(named.poolId, 'default');
+  assert.equal(named.accountId, 'default');
+  assert.equal(named.model, undefined);
+});
+
+test('model selection keeps folder and pool order, skips out-of-room matches and honors an explicit pool', () => {
+  const cwd = tmpDir();
+  const wanted = modelChoice('fable', 'claude-fable-full');
+  const regular = listedLogin('regular', 'claude', [wanted], 60);
+  const folder = listedLogin('folder', 'claude', [wanted], 10);
+  const noModel = listedLogin('no-model', 'claude', [modelChoice('sonnet')]);
+  const otherProvider = listedLogin('codex', 'codex', [modelChoice('gpt-sol')]);
+  const h = poolHarness({
+    accounts: [regular, folder, noModel, otherProvider],
+    pools: [
+      { id: 'regular', title: 'Regular', accountIds: ['no-model', 'regular'] },
+      { id: 'folder', title: 'Folder', accountIds: ['no-model', 'codex', 'folder'], folders: [cwd] },
+      { id: 'also', title: 'Also', accountIds: ['regular'] },
+    ],
+  });
+  writeRunnerJson(h.home, { defaults: { poolId: 'also' } });
+  const request = { text: 'Start', cwd, model: wanted.model };
+  assert.equal(h.runner.create(request).thread.poolId, 'folder', 'folder wins over saved pool and room elsewhere');
+  assert.equal(h.adapter.last.opts.account.id, 'folder');
+  h.setUsage('folder', room(0, 30, true));
+  const startsElsewhere = h.runner.create(request).thread;
+  assert.equal(startsElsewhere.poolId, 'regular', 'the first other eligible pool wins');
+  assert.equal(startsElsewhere.accountId, 'regular');
+  const stays = h.runner.create({ ...request, poolId: 'folder' }).thread;
+  assert.equal(stays.poolId, 'folder');
+  assert.equal(stays.accountId, 'folder', 'the first turn keeps the only match in the named pool');
+  assert.equal(h.adapter.last.opts.account.id, 'folder');
+  assert.equal(h.adapter.last.opts.model, wanted.model);
+});
+
+test('matching logins keep room and last-used preference, including when a login signs out', () => {
+  const wanted = modelChoice('claude-fable');
+  const first = listedLogin('first', 'claude', [wanted], 40);
+  const preferred = listedLogin('preferred', 'claude', [wanted], 40);
+  const mostRoom = listedLogin('most-room', 'claude', [wanted], 90);
+  const h = poolHarness({ accounts: [first, preferred, { ...mostRoom, signedOut: true }] });
+  writeRunnerJson(h.home, { defaults: { accountId: 'preferred' } });
+  const request = { text: 'Start', model: wanted.id };
+  assert.equal(h.runner.create(request).thread.accountId, 'preferred');
+  h.setUsage('preferred', room(0.5));
+  assert.equal(h.runner.create(request).thread.accountId, 'first');
+});
+
+test('unlisted native models try an unprobed login before falling back to the pool default', () => {
+  const cold = listedLogin('cold', 'codex', undefined, 20);
+  const warm = listedLogin('warm', 'codex', [modelChoice('gpt-listed')]);
+  const h = poolHarness({ accounts: [...withCodex().filter((a) => a.provider === 'claude'), warm, cold] });
+  const request = { text: 'Start', model: 'gpt-before-probe' };
+  const first = h.runner.create(request).thread;
+  assert.equal(first.accountId, 'cold');
+  assert.equal(first.model, 'gpt-before-probe');
+  h.fake.base = h.fake.base.map((a) => a.id === 'cold' ? { ...a, models: [modelChoice('gpt-different')] } : a);
+  const fallback = h.runner.create(request).thread;
+  assert.equal(fallback.accountId, 'claude-main');
+  assert.equal(fallback.model, undefined);
+  assert.match(notes(h, fallback.id)[0], /gpt-before-probe isn't a Claude model/);
+});
+
+test('a cold OpenCode list defers ambiguous names and retries a failed probe without creating a thread', async () => {
+  const open = new FakeAdapter('opencode');
+  let finishProbe!: (models: ModelChoice[]) => void;
+  let probes = 0;
+  open.models = async () => {
+    if (++probes === 1) throw new Error('CLI not ready');
+    return new Promise((resolve) => { finishProbe = resolve; });
+  };
+  const claude = new FakeAdapter();
+  const codex = new FakeAdapter('codex');
+  const h = makeHarness(undefined, {}, {
+    adapters: { claude, codex, opencode: open },
+    accounts: new FakeAccounts([
+      listedLogin('claude', 'claude', [modelChoice('opus', 'claude-open')]),
+      listedLogin('claude-cold', 'claude'),
+      listedLogin('codex', 'codex', [modelChoice('gpt-other')]),
+      listedLogin('open', 'opencode'),
+    ]),
+  });
+  await tick();
+  const requests = ['gpt-open', 'claude-open', 'claude-cold-open'].map((model) => ({ text: 'Start', model }));
+  const starts = [...requests, { ...requests[0], accountId: 'open' }].map((request) => h.runner.createAfterModelProbe(request));
+  await tick();
+  assert.equal(probes, 2);
+  assert.equal(h.runner.list().length, 0);
+  assert.equal(claude.sessions.length + codex.sessions.length + open.sessions.length, 0);
+  finishProbe(requests.map(({ model }) => modelChoice(model)));
+  const created = await Promise.all(starts);
+  assert.deepEqual(created.map(({ thread }) => thread.accountId), ['open', 'open', 'open', 'open']);
+  assert.deepEqual(created.map(({ thread }) => thread.model), [...requests.map((r) => r.model), requests[0].model]);
+  assert.equal(open.sessions.length, 4);
+});
+
+test('a create waits for the OpenCode deadline before returning busy without a thread', async () => {
+  const open = new FakeAdapter('opencode');
+  open.models = async () => new Promise(() => {});
+  const h = makeHarness(undefined, {}, {
+    adapters: { claude: new FakeAdapter(), opencode: open },
+    accounts: new FakeAccounts([listedLogin('claude', 'claude'), listedLogin('open', 'opencode')]),
+  });
+  const create = h.runner.createAfterModelProbe({ text: 'Start', model: 'gpt-open' });
+  let failed = false;
+  const rejects = assert.rejects(create, (e: RpcError) => {
+    failed = true;
+    return e.code === -32020 && /model lists/.test(e.message);
+  });
+  await tick();
+  assert.equal(failed, false);
+  h.clock.advance(MODEL_LIST_TIMEOUT_MS);
+  await rejects;
+  assert.equal(h.runner.list().length, 0);
+  assert.equal(open.sessions.length, 0);
+});
+
+test('a successfully fetched empty list offers no models', () => {
+  const h = poolHarness({
+    accounts: [listedLogin('empty', 'codex', []), listedLogin('cold', 'codex', undefined, 10)],
+  });
+  const thread = h.runner.create({ text: 'Start', model: 'gpt-unlisted' }).thread;
+  assert.equal(thread.accountId, 'cold');
+  const pinned = h.runner.create({ text: 'Start', accountId: 'empty', model: 'gpt-unlisted' }).thread;
+  assert.equal(pinned.model, undefined);
+});
+
+test('an unlisted ACP model is never passed through to Claude', () => {
+  const grok = new FakeAdapter('grok');
+  const accounts = new FakeAccounts([listedLogin('claude', 'claude'), listedLogin('grok', 'grok')]);
+  const h = makeHarness(undefined, {}, { adapters: { claude: new FakeAdapter(), grok }, accounts });
+  const request = { text: 'Start', model: 'grok-4' };
+  assert.throws(() => h.runner.create(request), /model lists/);
+  const pinned = h.runner.create({ ...request, accountId: 'claude' }).thread;
+  assert.equal(pinned.model, undefined);
+  accounts.learn('grok', { models: [modelChoice(request.model)] });
+  assert.equal(h.runner.create(request).thread.accountId, 'grok');
+  accounts.learn('grok', { models: [] });
+  const stale = h.runner.create(request).thread;
+  assert.equal(stale.accountId, 'claude');
+  assert.equal(stale.model, undefined);
+  assert.match(notes(h, stale.id)[0], /grok-4 isn't a Claude model/);
+});
+
+test('an exact picker id beats a resolved alias on a login of the same provider', () => {
+  const h = poolHarness({ accounts: [
+    listedLogin('alias', 'codex', [modelChoice('gpt-mini', 'gpt-special')]),
+    listedLogin('exact', 'codex', [modelChoice('gpt-special', 'gpt-special-version')], 20),
+  ] });
+  const thread = h.runner.create({ text: 'Start', model: 'gpt-special' }).thread;
+  assert.equal(thread.accountId, 'exact');
+  assert.equal(h.codex.last.opts.model, 'gpt-special');
+});
+
+test('an unpooled login can run a named model after pooled matches are considered', () => {
+  const model = modelChoice('gpt-special');
+  const h = poolHarness({
+    accounts: [
+      listedLogin('pooled', 'codex', [model]),
+      listedLogin('unpooled', 'codex', [model]),
+      { ...listedLogin('noted', 'codex', [model]), note: 'Work only' },
+      { ...listedLogin('signed-out', 'codex', [model]), signedOut: true },
+    ],
+    pools: [{ id: 'default', title: 'Default', accountIds: ['pooled'] }],
+  });
+  const request = { text: 'Start', model: model.id };
+  assert.equal(h.runner.create(request).thread.accountId, 'pooled');
+  h.fake.learn('pooled', { models: [modelChoice('gpt-other')] });
+  const thread = h.runner.create(request).thread;
+  assert.equal(thread.accountId, 'unpooled');
+  assert.equal(thread.poolId, undefined);
+  assert.equal(thread.model, model.id);
+  assert.equal(h.runner.create({ ...request, poolId: 'default' }).thread.accountId, 'pooled');
+  h.cfg.pools = [{ id: 'empty', title: 'Empty', accountIds: ['gone'] }];
+  assert.equal(h.runner.create(request).thread.accountId, 'unpooled', 'works when there are no usable pools');
+  h.cfg.pools = [{ id: 'default', title: 'Default', accountIds: ['pooled'] }];
+  h.fake.base = h.fake.base.filter((a) => a.id !== 'unpooled');
+  assert.equal(h.runner.create(request).thread.accountId, 'pooled', 'respects signed-out and work-only logins');
+});
+
 test("a folder named in a pool's folders starts its threads there; a named pool is remembered", () => {
   const convex = tmpDir();
   const pools: Pool[] = [
@@ -166,6 +424,127 @@ test('before a turn: a login under the minimum moves the thread, carrying the tr
   assert.equal(n[1], 'Resumed the session on main@example.com, with the whole conversation.');
   assert.equal(h.runner.get(thread.id).accountId, 'claude-main');
   assert.equal(h.runner.get(thread.id).poolId, 'claude', 'still a pool thread');
+});
+
+test('before a later turn, an explicit picker id moves only to a login offering that picker id', async () => {
+  const wanted = modelChoice('gpt-special', 'gpt-special-version');
+  const h = poolHarness({ accounts: [
+    listedLogin('initial', 'codex', [wanted]),
+    listedLogin('alias', 'codex', [modelChoice('gpt-mini', wanted.id)], 80),
+    listedLogin('matching', 'codex', [wanted], 40),
+  ] });
+  const { thread } = h.runner.create({ text: 'Start', model: wanted.id });
+  h.codex.last.init();
+  h.codex.last.result();
+  h.setUsage('initial', room(0));
+  h.runner.send(thread.id, 'Next');
+  await tick();
+  assert.equal(h.runner.get(thread.id).accountId, 'matching');
+  assert.equal(h.codex.last.opts.model, wanted.id);
+});
+
+test('an explicit OpenCode model waits through a usage limit and restart while Codex has room', async () => {
+  const open = new FakeAdapter('opencode');
+  const codex = new FakeAdapter('codex');
+  const id = 'gpt-shared';
+  const accounts = new FakeAccounts([
+    listedLogin('codex', 'codex', [modelChoice(id)]),
+    { ...listedLogin('open', 'opencode', [modelChoice(id)]), usage: room(80, 60) },
+  ]);
+  const h = makeHarness(undefined, { pools: [{ id: 'mix', title: 'Mix', accountIds: ['codex', 'open'] }] }, {
+    adapters: { codex, opencode: open }, accounts,
+  });
+  const thread = h.runner.create({ text: 'Start', poolId: 'mix', provider: 'opencode', model: id }).thread;
+  open.last.init();
+  accounts.base[1] = { ...accounts.base[1], usage: room(0, 60, true) };
+  limit(open.last);
+  await tick();
+  assert.equal(h.runner.get(thread.id).accountId, 'open');
+  assert.equal(h.runner.get(thread.id).waitingForRoom?.accountId, 'open');
+  assert.equal(codex.sessions.length, 0);
+  h.runner.flush();
+  const restarted = h.restart();
+  restarted.clock.advance(62 * MIN);
+  await tick();
+  assert.equal(restarted.runner.get(thread.id).accountId, 'open');
+  assert.ok(restarted.runner.get(thread.id).waitingForRoom);
+  accounts.base[1] = { ...accounts.base[1], usage: room(90) };
+  restarted.runner.accountsChanged();
+  restarted.clock.advance(31 * MIN);
+  await tick();
+  assert.equal(restarted.runner.get(thread.id).waitingForRoom, undefined);
+  assert.equal(restarted.runner.get(thread.id).accountId, 'open');
+  assert.equal(open.last.opts.model, id);
+  assert.equal(codex.sessions.length, 0);
+});
+
+test('a refused Claude login skips logins missing its explicit model', async () => {
+  const wanted = modelChoice('claude-special');
+  const h = poolHarness({ accounts: [
+    listedLogin('initial', 'claude', [wanted]),
+    listedLogin('unsupported', 'claude', [modelChoice('sonnet')], 80),
+    listedLogin('matching', 'claude', [wanted], 40),
+  ] });
+  const { thread } = h.runner.create({ text: 'Start', model: wanted.id });
+  h.adapter.last.init();
+  h.adapter.last.result('failed', undefined, 'Sign in required', { errorKind: 'auth' });
+  await tick();
+  assert.equal(h.runner.get(thread.id).accountId, 'matching');
+  assert.equal(h.adapter.last.opts.model, wanted.id);
+});
+
+for (const action of ['send', 'limit', 'auth'] as const) {
+  for (const selection of ['create', 'update'] as const) {
+    test(`an Opus choice made at ${selection} before catalogs load still moves after ${action}`, async () => {
+      const h = poolHarness({ accounts: [
+        listedLogin('initial', 'claude'),
+        listedLogin('resolved-only', 'claude', undefined, 80),
+        listedLogin('matching', 'claude', undefined, 40),
+      ] });
+      const thread = h.runner.create({ text: 'Start', ...(selection === 'create' ? { model: 'opus' } : {}) }).thread;
+      h.adapter.last.init();
+      if (selection === 'update') h.runner.update({ threadId: thread.id, model: 'opus' });
+      const opus = modelChoice('opus', 'claude-opus-4-6');
+      h.runner.learnAccount('initial', { models: [opus] });
+      h.runner.learnAccount('resolved-only', { models: [modelChoice('other-picker-id', 'opus')] });
+      h.runner.learnAccount('matching', { models: [opus] });
+      if (action === 'send') {
+        h.adapter.last.result();
+        h.setUsage('initial', room(0));
+        h.runner.send(thread.id, 'Next');
+      } else if (action === 'limit') {
+        limit(h.adapter.last);
+      } else {
+        h.adapter.last.result('failed', undefined, 'Sign in required', { errorKind: 'auth' });
+      }
+      await tick();
+      assert.equal(h.runner.get(thread.id).accountId, 'matching');
+      assert.equal(h.adapter.last.opts.model, 'opus');
+    });
+  }
+}
+
+test('choosing a model on an existing pool thread changes login, and clearing it restores default spillover', async () => {
+  const wanted = modelChoice('gpt-special');
+  const h = poolHarness({
+    accounts: [
+      listedLogin('general', 'codex', [modelChoice('gpt-general')]),
+      listedLogin('special', 'codex', [wanted], 40),
+    ],
+  });
+  const { thread } = h.runner.create({ text: 'Start' });
+  h.codex.last.init();
+  h.codex.last.result();
+  await tick();
+  const selected = h.runner.update({ threadId: thread.id, model: wanted.id }).thread;
+  assert.equal(selected.accountId, 'special');
+  assert.equal(selected.model, wanted.id);
+  h.runner.update({ threadId: thread.id, model: null });
+  h.setUsage('special', room(0));
+  h.runner.send(thread.id, 'Next');
+  await tick();
+  assert.equal(h.runner.get(thread.id).accountId, 'general');
+  assert.equal(h.codex.last.opts.model, undefined);
 });
 
 test('before a turn: a failed copy falls back to the handoff note; a login with room stays put', async () => {
@@ -873,7 +1252,8 @@ test('spill: with no Claude login left, a mixed pool moves the thread to Codex a
   const h = poolHarness({ pools });
   h.cfg.defaults.models = { codex: 'gpt-6-luna' };
   h.setUsage('claude-3', room(50, 60));
-  const { thread } = h.runner.create({ text: 'x', model: 'claude-opus-5-5' });
+  h.cfg.defaults.model = 'claude-opus-5-5';
+  const { thread } = h.runner.create({ text: 'x' });
   assert.equal(thread.poolId, 'mixed');
   assert.equal(thread.provider, 'claude');
   h.adapter.last.init();

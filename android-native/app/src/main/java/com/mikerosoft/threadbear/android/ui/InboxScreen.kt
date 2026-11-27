@@ -252,6 +252,10 @@ fun InboxScreen(
             // Empty sections are left out, Inbox aside, which has the empty view
             // instead. A folded one with no count yet (an older backend) still
             // shows its heading, so there's a way to open it.
+            if (sections.coordinators.isNotEmpty()) {
+                heading(PhoneSection.COORDINATORS, sections.coordinators.size)
+                if (!folds.isFolded(PhoneSection.COORDINATORS)) threadRows(sections.coordinators, PhoneSection.COORDINATORS, rows)
+            }
             if (sections.starred.isNotEmpty()) {
                 heading(PhoneSection.STARRED, sections.starred.size)
                 if (!folds.isFolded(PhoneSection.STARRED)) threadRows(sections.starred, PhoneSection.STARRED, rows)
@@ -340,6 +344,7 @@ private fun SearchResults(
         fun heading(section: PhoneSection) {
             stickyHeader(key = "h:${section.name}") { Heading(section, 0, folded = false, foldable = false) {} }
         }
+        if (search.coordinators.isNotEmpty()) { heading(PhoneSection.COORDINATORS); threadRows(search.coordinators, PhoneSection.COORDINATORS, rows) }
         if (search.starred.isNotEmpty()) { heading(PhoneSection.STARRED); threadRows(search.starred, PhoneSection.STARRED, rows) }
         if (search.inbox.isNotEmpty()) { heading(PhoneSection.INBOX); threadRows(search.inbox, PhoneSection.INBOX, rows) }
         if (search.running.isNotEmpty()) { heading(PhoneSection.RUNNING); threadRows(search.running, PhoneSection.RUNNING, rows) }
@@ -537,7 +542,7 @@ private fun LoadingRow() {
 private fun InboxRow(t: PhoneThread, under: PhoneSection, rows: RowContext, modifier: Modifier = Modifier) {
     val model = LocalModel.current
     // Only under Starred can a row be asleep: elsewhere it's in Hibernating.
-    val asleep = under == PhoneSection.STARRED && InboxSections.isAsleep(t, rows.now)
+    val asleep = (under == PhoneSection.STARRED || under == PhoneSection.COORDINATORS) && InboxSections.isAsleep(t, rows.now)
     var menu by remember { mutableStateOf(false) }
     val state = rememberSwipeToDismissBoxState()
     LaunchedEffect(state.currentValue) {

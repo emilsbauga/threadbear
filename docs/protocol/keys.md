@@ -477,6 +477,7 @@ anyone's); "any runner" is any good key. Anything not sorted is owner only.
 | `pictureUploadUrl` | owner only | a one-use `/relay/upload` URL for a picture going to another runner's thread, recorded in `relayUploads` |
 | `discardPictures` | owner only | deletes pictures uploaded through `pictureUploadUrl` for a command that wasn't queued, only ones nothing names |
 | `remoteAccounts` | owner only | another runner's logins, with their usage from API 77 |
+| `remotePools` | owner only | another runner's effective pool membership, from API 101 |
 | `remoteBody` | owner only | one tool's output on another runner's thread (full sync) |
 | `picturesAtSeqs` | owner only | the pictures pasted into the messages at up to 50 seqs of another runner's thread (`replyImages` with `src` `picture:N`), each with its file's URL (API 87) |
 | `fileRequest` | its own | a request for a thread on another runner, from one of its own threads (Asking another runner); never changed after; at most 5 waiting (one over two hours old doesn't count) and 50 kept, oldest going first, for a week at most |

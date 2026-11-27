@@ -8,8 +8,8 @@
 // runner, which also looks every few minutes by itself. The words are
 // threadbear_core::connectors.
 use crate::activity_panels::{
-    about_button, dot, icon_button, panel_column, push_button, small_heading, system_orange,
-    text_line,
+    about_button, dot, icon_button, panel_column, push_button, small_heading, system_green,
+    system_orange, text_line,
 };
 use crate::app::Threadbear;
 use crate::highlights::tipped;
@@ -189,9 +189,9 @@ impl Threadbear {
         panel_column("connectors-panel", 12., children)
     }
 
-    /// `ConnectorRow`: a mark for its state (filled when signed in, the
-    /// accent only where Mike has something to do), its name and state, its
-    /// message, and Connect, or a quiet arrow to its page.
+    /// `ConnectorRow`: a mark for its state (green when signed in, matching
+    /// Runners; the accent where Mike has something to do), its name and state,
+    /// its message, and Connect, or a quiet arrow to its page.
     fn render_connector_row(
         &mut self,
         service: &ConnectorService,
@@ -205,7 +205,7 @@ impl Threadbear {
         let signed_out = service.state == "signed_out";
         let mark = match service.state.as_str() {
             "signed_out" => style::accent(cx),
-            "connected" => secondary.opacity(0.7),
+            "connected" => system_green(cx).opacity(0.85),
             "error" => system_orange(cx),
             _ => secondary.opacity(0.3),
         };

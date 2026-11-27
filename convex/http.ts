@@ -17,6 +17,7 @@ import { jsonRequest, upload, download } from './intakeFiles';
 import { takeUpload } from './uploads';
 import { safeDecode, withCard } from './shareCard';
 import { promoteRoute } from './boxImage';
+import { cappedJson } from './httpJson';
 
 const http = httpRouter();
 for (const op of ['prepare', 'finalize', 'cancel']) http.route({ path: `/intake/v2/${op}`, method: 'POST', handler: jsonRequest });
@@ -113,7 +114,8 @@ http.route({
   path: '/relay/verify',
   method: 'POST',
   handler: httpAction(async (ctx, request) => {
-    const b = (await request.json().catch(() => null)) as { nonce?: unknown } | null;
+    const b = await cappedJson(request, 1024);
+    if (b === 'tooBig') return new Response('request body too large', { status: 413 });
     const nonce = typeof b?.nonce === 'string' && /^[0-9a-f]{48}$/.test(b.nonce) ? b.nonce : null;
     const ok = nonce ? await ctx.runMutation(internal.devices.takeRelayCheck, { nonce }) : false;
     return new Response(JSON.stringify({ ok }), { status: ok ? 200 : 404, headers: { 'Content-Type': 'application/json' } });

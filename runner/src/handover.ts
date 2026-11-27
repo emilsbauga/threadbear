@@ -873,7 +873,7 @@ export class ThreadRouter implements ThreadControl {
   async create(params: Parameters<Runner['create']>[0]): Promise<ReturnType<Runner['create']>> {
     // A draining runner makes no threads; the primary does.
     const e = this.runner.keeping() ? this.elsewhere() : undefined;
-    return e ? e.call('threads.create', { ...params }) : this.runner.create(params);
+    return e ? e.call('threads.create', { ...params }) : this.runner.createAfterModelProbe(params);
   }
 
   async send(threadId: string, text: string, images: Parameters<Runner['send']>[2] = [], opts: Parameters<Runner['send']>[3] = {}): Promise<{ turnId: string }> {
@@ -974,7 +974,7 @@ export function phoneCommands(runner: Runner, remote?: Pick<Peers, 'owns' | 'cal
     hibernateWhen: (p) => at(p.threadId, 'threads.hibernateWhen', { ...p }, () => runner.hibernateWhen(p)),
     // Up to whatever it has: markSeen keeps it within the thread's events.
     markSeen: (id) => at(id, 'threads.markSeen', { seq: Number.MAX_SAFE_INTEGER }, () => runner.markSeen(id, runner.get(id).lastSeq)),
-    create: (p) => runner.create(p),
+    create: (p) => runner.createAfterModelProbe(p),
     share: (id, p) => at(id, 'threads.share', { ...p }, () => runner.share(id, p)),
     interrupt: (id) => at(id, 'threads.interrupt', {}, () => runner.interrupt(id, { byMike: true })),
     quickAsk: (p) => runner.quickAsk(p),

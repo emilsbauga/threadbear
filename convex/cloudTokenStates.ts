@@ -4,10 +4,10 @@
 import { v, type Infer } from 'convex/values';
 
 export const tokenStateV = v.union(
-  // Set, and no box's turn on it has been refused since.
+  // Owner-set shared token; box refusals affect their grants only.
   v.object({ kind: v.literal('valid') }),
-  // A box's turn on it was refused (a 401: revoked, or past its year).
-  // `at`: when. Boxes waiting on the login wait for a new one.
+  // Legacy state from older backends that accepted login-wide box reports.
+  // Kept until the owner sets a replacement; new reports cannot enter it.
   v.object({ kind: v.literal('dead'), at: v.number() }),
 );
 export type TokenState = Infer<typeof tokenStateV>;

@@ -47,7 +47,8 @@ import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
 import { IS_WINDOWS } from './platform.ts';
 import { killGroup } from './proc.ts';
-import { ADD_DELAY_MS, applyKeyChanges, KeysBusy, keysIn, revokedPath, REVOKED_FILE, signerKey, SIGNERS_FILE } from './release-keys.ts';
+import { delegatePaths, readDelegateState, usableCert, REMIND_AHEAD_MS, RENEW_AHEAD_MS, renewDelegate, SIGN_MARGIN_MS, writeDelegateState } from './release-delegate.ts';
+import { ADD_DELAY_MS, applyKeyChanges, certVerifyArgs, KeysBusy, keysIn, readWeeklyRevoked, revokedPath, REVOKED_FILE, keyFilesHash, KEYS_EXTENSION, signatureCert, signedWithCert, signerKey, SIGNERS_FILE, weeklyRevokedPath, withAuthorities } from './release-keys.ts';
 import { changelogFor, type ReleaseChangelog } from './changelog.ts';
 import { LISTING_GIT_CONFIG, parseConfigListBytes, repoProofConfig, settable, TRUSTED_SCOPES, untrustedGitEnv } from './safe-git.ts';
 
@@ -81,7 +82,9 @@ const REF_NS = UPSTREAM_REFS;
 const MAX_SUBJECTS = 50;
 // What a release's name is after release/: the local date it was tagged
 // (tagFor). Nothing else is ever looked at.
-export const RELEASE_NAME = /^\d{4}-\d{2}-\d{2}$/;
+// A month 01-12 and a day 01-31: names like 2026-11-99 would otherwise sort
+// above every real release in their month (Gemini's review, 25 Nov 2026).
+export const RELEASE_NAME = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 // How far past today's date (UTC) a release's date can be: Mike's day can
 // start well before the fork's.
 const FUTURE_SLACK_MS = 2 * 24 * 60 * 60_000;
@@ -138,6 +141,9 @@ export type UpstreamStatus = {
   // Mike's runner: why main's tip isn't today's release yet, when it's
   // only GitHub's checks in the way (ciVerdict). Gone once it's tagged.
   held?: { commit: string; why: string; at: string };
+  // Mike's runner with releases.delegate: until when the weekly key signs
+  // (release-delegate.ts), and why the last try to renew it failed.
+  weeklyKey?: { until?: string; error?: string };
 };
 
 // One GitHub Actions run of a workflow on a commit, as ciVerdict needs it.
@@ -149,7 +155,9 @@ export type CiRun = { workflow: string; name: string; status: string; conclusion
 // Secure Enclave key's handle (`ssh-keygen -K`), which asks for Touch ID
 // on every signature (touchKey, publishOnce). signingProvider: the library
 // such a key signs through, /usr/lib/ssh-keychain.dylib unless set.
-export type PublishConfig = { publish: boolean; signingKey?: string; signingProvider?: string };
+// delegate: sign with a weekly key the signing key certifies, so a
+// release needn't wait for a touch (release-delegate.ts).
+export type PublishConfig = { publish: boolean; signingKey?: string; signingProvider?: string; delegate?: boolean };
 
 // How long the release signature waits for Touch ID before giving up for
 // this hour, and the library a Secure Enclave key signs through on macOS.
@@ -183,6 +191,10 @@ export type UpstreamDeps = {
   // Touch ID key is only tried then, so the prompt never sits on an empty
   // desk. Only asked for such a key.
   atMac?: () => Promise<boolean>;
+  // Mike's runner, with releases.delegate: starts the starred thread that
+  // asks him to renew the weekly key, and whether a thread is still open.
+  remind?: (r: { text: string; title: string; why: string }) => string;
+  isOpen?: (threadId: string) => boolean;
   onChange?: () => void;
   // After every check that got as far as the releases, with what it found
   // (bring-in.ts decides from it whether to start a thread).
@@ -798,6 +810,9 @@ export class Upstream {
       let release: UpstreamRelease | undefined;
       try {
         const staged = await this.stageReleases(checkout, signers, path.join(work, 'git'), from);
+        // What this fork had before: older releases' revocations were read
+        // when they were the newest (keyChanges).
+        const keptBefore = [...(await this.refs(checkout, REF_NS)).keys()].filter((n) => RELEASE_NAME.test(n)).sort().at(-1) ?? '';
         await this.promote(checkout, signers, staged);
         // A release can change which keys count (keyChanges), and so can
         // another runner's check meanwhile (a handover): then what it found
@@ -814,10 +829,21 @@ export class Upstream {
           const keysBefore = this.signersHash(signers);
           this.newestVerified = undefined;
           release = await this.newestSigned(checkout, signers, staged);
-          const changed = release ? await this.keyChanges(checkout, signers) : false;
+          // Revocations in what was fetched count even when no release does.
+          const changed = await this.keyChanges(checkout, signers, staged, keptBefore);
           settled = !changed && this.signersHash(signers) === keysBefore;
         }
         if (!settled) throw new Error('the release keys kept changing while the check ran; it looks again next time');
+        // Another runner held the key lock, so revocations went unread: what
+        // this check kept goes again and it fails, to read them next time,
+        // rather than offer a release one of them may revoke (Codex's review).
+        if (this.keysBusy) {
+          for (const [name, ref] of await this.refs(checkout, REF_NS)) {
+            if (name > keptBefore) await this.git(checkout, ['update-ref', '-d', REF_NS + name, ref.oid]).catch(() => undefined);
+          }
+          throw new Error('another runner was changing the release keys; it looks again next time');
+        }
+        for (const oid of this.lapsing) this.lapsed.add(oid);
       } finally {
         fs.rmSync(work, { recursive: true, force: true });
       }
@@ -899,7 +925,16 @@ export class Upstream {
   //    and each candidate is a ref there, refs/incoming/<date>.
   // checkNow deletes the folder when the check ends, whatever happened, so
   // what didn't verify, and a fetch cut short, leaves nothing behind.
+  // Weekly keys' tags whose week ended before this fork saw them (promote).
+  // Set aside only once a check has read their revocations (checkNow),
+  // so a revocation in one can't be passed over with it (Gemini's review).
+  private lapsed = new Set<string>();
+  private lapsing = new Set<string>();
+  private keysBusy = false;
   private async stageReleases(checkout: string, signers: string, work: string, from: string): Promise<string | undefined> {
+    // Each check's own (checkNow): none left from one that failed.
+    this.lapsing.clear();
+    this.keysBusy = false;
     const listed = await this.git(checkout, ['ls-remote', this.uploadPack, from, 'refs/heads/main', `refs/tags/${TAG_PREFIX}*`], this.remote({ timeoutMs: this.fetchTimeoutMs }));
     // Upstream's main: no main, no release can count (STAGED_MAIN).
     const mainOid = listed.split('\n').map((l) => l.split('\t')).find(([oid, ref]) => ref === 'refs/heads/main' && oid && OBJECT_ID.test(oid))?.[0];
@@ -939,7 +974,7 @@ export class Upstream {
     const newest = [...kept.keys()].filter((n) => RELEASE_NAME.test(n)).sort().at(-1) ?? '';
     const latest = new Date(this.deps.clock.now() + FUTURE_SLACK_MS).toISOString().slice(0, 10);
     const pinned = this.signersHash(signers);
-    const unsigned = (name: string) => this.answers.get(`${pinned} ${offered.get(name)} ${TAG_PREFIX}${name}`) === null;
+    const unsigned = (name: string) => this.answers.get(`${pinned} ${offered.get(name)} ${TAG_PREFIX}${name}`) === null || this.lapsed.has(offered.get(name)!);
     const names = [...offered.keys()].filter((n) => n <= latest && !unsigned(n)).sort().reverse();
     const candidates = [...names.filter((n) => n >= newest).slice(0, MAX_READS), ...names.filter((n) => n < newest).slice(0, MAX_OLDER)];
     if (candidates.length) await this.fetchStaged(checkout, work, objects, candidates.map((n) => `refs/tags/${TAG_PREFIX}${n}`), from);
@@ -1029,6 +1064,21 @@ export class Upstream {
         this.deps.log.warn('skipped an upstream release tag that is not signed with the pinned key', { tag });
         continue;
       }
+      // A weekly key's release is taken only while its certificate is good
+      // by this clock, not just when the tag says it was made: a weekly key
+      // that leaked can't get a release taken after its week, however the
+      // tags upstream are arranged (Codex's reviews, 25 Nov 2026). Once
+      // kept, it stays (sweep checks it at its own time).
+      const cert = signatureCert(signed.signature);
+      const now = this.deps.clock.now();
+      if (cert && (now < cert.validAfter || now >= cert.validBefore)) {
+        this.deps.log.warn("skipped a weekly key's release whose certificate isn't good now", { tag });
+        // One whose week is over never will be: passed over from now on, so
+        // a run of them can't hold every check's places (Codex's and
+        // Gemini's reviews).
+        if (now >= cert.validBefore) this.lapsing.add(ref.oid);
+        continue;
+      }
       if (!(await this.onUpstreamMain(staged, signed.commit))) {
         this.deps.log.warn("skipped a signed upstream release whose commit isn't on upstream's main", { tag, commit: signed.commit });
         continue;
@@ -1055,26 +1105,60 @@ export class Upstream {
   // a week and then counts, one in scripts/release-keys-revoked stops
   // counting at once. Read from the commit the signature covers.
   // Whether the keys that count changed.
-  private async keyChanges(checkout: string, signers: string): Promise<boolean> {
-    const signed = this.newestVerified;
-    if (!signed) return false;
-    const signer = signerKey(signed.signature);
-    if (!signer) return false;
-    // Read object by object, each checked against its id (committedFile).
-    const [announced, revoke] = await Promise.all([this.committedFile(checkout, signed.commit, SIGNERS_FILE), this.committedFile(checkout, signed.commit, REVOKED_FILE)]);
-    let change;
-    try {
-      change = applyKeyChanges({ home: this.deps.home, signers, signer, announced: keysIn(announced), revoke: keysIn(revoke), tag: signed.tag, now: this.deps.clock.now() });
-    } catch (e) {
-      // Another runner is at it; the next check reads the release again.
-      if (e instanceof KeysBusy) return false;
-      throw e;
+  private async keyChanges(checkout: string, signers: string, staged?: string, keptBefore = ''): Promise<boolean> {
+    const newest = this.newestVerified;
+    // The revocations in every other release this check fetched that's on
+    // upstream's main too: a newer one signed by a key that's since been
+    // revoked mustn't hide the release revoking it (Codex's review, 25 Nov
+    // 2026). Revoking only ever takes keys away, so an older release's
+    // can't do harm; announcing is the newest's alone.
+    const keptOid = newest ? await this.git(checkout, ['rev-parse', '--verify', '--quiet', REF_NS + newest.tag.slice(TAG_PREFIX.length)]).catch(() => '') : '';
+    const others = staged ? await this.otherReleases(staged, signers, keptOid, keptBefore) : [];
+    let change: ReturnType<typeof applyKeyChanges> = { added: [], revoked: [], waiting: [], refused: [] };
+    for (const [signed, cwd, onlyRevoke] of [...others.map((o) => [o, staged!, true] as const), ...(newest ? [[newest, checkout, false] as const] : [])]) {
+      // An older release revoked something: look again before the newest
+      // says anything, as it may be signed by what was just revoked
+      // (Gemini's review, 25 Nov 2026). checkNow sweeps and picks again.
+      if (!onlyRevoke && change.revoked.length) break;
+      const cert = signatureCert(signed.signature);
+      if (cert && readWeeklyRevoked(this.deps.home).includes(cert.key)) continue;
+      const signer = signerKey(signed.signature);
+      if (!signer) continue;
+      // Read object by object, each checked against its id (committedFile).
+      const [announced, revoke] = await Promise.all([this.committedFile(cwd, signed.commit, SIGNERS_FILE), this.committedFile(cwd, signed.commit, REVOKED_FILE)]);
+      try {
+        const c = applyKeyChanges({ home: this.deps.home, signers, signer, announced: keysIn(announced), revoke: keysIn(revoke), tag: signed.tag, now: this.deps.clock.now(), onlyRevoke });
+        change = { added: [...change.added, ...c.added], revoked: [...change.revoked, ...c.revoked], waiting: onlyRevoke ? change.waiting : c.waiting, refused: [...change.refused, ...c.refused] };
+      } catch (e) {
+        // Another runner is at it; the next check reads the release again.
+        if (e instanceof KeysBusy) {
+          this.keysBusy = true;
+          return false;
+        }
+        throw e;
+      }
     }
+    const signed = { tag: newest?.tag ?? others.at(-1)?.tag ?? '' };
     for (const k of change.revoked) this.deps.log.warn('a release revoked a release key; it no longer counts', { key: k.slice(0, 60), tag: signed.tag });
     for (const k of change.added) this.deps.log.warn('a new release key now counts, announced a week ago by a pinned key', { key: k.slice(0, 60), tag: signed.tag });
     for (const k of change.refused) this.deps.log.warn("a release tried to revoke a key it can't (only that key or a newer one can)", { key: k.slice(0, 60), tag: signed.tag });
     if (change.waiting.length) this.deps.log.info('a new release key is waiting out its week before it counts', { keys: change.waiting.map((k) => k.slice(0, 60)), tag: signed.tag });
     return change.added.length > 0 || change.revoked.length > 0;
+  }
+
+  // The fetched releases other than the tag object `except` (the one kept),
+  // named no earlier than `after` (the newest this fork had), that verify
+  // and are on upstream's main, oldest first: all of them, as what a check
+  // stages is bounded already. By object, not name: a same
+  // day's release that replaced a bad one counts too (Gemini's review).
+  private async otherReleases(staged: string, signers: string, except: string, after: string): Promise<(SignedTag & { tag: string })[]> {
+    const names = [...(await this.refs(staged, STAGED_NS))].filter(([n, ref]) => RELEASE_NAME.test(n) && n >= after && ref.oid !== except).sort(([x], [y]) => (x < y ? 1 : -1));
+    const out: (SignedTag & { tag: string })[] = [];
+    for (const [n, ref] of names) {
+      const signed = await this.verified(staged, ref, TAG_PREFIX + n, signers);
+      if (signed && (await this.onUpstreamMain(staged, signed.commit))) out.unshift({ ...signed, tag: TAG_PREFIX + n });
+    }
+    return out;
   }
 
   // `file` (a/b/c) as the commit `rev` names has it, read object by object
@@ -1216,9 +1300,31 @@ export class Upstream {
     if (this.answers.has(key)) return this.answers.get(key) ?? undefined;
     const raw = await (this.deps.gitBytes ?? gitBytes)(checkout, ['cat-file', 'tag', ref.oid]);
     const split = splitSignedTag(raw, tag);
-    const signed = split && (await sshVerified(split, signers, revokedPath(this.deps.home))) ? split : undefined;
-    this.remember(key, signed ?? null);
+    let signed = split && (await sshVerified(split, signers, revokedPath(this.deps.home))) ? split : undefined;
+    // A weekly key's release must have the key files its authority vouched
+    // for (KEYS_EXTENSION); an object that can't be read fails it for now.
+    let forNow = false;
+    if (signed && !(await this.keysVouched(checkout, signed).catch(() => ((forNow = true), false)))) signed = undefined;
+    // A weekly key's tag dated ahead of this clock fails only for now too.
+    // Every other failure is remembered, so tags that will never verify
+    // don't hold every check's places (Codex's and Gemini's reviews).
+    if (!signed && split && signedWithCert(split.signature)) {
+      const name = /\ntag ([^\n]+)\n/.exec(split.payload.toString('latin1'))?.[1] ?? '';
+      if (!certVerifyArgs(name, split.date) && certVerifyArgs(name, split.date, Date.parse('9999-12-31T00:00:00Z'))) forNow = true;
+    }
+    if (!forNow) this.remember(key, signed ?? null);
     return signed;
+  }
+
+  // Whether a release has the key files its signature vouches for: always
+  // for the release key's own; for a weekly key's, those whose hash its
+  // certificate carries.
+  private async keysVouched(cwd: string, signed: SignedTag): Promise<boolean> {
+    if (!signedWithCert(signed.signature)) return true;
+    const want = signatureCert(signed.signature)?.keys;
+    if (!want) return false;
+    const [s, r] = await Promise.all([this.committedFile(cwd, signed.commit, SIGNERS_FILE), this.committedFile(cwd, signed.commit, REVOKED_FILE)]);
+    return keyFilesHash(s, r) === want;
   }
 
   private remember(key: string, answer: SignedTag | null): void {
@@ -1243,23 +1349,51 @@ export class Upstream {
         return Buffer.alloc(0);
       }
     })();
-    return createHash('sha256').update(fs.readFileSync(signers)).update('\0').update(revoked).digest('hex');
+    let weekly = Buffer.alloc(0);
+    try {
+      weekly = fs.readFileSync(weeklyRevokedPath(this.deps.home));
+    } catch {
+      // none revoked
+    }
+    return createHash('sha256').update(fs.readFileSync(signers)).update('\0').update(revoked).update('\0').update(weekly).digest('hex');
   }
 
   // Mike's runner: tags main's tip as today's release when it's moved since
   // the last one and has settled (above). Returns the tag it made.
-  async publishOnce(): Promise<string | undefined> {
+  // `now` is Mike asking for it (`tb updates publish`): it doesn't wait for
+  // main or the runner to sit still for an hour, and asks for Touch ID
+  // straight away, as he's at the Mac to ask. GitHub's checks still decide
+  // which commit goes: the tip if it's green, or else the newest one that
+  // is (newestGreen). Added 25 Nov 2026, when a busy main kept a signed
+  // release from going out for three days.
+  publishOnce(opts: { now?: boolean } = {}): Promise<string | undefined> {
+    // The hourly look and Mike's ask never tag at once.
+    const run = (this.publishing ?? Promise.resolve()).catch(() => undefined).then(() => this.publishNow(opts));
+    this.publishing = run;
+    return run;
+  }
+
+  private publishing?: Promise<unknown>;
+
+  private async publishNow({ now: asked = false }: { now?: boolean }): Promise<string | undefined> {
     const { checkout, publish } = this.deps;
     if (!checkout || !publish?.publish) return undefined;
     if (!publish.signingKey || !fs.existsSync(publish.signingKey)) {
       this.deps.log.warn('releases.publish is on but releases.signingKey is missing', { signingKey: publish.signingKey });
       return undefined;
     }
-    if (!(this.deps.runningMainSettled?.() ?? false)) return undefined;
+    this.renewMissed = false;
+    if (publish.delegate && touchKey(publish.signingKey)) {
+      await this.keepDelegate(checkout, asked).catch((e: unknown) => {
+        this.deps.log.warn('could not look after the weekly release key', { error: String(e).slice(0, 200) });
+        this.set({ ...this.st, weeklyKey: { ...this.st.weeklyKey, error: String((e as Error).message ?? e).slice(0, 200) } });
+      });
+    }
+    if (!asked && !(this.deps.runningMainSettled?.() ?? false)) return undefined;
     const now = this.deps.clock.now();
     const tip = await this.git(checkout, ['rev-parse', 'refs/heads/main']);
     const committed = Number(await this.git(checkout, ['log', '-1', '--format=%ct', tip])) * 1000;
-    if (now - committed < SETTLE_MS) return undefined;
+    if (!asked && now - committed < SETTLE_MS) return undefined;
     // What it tags and signs is read as its ids name it, or not at all.
     const substituted = await this.substitutes(checkout);
     if (substituted) {
@@ -1301,22 +1435,34 @@ export class Upstream {
       }
     }
     const last = tags[0];
-    if (last && (await this.isAncestor(checkout, tip, last))) return this.hold(undefined);
+    // Nothing new since the last release: unless it was a weekly key's and
+    // that key's week ends within SIGN_MARGIN_MS, when the same commit goes
+    // out again under today's name, so a fork that missed it still has one
+    // it can take (Codex's and Gemini's reviews).
+    // Only main's tip itself, never one behind it (a tag made on another
+    // Mac): that would take forks back (Gemini's review).
+    if (last && (await this.isAncestor(checkout, tip, last))) {
+      const same = tip === (await this.git(checkout, ['rev-parse', `refs/tags/${last}^{commit}`]).catch(() => ''));
+      if (!same || !(await this.lastLapsing(checkout, last, now))) return this.hold(undefined);
+    }
     const why = await this.checksSay(checkout, tip);
     // The tip held by a red check: the newest settled commit since the last
     // release that's green on everything goes out instead (newestGreen).
-    const target = !why ? tip : this.lastSaid ? await this.newestGreen(checkout, tip, last, now).catch(() => undefined) : undefined;
+    // Not the last release's commit again while main is red: that would trust
+    // a tag nobody checked here, and could take today's name from a commit
+    // about to go green (Codex's and Gemini's reviews, 25 Nov 2026).
+    const target = !why ? tip : this.lastSaid ? await this.newestGreen(checkout, tip, last, now, asked ? 0 : SETTLE_MS).catch(() => undefined) : undefined;
     if (why && !target) {
       this.hold({ commit: tip, why, at: new Date(now).toISOString() });
       return undefined;
     }
     if (why) this.deps.log.info('main is held, so the newest commit green on everything goes out', { tip, commit: target, why });
     this.hold(undefined);
-    return this.tagRelease(checkout, target!, last, tag, now);
+    return this.tagRelease(checkout, target!, last, tag, now, asked);
   }
 
   // Tags `tip` as today's release `tag`, signed, and pushes it.
-  private async tagRelease(checkout: string, tip: string, last: string | undefined, tag: string, now: number): Promise<string | undefined> {
+  private async tagRelease(checkout: string, tip: string, last: string | undefined, tag: string, now: number, asked = false): Promise<string | undefined> {
     const { publish } = this.deps;
     if (!publish?.signingKey) return undefined;
 
@@ -1336,14 +1482,31 @@ export class Upstream {
     // review finding 3, 9 Nov 2026): tried only while Mike is at the Mac,
     // given TOUCH_SIGN_TIMEOUT_MS, and held for the next hourly look if he
     // doesn't touch it. Nothing waits on it but this look.
-    const touch = touchKey(publish.signingKey);
-    if (touch && !(await (this.deps.atMac?.() ?? Promise.resolve(false)))) {
+    // Or the weekly key, when it has time left and the last release has
+    // the check that takes it, so forks on that release already do.
+    // Mike asking (tb updates publish) doesn't wait: the release key signs.
+    const maybe = await this.weeklyKey(checkout, tip, last, tag, now);
+    if (maybe === 'later' && !asked) {
+      this.hold({ commit: tip, why: "waiting for UTC's day to be today's, so the weekly key can sign it", at: new Date(now).toISOString() });
+      return undefined;
+    }
+    const weekly = maybe === 'later' ? undefined : maybe;
+    const touch = !weekly && touchKey(publish.signingKey);
+    if (touch && !asked && !(await (this.deps.atMac?.() ?? Promise.resolve(false)))) {
       this.hold({ commit: tip, why: 'waiting for you at the Mac to sign it with Touch ID', at: new Date(now).toISOString() });
       return undefined;
     }
+    // Touch ID was just asked for, to renew the weekly key, and not given:
+    // not straight away again for the release.
+    if (touch && this.renewMissed) {
+      this.hold({ commit: tip, why: "Touch ID wasn't given to renew the weekly key; it asks again next hour", at: new Date(now).toISOString() });
+      return undefined;
+    }
     try {
-      await this.git(checkout, ['-c', 'gpg.format=ssh', '-c', `user.signingkey=${publish.signingKey}`, 'tag', '-s', '-F', file, tag, tip],
-        touch ? { owner: true, timeoutMs: TOUCH_SIGN_TIMEOUT_MS, env: { SSH_SK_PROVIDER: publish.signingProvider ?? MAC_SK_PROVIDER } } : { owner: true });
+      // A weekly key's tag is dated by the same clock that named it: forks
+      // check the certificate at that time, on that day (certVerifyArgs).
+      await this.git(checkout, ['-c', 'gpg.format=ssh', '-c', `user.signingkey=${weekly ?? publish.signingKey}`, 'tag', '-s', '-F', file, tag, tip],
+        weekly ? { owner: true, env: { SSH_AUTH_SOCK: '', GIT_COMMITTER_DATE: `${Math.floor(now / 1000)} +0000` } } : touch ? { owner: true, timeoutMs: TOUCH_SIGN_TIMEOUT_MS, env: { SSH_SK_PROVIDER: publish.signingProvider ?? MAC_SK_PROVIDER } } : { owner: true });
     } catch (e) {
       if (!touch) throw e;
       await this.git(checkout, ['tag', '-d', tag]).catch(() => undefined);
@@ -1376,6 +1539,75 @@ export class Upstream {
     return tag;
   }
 
+  // The weekly key's certificate file to sign with (release-delegate.ts),
+  // or undefined to sign with the release key itself.
+  // Not for a release whose key files its certificate doesn't vouch for
+  // (a key change since it was made): then it's renewed, with a touch.
+  // Nor while this Mac's day isn't UTC's (Perth's first eight hours): forks
+  // take a weekly key's tag only on the UTC day its name says.
+  // 'later' then, when the weekly key could otherwise sign.
+  private async weeklyKey(checkout: string, tip: string, last: string | undefined, tag: string, now: number): Promise<string | 'later' | undefined> {
+    const { publish, home } = this.deps;
+    if (!publish?.delegate || !publish.signingKey || !last) return undefined;
+    const utcDay = tag === `${TAG_PREFIX}${new Date(now).toISOString().slice(0, 10)}`;
+    const read = (rev: string, file: string) => this.committedFile(checkout, rev, file).catch(() => undefined);
+    const [signersAt, revoked, forks] = await Promise.all([read(tip, SIGNERS_FILE), read(tip, REVOKED_FILE), read(`refs/tags/${last}`, 'runner/src/release-keys.ts')]);
+    if (signersAt === undefined || revoked === undefined || !forks?.includes(KEYS_EXTENSION)) return undefined;
+    const cert = usableCert(home, publish.signingKey, signersAt, revoked);
+    if (!cert || cert.validAfter > now || cert.validBefore - now < SIGN_MARGIN_MS) return undefined;
+    return utcDay ? delegatePaths(home).cert : 'later';
+  }
+
+  // Renews the weekly key when it's near its end and Mike is at the Mac
+  // (or asked, with tb updates publish), at most once an hour; and when
+  // it's nearer still, starts a starred thread so he can't miss it.
+  private lastRenewTry = 0;
+  private renewMissed = false;
+  private async keepDelegate(checkout: string, asked: boolean): Promise<void> {
+    const { publish, home, clock, log } = this.deps;
+    if (!publish?.signingKey) return;
+    const now = clock.now();
+    const [signers, revoked] = await Promise.all([this.committedFile(checkout, 'refs/heads/main', SIGNERS_FILE), this.committedFile(checkout, 'refs/heads/main', REVOKED_FILE)]);
+    const had = usableCert(home, publish.signingKey, signers, revoked);
+    let left = (had?.validBefore ?? 0) - now;
+    let error: string | undefined;
+    if (left < RENEW_AHEAD_MS && (asked || now - this.lastRenewTry >= 60 * 60_000) && (asked || (await (this.deps.atMac?.() ?? Promise.resolve(false))))) {
+      this.lastRenewTry = now;
+      try {
+        const c = await renewDelegate({ home, signingKey: publish.signingKey, provider: publish.signingProvider ?? MAC_SK_PROVIDER, signers, revoked, now, timeoutMs: TOUCH_SIGN_TIMEOUT_MS });
+        left = c.validBefore - now;
+        log.info('renewed the weekly release key', { until: new Date(c.validBefore).toISOString() });
+      } catch (e) {
+        error = String((e as Error).message ?? e).slice(0, 200);
+        this.renewMissed = true;
+        log.info('the weekly release key was not renewed', { error });
+      }
+    }
+    this.set({ ...this.st, weeklyKey: { ...(left > 0 ? { until: new Date(now + left).toISOString() } : {}), ...(error ? { error } : {}) } });
+    if (left >= REMIND_AHEAD_MS || !this.deps.remind) return;
+    const state = readDelegateState(home);
+    if (state.remindThread && this.deps.isOpen?.(state.remindThread)) return;
+    const until = left > 0 ? `runs out ${new Date(now + left).toLocaleString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : 'has run out';
+    const id = this.deps.remind({
+      title: 'Renew the release signing key',
+      why: 'the weekly key that signs releases needs your Touch ID',
+      text: `The weekly key that signs Threadbear's daily releases ${until}, and the Mac hasn't caught Mike there to renew it. Until it's renewed, each release waits for his Touch ID.
+
+Don't run anything yet: the renewal pops up a Touch ID prompt that only works while he's at the Mac. End your turn with one ask: "Renew the release signing key now? Press Touch ID when it pops up", options "Renew now" and "Later". When he says to, run \`tb updates publish\` (it renews the key first, then puts out today's release if one is due) and tell him in a line whether it worked; if the key was renewed, archive this thread.`,
+    });
+    writeDelegateState(home, { remindThread: id });
+    log.info('started a thread to renew the weekly release key', { threadId: id });
+  }
+
+  // Whether the release `last` was signed by a weekly key whose week ends
+  // within SIGN_MARGIN_MS (or has), on Mike's runner with releases.delegate.
+  private async lastLapsing(checkout: string, last: string, now: number): Promise<boolean> {
+    if (!this.deps.publish?.delegate) return false;
+    const raw = await (this.deps.gitBytes ?? gitBytes)(checkout, ['cat-file', 'tag', `refs/tags/${last}`]).catch(() => undefined);
+    const cert = raw ? signatureCert(splitSignedTag(raw, last)?.signature ?? '') : undefined;
+    return Boolean(cert && cert.validBefore - now < SIGN_MARGIN_MS);
+  }
+
   // Deletes the local tag if it's still `oid`. One left behind isn't on
   // GitHub, so the next look doesn't count it and tries again (publishOnce).
   private async dropTag(checkout: string, tag: string, oid: string): Promise<boolean> {
@@ -1401,6 +1633,7 @@ export class Upstream {
     const split = splitSignedTag(raw, tag);
     if (!split) return 'the tag is not one SSH-signed release tag';
     if (split.commit !== tip) return `the tag names ${split.commit.slice(0, 8)}, not ${tip.slice(0, 8)}`;
+    if (!(await this.keysVouched(checkout, split))) return "its weekly key's certificate doesn't vouch for the key files at that commit";
     const signers = await this.committedFile(checkout, tip, SIGNERS_FILE);
     if (!keysIn(signers).length) return `${SIGNERS_FILE} has no keys at that commit`;
     const signer = signerKey(split.signature);
@@ -1526,7 +1759,7 @@ export class Upstream {
   // It's the same bar the Xcode 26 lesson set (release/2026-11-04 to -06
   // went out unchecked), only on an older commit. One GitHub request a
   // workflow, as the hourly look's are counted (60 an hour without a token).
-  private async newestGreen(checkout: string, tip: string, last: string | undefined, now: number): Promise<string | undefined> {
+  private async newestGreen(checkout: string, tip: string, last: string | undefined, now: number, settle = SETTLE_MS): Promise<string | undefined> {
     const key = repoKey(this.origin ?? '');
     if (!key.startsWith('github.com/')) return undefined;
     const repo = key.slice('github.com/'.length);
@@ -1534,7 +1767,7 @@ export class Upstream {
       .split('\n')
       .map((l) => l.trim().split(' '))
       .filter((p): p is [string, string] => p.length === 2 && p[0] !== tip)
-      .filter(([, ct]) => now - Number(ct) * 1000 >= SETTLE_MS);
+      .filter(([, ct]) => now - Number(ct) * 1000 >= settle);
     if (!line.length) return undefined;
     const histories = new Map<string, CiRun[]>();
     const historyOf = async (file: string) => {
@@ -1589,6 +1822,7 @@ export class Upstream {
       ...(this.deps.checkout ? { checkout: this.deps.checkout } : {}),
       ...(this.st.published && !next.published ? { published: this.st.published } : {}),
       ...(this.st.held && !('held' in next) ? { held: this.st.held } : {}),
+      ...(this.st.weeklyKey && !('weeklyKey' in next) ? { weeklyKey: this.st.weeklyKey } : {}),
     };
     // A failed or in-progress check keeps the last release it knew of.
     const release = next.release ?? (next.state === 'checking' || next.state === 'failed' ? this.st.release : undefined);
@@ -1676,7 +1910,13 @@ export async function verifiedRelease(checkout: string, home: string, name: stri
   try {
     const raw = await runGit(checkout, ['cat-file', 'tag', ref.oid], { env: { GIT_NO_REPLACE_OBJECTS: '1' } });
     const split = splitSignedTag(raw, TAG_PREFIX + name);
-    return split && (await sshVerified(split, signers, revokedPath(home))) ? split : undefined;
+    if (!split || !(await sshVerified(split, signers, revokedPath(home)))) return undefined;
+    if (signedWithCert(split.signature)) {
+      const file = (f: string) => runGit(checkout, ['cat-file', 'blob', `${split.commit}:${f}`], { env: { GIT_NO_REPLACE_OBJECTS: '1' } }).then((b) => b.toString('utf8'), () => '');
+      const [s, r] = await Promise.all([file(SIGNERS_FILE), file(REVOKED_FILE)]);
+      if (keyFilesHash(s, r) !== signatureCert(split.signature)?.keys) return undefined;
+    }
+    return split;
   } catch {
     return undefined;
   }
@@ -1690,12 +1930,31 @@ async function sshVerified(signed: SignedTag, signers: string, revoked?: string)
   try {
     const sig = path.join(dir, 'tag.sig');
     fs.writeFileSync(sig, signed.signature, { mode: 0o600 });
-    const found = await run('ssh-keygen', ['-Y', 'find-principals', '-f', signers, '-s', sig]);
+    // A weekly key's certificate (release-keys.ts, "Releases signed by a
+    // weekly key"): checked at the time the tag was made, which has to be
+    // the day its name says; the pinned keys count as its authority too.
+    let when: string[] = [];
+    let allowed = signers;
+    if (signedWithCert(signed.signature)) {
+      const cert = signatureCert(signed.signature);
+      if (!cert) return false;
+      const name = /\ntag ([^\n]+)\n/.exec(signed.payload.toString('latin1'))?.[1] ?? '';
+      const args = certVerifyArgs(name, signed.date);
+      if (!args) return false;
+      when = args;
+      // A revoked weekly key, by the key it certifies only (never the
+      // authority's, as ssh-keygen's -r would: Codex's and Gemini's reviews).
+      const weekly = revoked ? `${revoked}-weekly` : undefined;
+      if (weekly && fs.existsSync(weekly) && keysIn(fs.readFileSync(weekly, 'utf8')).includes(cert.key)) return false;
+      allowed = path.join(dir, 'signers');
+      fs.writeFileSync(allowed, withAuthorities(fs.readFileSync(signers, 'utf8')), { mode: 0o600 });
+    }
+    const found = await run('ssh-keygen', ['-Y', 'find-principals', '-f', allowed, '-s', sig, ...when]);
     if (found.code !== 0) return false;
     for (const principal of found.stdout.split('\n').map((l) => l.trim()).filter(Boolean)) {
       // A revoked key is refused even if it were still in the pinned file.
       const r = revoked && fs.existsSync(revoked) && fs.statSync(revoked).size > 0 ? ['-r', revoked] : [];
-      const v = await run('ssh-keygen', ['-Y', 'verify', '-f', signers, '-I', principal, '-n', 'git', '-s', sig, ...r], signed.payload);
+      const v = await run('ssh-keygen', ['-Y', 'verify', '-f', allowed, '-I', principal, '-n', 'git', '-s', sig, ...r, ...when], signed.payload);
       if (v.code === 0) return true;
     }
     return false;

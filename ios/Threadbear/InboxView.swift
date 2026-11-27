@@ -271,7 +271,8 @@ struct InboxView: View {
                 .onChange(of: model.loaded.contains(.inbox), initial: true) { _, loaded in
                     guard loaded, let id = model.scrollToThreadId else { return }
                     model.scrollToThreadId = nil
-                    let under: PhoneSection = model.sections.running.contains { $0.threadId == id } ? .running
+                    let under: PhoneSection = model.sections.coordinators.contains { $0.threadId == id } ? .coordinators
+                        : model.sections.running.contains { $0.threadId == id } ? .running
                         : model.sections.starred.contains { $0.threadId == id } ? .starred : .inbox
                     Task {
                         try? await Task.sleep(for: .milliseconds(300))
@@ -342,8 +343,8 @@ struct InboxView: View {
         } else if count != 0 || section == .backlog {
             Section {
                 if !model.folds.isFolded(section) {
-                    if section == .starred || section == .running {
-                        rows(model.threads(section), running: section == .running, starred: section == .starred)
+                    if section == .coordinators || section == .starred || section == .running {
+                        rows(model.threads(section), running: section == .running, starred: section == .starred, coordinator: section == .coordinators)
                     } else if section == .hibernating {
                         // The scheduled ones are in the inbox list already;
                         // the snoozed ones load once it's opened.
@@ -370,6 +371,9 @@ struct InboxView: View {
             ContentUnavailableView.search(text: query.trimmingCharacters(in: .whitespaces))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
+        }
+        if !search.coordinators.isEmpty {
+            Section { rows(search.coordinators, coordinator: true) } header: { SectionHeading(title: "Coordinators", icon: "folder") }
         }
         if !search.backlog.isEmpty {
             Section { rows(search.backlog) } header: { SectionHeading(title: "Backlog", icon: "tray.full") }
@@ -437,19 +441,19 @@ struct InboxView: View {
     /// and another coming, not the same row moved: a List moving one between
     /// sections redrew its old look sliding about inside the new row. The
     /// picture flying over the list (RowFlight.swift) is what travels.
-    private func rows(_ threads: [PhoneThread], running: Bool = false, starred: Bool = false) -> some View {
-        let under: PhoneSection = running ? .running : starred ? .starred : .inbox
+    private func rows(_ threads: [PhoneThread], running: Bool = false, starred: Bool = false, coordinator: Bool = false) -> some View {
+        let under: PhoneSection = coordinator ? .coordinators : running ? .running : starred ? .starred : .inbox
         return ForEach(threads.map { (key: RowFrames.row($0.threadId, under: under), thread: $0) }, id: \.key) {
-            row($0.thread, running: running, starred: starred)
+            row($0.thread, running: running, starred: starred, coordinator: coordinator)
         }
     }
 
-    @ViewBuilder private func row(_ thread: PhoneThread, running: Bool = false, scheduled: Bool = false, starred: Bool = false) -> some View {
-        // Only under Starred can a row be asleep: elsewhere it's in Hibernating.
-        let asleep = starred && InboxSections.isSnoozed(thread, now: model.now)
+    @ViewBuilder private func row(_ thread: PhoneThread, running: Bool = false, scheduled: Bool = false, starred: Bool = false, coordinator: Bool = false) -> some View {
+        // Pinned coordinator and starred rows can stay here while asleep.
+        let asleep = (starred || coordinator) && InboxSections.isSnoozed(thread, now: model.now)
         // A plain row, not a NavigationLink: the Mac's rows have no
         // chevron, and the status sits where it would go.
-        let under: PhoneSection = running ? .running : scheduled ? .hibernating : starred ? .starred : .inbox
+        let under: PhoneSection = coordinator ? .coordinators : running ? .running : scheduled ? .hibernating : starred ? .starred : .inbox
         Button { path.append(thread.threadId) } label: {
             ThreadRow(thread: thread, underRunning: running, wake: scheduled ? model.wakes[thread.threadId] : nil, asleep: asleep)
                 .reportsFrame(RowFrames.row(thread.threadId, under: under), to: model.rowFrames)

@@ -17,6 +17,7 @@ import { noAppToAllow } from '../app-seen.ts';
 import { REMOTE_ALLOW_REFUSED, remoteCardShowsAll } from '../tools.ts';
 import { reviewCard, reviewerLeftIt, reviewsCards, type CardForReview, type CardVerdict } from './card-review.ts';
 import { cliHears } from '../cli-session.ts';
+import { HELPER_REPORT } from '../coordinator-policy.ts';
 
 export type SecretRequest = { label: string; reason: string; placeholder?: string; timeoutMinutes?: number; toolUseId?: string; signal?: AbortSignal };
 export type SecretAnswer = ({ status: 'saved' } & SecretFiles) | { status: 'declined' | 'expired'; message?: string };
@@ -157,6 +158,10 @@ export const approvalsPart = {
 
   requestApproval(this: Runner, st: ThreadState, gen: number, req: ToolApprovalRequest): Promise<ToolApprovalAnswer> {
     if (!this.turnForRequest(st, gen, Boolean(req.toolUseId))) return Promise.resolve({ decision: 'expired', message: 'The thread is shutting down.' });
+    if (st.rec.coordinatorHelperFor) {
+      this.coordinators?.recordHelperQuestion(st.rec.id, [{ question: `Approval needed: ${req.title}`, header: 'Approval', options: [], multiSelect: false }]);
+      return Promise.resolve({ decision: 'deny', message: HELPER_REPORT });
+    }
     // A plan is Mike's to approve, whatever the mode.
     // Codex's file change card names the files but not the change (that
     // comes as edit.diff), so the reviewer couldn't see what it allows.
@@ -252,7 +257,11 @@ export const approvalsPart = {
   requestAgentApproval(this: Runner, threadId: string, req: AgentApprovalRequest): Promise<ToolApprovalAnswer> {
     const st = this.mustGet(threadId);
     if (!this.turnForRequest(st, st.rt.generation)) return Promise.resolve({ decision: 'expired', message: 'The thread is not running a turn.' });
-    if (reviewsCards(this, st)) return this.reviewThenCard(st, st.rt.generation, req, req.signal, () => this.agentApprovalCard(st, req));
+    if (st.rec.coordinatorHelperFor) {
+      this.coordinators?.recordHelperQuestion(st.rec.id, [{ question: `Approval needed: ${req.title}`, header: 'Approval', options: [], multiSelect: false }]);
+      return Promise.resolve({ decision: 'deny', message: HELPER_REPORT });
+    }
+    if (!req.noReview && reviewsCards(this, st)) return this.reviewThenCard(st, st.rt.generation, req, req.signal, () => this.agentApprovalCard(st, req));
     return this.agentApprovalCard(st, req);
   },
 
@@ -279,6 +288,10 @@ export const approvalsPart = {
 
   requestQuestion(this: Runner, st: ThreadState, gen: number, req: QuestionRequest): Promise<QuestionAnswer> {
     if (!this.turnForRequest(st, gen, Boolean(req.toolUseId))) return Promise.resolve({ answers: null, message: 'Threadbear closed this question before the user saw it: the thread is shutting down.' });
+    if (st.rec.coordinatorHelperFor) {
+      this.coordinators?.recordHelperQuestion(st.rec.id, req.questions);
+      return Promise.resolve({ answers: null, message: HELPER_REPORT });
+    }
     const approvalId = crypto.randomUUID();
     const body: EventBody = { type: 'question.requested', approvalId, questions: req.questions };
     if (req.toolUseId) body.itemId = req.toolUseId;
@@ -293,6 +306,7 @@ export const approvalsPart = {
   requestSecret(this: Runner, threadId: string, req: SecretRequest): Promise<SecretAnswer> {
     const st = this.mustGet(threadId);
     if (!this.turnForRequest(st, st.rt.generation)) return Promise.resolve({ status: 'expired', message: 'The thread is not running a turn.' });
+    if (st.rec.coordinatorHelperFor) return Promise.resolve({ status: 'declined', message: HELPER_REPORT });
     const approvalId = crypto.randomUUID();
     const body: EventBody = { type: 'secret.requested', approvalId, label: req.label, reason: req.reason };
     if (req.placeholder) body.placeholder = req.placeholder;
@@ -314,6 +328,7 @@ export const approvalsPart = {
   requestCard(this: Runner, threadId: string, c: { approvalId: string; title: string; input: Record<string, unknown>; minutes: number; check: () => Promise<RequestAnswer> }): Promise<RequestAnswer> {
     const st = this.mustGet(threadId);
     if (!this.turnForRequest(st, st.rt.generation)) return Promise.resolve({ status: 'expired', message: 'The thread is not running a turn.' });
+    if (st.rec.coordinatorHelperFor) return Promise.resolve({ status: 'declined', message: HELPER_REPORT });
     const body: EventBody = { type: 'approval.requested', approvalId: c.approvalId, name: START_CARD, title: c.title, input: c.input, options: ['allow', 'deny'] };
     return new Promise((resolve) => {
       const timer = this.clock.setTimeout(() => this.expireApproval(st, c.approvalId, 'No answer in time.'), c.minutes * 60_000);

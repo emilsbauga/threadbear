@@ -18,7 +18,7 @@ import { docBytes, isThreadId, mayTouch, ownThreadOnly } from './runnerAccess';
 import { queued, request as requestMachine } from './machines';
 import { requestStateFrom } from './requestStates';
 import { steppingFor } from './stepping';
-import { messageButton } from './schema';
+import { messageButton, usagePool } from './schema';
 import { deleteIfUnused, MAX_COMMAND_FILES, MAX_RUNNER_UPLOAD_BYTES, storageInUse } from './sync';
 import { UPLOAD_CLAIM_MS, newClaim } from './uploads';
 
@@ -232,7 +232,19 @@ type Kind = (typeof KINDS)[number];
 // for one of that runner's logins: its answer is a state and the claude.ai
 // page, never a token, and its code (useless without the verifier only
 // that runner's setup-token holds) goes with the args once it's finished.
-export const CALLS = new Set(['files.list', 'moves.describe', 'moves.preview', 'accounts.yearToken']);
+// accounts.useReset (API 104) is the Mac's Use a reset for a login only that
+// runner has: its answer is an outcome and the login, and it spends a reset
+// only on Mike's click (the runner checks it came from the Mac).
+// logins.sealKey and logins.share (API 105) are the Runners panel's Use
+// this Mac's Claude logins (docs/protocol/settings.md, "This Mac's logins
+// on another runner"): that runner's public sealing key, then each login
+// sealed to it. Only ciphertext is held, and only until it's finished.
+export const CALLS = new Set(['files.list', 'moves.describe', 'moves.preview', 'accounts.yearToken', 'accounts.useReset', 'logins.sealKey', 'logins.share']);
+// A logins.share's shape: an email and a sealed box (base64) each.
+const SHARED_LOGINS_MAX = 20;
+const SHARED_BOX_MAX = 2800;
+const SHARED_EMAIL = /^[^\s@]{1,100}@[^\s@]{1,100}$/;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 // A moves.preview's thread description: only these fields, each a short
 // string (or worktree and schedules), so nothing else sits in the row.
 const MOVE_INFO_STRINGS = ['title', 'cwd', 'home', 'provider', 'accountId', 'email', 'model', 'effort', 'permissionMode', 'origin', 'repoTop', 'subdir', 'sessionId'];
@@ -340,6 +352,22 @@ export function commandArgs(kind: Kind, raw: unknown): Record<string, unknown> {
         out = { method: a.method, params: { info: moveInfoArg(p.info), ...(typeof p.cwd === 'string' ? { cwd: p.cwd } : {}), ...(typeof p.accountId === 'string' ? { accountId: p.accountId } : {}) } };
       } else if (a.method === 'moves.describe') {
         out = { method: a.method, params: {} };
+      } else if (a.method === 'accounts.useReset') {
+        const p = (a.params && typeof a.params === 'object' ? a.params : {}) as Record<string, unknown>;
+        if (typeof p.accountId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(p.accountId)) throw bad('accounts.useReset needs a login');
+        out = { method: a.method, params: { accountId: p.accountId } };
+      } else if (a.method === 'logins.sealKey') {
+        out = { method: a.method, params: {} };
+      } else if (a.method === 'logins.share') {
+        const p = (a.params && typeof a.params === 'object' ? a.params : {}) as Record<string, unknown>;
+        if (!Array.isArray(p.logins) || p.logins.length > SHARED_LOGINS_MAX) throw bad(`logins.share takes a list of at most ${SHARED_LOGINS_MAX} logins`);
+        const logins = p.logins.map((l: unknown) => {
+          const o = (l && typeof l === 'object' ? l : {}) as Record<string, unknown>;
+          if (typeof o.email !== 'string' || !SHARED_EMAIL.test(o.email)) throw bad('each shared login needs its email');
+          if (typeof o.box !== 'string' || o.box.length > SHARED_BOX_MAX || !BASE64.test(o.box)) throw bad('each shared login goes sealed');
+          return { email: o.email, box: o.box };
+        });
+        out = { method: a.method, params: { logins } };
       } else if (a.method === 'accounts.yearToken') {
         const p = (a.params && typeof a.params === 'object' ? a.params : {}) as Record<string, unknown>;
         if (typeof p.accountId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(p.accountId)) throw bad('accounts.yearToken needs a login');
@@ -556,6 +584,17 @@ export const remoteAccounts = query({
       out.push(rest);
     }
     return out;
+  },
+});
+
+// The owning runner's effective pools, including local/default membership.
+export const remotePools = query({
+  args: { key: v.string(), runnerId: v.string() },
+  returns: v.union(v.null(), v.array(usagePool)),
+  handler: async (ctx, { key, runnerId }) => {
+    await runnerAuth(ctx, key, 'remotePools');
+    const runner = await ctx.db.query('runners').withIndex('by_runnerId', (q) => q.eq('runnerId', runnerId)).unique();
+    return runner?.usagePools ?? null;
   },
 });
 

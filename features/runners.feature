@@ -59,3 +59,25 @@ Feature: The Runners panel
     When I copy "abc123#MockState0123456789abcdef"
     And I press "Send the code you copied from the page to that runner" in the Runners panel
     Then the Runners panel shows "  Year-long token made." under "mac-mini"
+
+  # Another runner can use this Mac's Claude logins: the switch sends the ones
+  # with year-long tokens there, sealed to that runner's key, and keeps them
+  # up to date; off takes them back off. The click shows at once and takes no
+  # more clicks until this Mac's runner says how it went. The Swift app is
+  # frozen and never had it.
+  @runners.panel @swift-pending
+  Scenario: Using this Mac's Claude logins on another runner
+    Given the window is 1024 by 675 points
+    And the runner holds shared logins
+    When I open the Runners panel
+    And I open mac-mini's details in the Runners panel
+    Then the Runners panel shows "Use this Mac's Claude logins: off" under "mac-mini"
+    When I press "Send this Mac's Claude logins with year-long tokens to mac-mini" in the Runners panel
+    Then the Runners panel shows "Use this Mac's Claude logins: on (busy)" under "mac-mini"
+    And the Runners panel shows "  Sending this Mac's logins…" under "mac-mini"
+    When the runner lets the shared logins through
+    Then the Runners panel shows "Use this Mac's Claude logins: on" under "mac-mini"
+    And the Runners panel shows "  From this Mac: me@example.com" under "mac-mini"
+    And the Runners panel shows "  Signed in there already: alex@example.com" under "mac-mini"
+    When I press "Take this Mac's Claude logins off mac-mini" in the Runners panel
+    Then the Runners panel shows "Use this Mac's Claude logins: off" under "mac-mini"

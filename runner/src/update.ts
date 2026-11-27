@@ -156,6 +156,9 @@ export type UpdateDeps = {
   watch?: (checkout: string, onChange: () => void) => () => void;
   // What's wrong with this machine, if anything (machine-trouble.ts).
   machineTrouble?: () => string | undefined;
+  // Runs before each build (e.g. build-cache-cleanup.ts) to free disk if
+  // it is low. A failure is logged and does not stop the build.
+  beforeBuild?: () => Promise<unknown>;
   // The environment launchAgentBehind reads (process.env; tests replace it).
   env?: NodeJS.ProcessEnv;
   // The launcher app above launch.mjs (launcherAppAbove; tests replace it).
@@ -849,6 +852,8 @@ export class RunnerUpdater {
         : await (this.deps.landChecked ?? landChecked)(release.checkout, release.prefix, main.commit).catch(() => undefined);
       if (this.stopped) return decision;
       log.info('building a release of main', { commit: main.short, subject: main.subject, ...(passed ? { checksLeftOut: passed } : {}) });
+      await Promise.resolve().then(() => this.deps.beforeBuild?.()).catch((e: unknown) => log.warn('could not free disk before the build', { error: String(e) }));
+      if (this.stopped) return decision;
       let result = await (this.deps.deploy ?? runDeploy)(path.join(dir, release.prefix), home, updateLogPath(home), release.checkout, { skipChecks: Boolean(passed) });
       if (this.stopped) return decision;
       // Counted per build tree, as failedAlready keys a failure, so a commit

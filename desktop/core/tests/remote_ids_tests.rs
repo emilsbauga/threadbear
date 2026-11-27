@@ -135,3 +135,13 @@ fn testTheDebugLinesIdRunsAsOneArgumentNotShellSource() {
         );
     }
 }
+
+#[test]
+fn remote_pool_identity_reaches_the_usage_icon() {
+    let mut row = remote_row("demo_upload");
+    row["poolId"] = json!("work");
+    let list = decode_remote_threads(&json!({ "threads": [row] }));
+    assert_eq!(list.threads[0].pool_id.as_deref(), Some("work"));
+    let old = decode_remote_threads(&json!({ "threads": [remote_row("demo_upload")] }));
+    assert_eq!(old.threads[0].pool_id, None);
+}

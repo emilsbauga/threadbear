@@ -32,3 +32,8 @@ Then('the runner was told I should have been shown {string}', async function (th
   const d = await this.app.dump();
   assert.equal(last?.threadId, this.thread(d, title)?.id);
 });
+
+// A grey line of the runner's, on show rather than folded into the work.
+Then('the transcript shows the line {string}', async function (this: ThreadbearWorld, words: string) {
+  await this.until(`the line "${words}"`, (d) => d.transcript.rows.some((r) => r.kind === 'note' && r.text.startsWith(words) && !r.inGroup));
+});

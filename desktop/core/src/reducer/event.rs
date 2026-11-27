@@ -414,7 +414,7 @@ pub struct ReviewDraft {
     /// window went in as its file path).
     pub images: Vec<ImageRef>,
     pub none: bool,
-    /// Mike's own marks on the pictures (the `reviewCanvas` experiment),
+    /// Mike's own marks on the pictures,
     /// each placed in `reply` by a `[Mark N]`.
     pub marks: Vec<UserMark>,
 }
@@ -485,8 +485,7 @@ pub struct ReviewShot {
     pub title: Option<String>,
     pub image: ImageRef,
     pub media: Option<ImageRef>,
-    /// The agent's notes and arrows on the picture (the `reviewCanvas`
-    /// experiment, docs/protocol/events.md "Marks: the canvas").
+    /// The agent's notes and arrows on the picture (docs/protocol/events.md "Marks: the canvas").
     pub marks: Vec<AgentMark>,
 }
 
@@ -1637,6 +1636,10 @@ pub struct TurnCompletion {
     pub asks: Vec<Ask>,
     /// With needs "nothing": follow-ups the agent suggested.
     pub next: Vec<String>,
+    /// "one" when follow-ups are mutually exclusive directions; None means multi-pick.
+    pub next_pick: Option<String>,
+    /// Recommended follow-up index into `next` when `next_pick` is "one".
+    pub next_suggested: Option<usize>,
     /// On the turn that answered another lab's findings: the ledger
     /// (`review`, docs/protocol/needs-you.md "Review by another lab").
     pub review: Option<LabReview>,
@@ -1656,6 +1659,14 @@ impl TurnCompletion {
                     .unwrap_or_else(|| compact_text(other)),
             ),
         };
+        let next = lossy_strings(c, "next");
+        let next_pick = string(c, "nextPick").filter(|p| p == "one" && next.len() > 1);
+        let next_suggested = next_pick.as_ref().and_then(|_| {
+            c.get("nextSuggested")
+                .and_then(int_value)
+                .filter(|i| (0..next.len() as i64).contains(i))
+                .map(|i| i as usize)
+        });
         TurnCompletion {
             turn_id: string(c, "turnId").unwrap_or_default(),
             outcome: c
@@ -1670,7 +1681,9 @@ impl TurnCompletion {
             error_kind: string(c, "errorKind").and_then(|k| TurnErrorKind::from_raw(&k)),
             needs: string(c, "needs"),
             asks: lossy(c, "asks", Ask::decode),
-            next: lossy_strings(c, "next"),
+            next,
+            next_pick,
+            next_suggested,
             review: c.get("review").and_then(LabReview::decode),
         }
     }
@@ -2109,6 +2122,7 @@ pub enum EventPayload {
     AsksTicked {
         asks_seq: i64,
         ticked: Vec<i64>,
+        resolved: Vec<i64>,
     },
     /// Mike edited the message at `from_seq`: every event from there to
     /// `to_seq` is gone from the conversation.
@@ -2365,7 +2379,16 @@ fn decode_payload(type_: &str, c: &Object) -> Result<EventPayload, ()> {
                     .ok_or(())?,
                 Some(_) => return Err(()),
             };
-            EventPayload::AsksTicked { asks_seq, ticked }
+            let resolved = c
+                .get("resolved")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(int_value).collect())
+                .unwrap_or_default();
+            EventPayload::AsksTicked {
+                asks_seq,
+                ticked,
+                resolved,
+            }
         }
         "assistant.text.delta" => {
             let f = TextFields::decode(c);

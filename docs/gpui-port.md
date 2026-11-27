@@ -244,7 +244,10 @@ still works, and with an `img` playing a GIF whether or not its window is the
 key one (upstream froze it on its first frame in a window behind another app's),
 woken at the GIF's own pace rather than drawn at every display frame
 (`desktop/gpui/tests/gif_frames.rs`). Its pictures are decoded within `image_budget`'s limits (`src/image_budget.rs`, Daybreak 170): `Image::to_image_data` and the `img` path loader decode through it, and its SVGs are drawn at up to 4 million pixels with their `<image>`s left out, never gzipped, and only when their layers nest at most 8 deep, so a picture drawn any way is held to what the app's own budget (`desktop/gpui/src/fit_picture.rs`) allows one picture. GPUI exposes no input-mode setter for an
-app shim. The published
+app shim. `desktop/vendor/gpui-pre-windows` tells GPUI where the pointer
+went, then sends `MouseExited`, when it leaves a window: upstream only cleared
+the window's hovered flag, so hover buttons and tooltips stayed up after the
+pointer left onto the desktop. The published
 crates are separate commits from our changes; retain those patches on an
 update, or remove a patch once upstream includes it.
 
@@ -388,7 +391,9 @@ itself doesn't draw everything that way yet.
 ## Deleting the Swift app
 
 Not before 26 Nov 2026 (two weeks of daily use from 12 Nov), and only when
-Mike says go. Nothing outside `app/` and `dock/` uses them but what
+Mike says go. He said go on 25 Nov 2026, for **2 Dec 2026**: the last Swift
+build that moves people across (below) went out first, saying the app stops
+being updated that day, so forks get a week with it. Nothing outside `app/` and `dock/` uses them but what
 `runner/test/unit/swift-app-paths.test.ts` allows, so the deletion is one
 change.
 
@@ -397,14 +402,20 @@ change.
 - The Mac rows that don't pass yet in [PARITY.md](gpui-port/PARITY.md):
   `dock.titlebar`, `dock.frame`, `sidebar.hibernate.pick`,
   `terminal.panel`, `terminal.putcommand` and `composer.contextring`
-  (partly). Each passes, or Mike drops it.
+  (partly). Each passes, or Mike drops it. On 25 Nov he counted
+  `dock.titlebar`, `dock.frame` and `sidebar.hibernate.pick` as checked by
+  his daily use (their specs are `@manual`, so no run fills them in). The
+  terminal two and the context ring passed on the GPUI Mac app the same day
+  (all 20 scenarios, on Tinker Desk); the table still says otherwise until
+  the next full run.
 - People on forks are moved across. Today the Swift app offers it
   (`app/Sources/Threadbear/NewApp.swift`: a window once and a sidebar card,
   whose button starts a thread in the checkout that runs
   `desktop/scripts/switch-from-swift.sh`), and a fork only sees that after
   bringing in a release with it and its Swift app rebuilding itself. A
-  last Swift build that moves people needs: the offer made unmissable (no
-  Not now; the date the Swift app stops, `NewAppCopy.retirementDate`), the
+  last Swift build that moves people needs: the offer made unmissable (done
+  25 Nov: the window at every launch with Close rather than Not now, no Later
+  on the card, and `NewAppCopy.retirementDate` 2 December), the
   release that deletes `app/` held back until forks have had that one, and
   `swift_import.rs` still bringing their settings over. A fork that brings
   in the deletion while still on the Swift app keeps its installed app,

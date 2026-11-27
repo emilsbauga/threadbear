@@ -173,12 +173,22 @@ export class GpuiDriver implements Driver {
     } else {
       this.appProcess = this.child(binary, [], env);
     }
-    try {
-      await waitForFile(file, 'The app', 30_000);
-    } catch (e) {
-      throw new Error(`${(e as Error).message}. It said:\n${this.log.slice(-4000)}`);
+    // The file can be there before its text is (created, then written): a
+    // loaded machine read it empty once (bruce, 26 Nov), so wait for whole JSON.
+    let port = 0;
+    let token = '';
+    const until = Date.now() + 30_000;
+    for (;;) {
+      try {
+        await waitForFile(file, 'The app', Math.max(0, until - Date.now()));
+        ({ port, token } = JSON.parse(fs.readFileSync(file, 'utf8')) as { port: number; token: string });
+        break;
+      } catch (e) {
+        if (!(e instanceof SyntaxError)) throw new Error(`${(e as Error).message}. It said:\n${this.log.slice(-4000)}`);
+        if (Date.now() > until) throw new Error(`The app's automation file never held whole JSON. It said:\n${this.log.slice(-4000)}`);
+        await sleep(50);
+      }
     }
-    const { port, token } = JSON.parse(fs.readFileSync(file, 'utf8')) as { port: number; token: string };
     this.token = token;
     this.socket?.destroy();
     this.waiting = [];

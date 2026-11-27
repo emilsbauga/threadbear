@@ -242,8 +242,9 @@ rest, and `tb <command> --help` explains one.
   tree's runner in the foreground on a temp data dir (refuses the real
   one) and prints the `<home>/tb` for `tb` and the `dev-app.sh start
   --home` line for the app. A new data dir's `runner.json` defaults threads
-  to `<home>/work`, the first Claude login that isn't hidden, noted or
-  plan-ended, else claude-main (`runner/src/test-login.ts`; `TB_E2E_ACCOUNT`
+  to `<home>/work`, the first Claude login that isn't hidden, noted,
+  plan-ended or lately refused (the real runner's `sign-in-refusals.json`),
+  else claude-main (`runner/src/test-login.ts`; `TB_E2E_ACCOUNT`
   picks one), and claude-haiku-5-5 (`defaults.model`, which
   the runner applies to a `threads.create` with no model), from `tb` or a
   debug app's composer alike. Run it in the background and use the
@@ -255,7 +256,10 @@ rest, and `tb <command> --help` explains one.
 - Leave `--home` out, or keep it and any extra work folders under `$TMPDIR`:
   Agent Archive skips transcripts from there, but not from `/tmp`, so a
   try-out thread in `/tmp` ends up in Mike's archive.
-- Stop it with the `kill <pid>` it prints, never `pkill`, and before you
+- Stop it with the `kill <pid>` it prints, never `pkill`, and wait for
+  `The dev runner stopped.` before starting another on that data dir.
+  `kill` returns as soon as it sends the signal; the wrapper waits for its
+  child runner and CLIs to finish cleanup. Stop it before you
   deploy or end your turn: the live runner's restart waits for it. Its temp
   data dir goes with it (`--keep` keeps it).
 - Trying something on real-sized data (a sidebar with hundreds of

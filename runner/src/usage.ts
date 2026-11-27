@@ -11,6 +11,7 @@ import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
 import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 import { realPathSync } from './platform.ts';
+import { resetHint, resetHintTimes } from './reset-hint.ts';
 import type { UsageHistory } from './usage-history.ts';
 
 // blockedUntil (ms) says when a block ends when no window does: the runner
@@ -178,6 +179,9 @@ export class UsageStore {
   private live = new Map<string, LiveAccount>();
   private known = new Map<string, KnownAccount>();
   private sent = new Map<string, AccountUsage | undefined>(); // last reported, per account
+  // The reset hint last reported, per account (reset-hint.ts): it can change
+  // with the clock alone, when a reset nears its expiry.
+  private sentHint = new Map<string, string>();
   // The newest reading the main Mac's key wrote of each login, by provider:email.
   private shared = new Map<string, { at: number; usage: AccountUsage }>();
   private listeners = new Set<(ids: string[]) => void>();
@@ -266,7 +270,8 @@ export class UsageStore {
     }
     if (reading.email) next.email = reading.email;
     if (reading.plan) next.plan = reading.plan;
-    if (reading.resets) next.resets = reading.resets;
+    // When it was read, so the newest read of them wins on every runner.
+    if (reading.resets) next.resets = { ...reading.resets, readAt: reading.resets.readAt ?? new Date(now).toISOString() };
     this.live.set(accountId, next);
     this.persist();
     this.changed(false, [accountId]);
@@ -299,6 +304,12 @@ export class UsageStore {
     const plan = base?.plan ?? live?.plan;
     if (plan) out.plan = plan;
     return out;
+  }
+
+  // The store's clock, so the hint the registry works out from a reading
+  // (reset-hint.ts) is on the same time as the reading.
+  now(): number {
+    return this.clock.now();
   }
 
   usageFor(account: KnownAccount): AccountUsage | undefined {
@@ -367,9 +378,12 @@ export class UsageStore {
     if (base && this.baseline && now - this.baseline.generatedAt > STALE_MS && !(live && now - live.at <= STALE_MS) && !(shared && now - shared.at <= STALE_MS)) usage.stale = true;
     if (blocked) usage.blocked = true;
     if (base?.notice) usage.notice = base.notice;
-    // A reset that has expired since the read can't be counted on: the
-    // count is left out until the next read rather than offered wrongly.
-    const resets = live?.resets;
+    // The newest read of the login's resets, this runner's or another's
+    // (one subscription wherever it's signed in), so a reset used on one
+    // machine counts on all of them. A reset that has expired since the
+    // read can't be counted on: the count is left out until the next read
+    // rather than offered wrongly.
+    const resets = newestResets(live?.resets && { resets: live.resets, at: live.at }, shared?.usage.resets && { resets: shared.usage.resets, at: shared.at });
     if (resets && !(resets.nextExpiresAt && Date.parse(resets.nextExpiresAt) <= now)) usage.resets = resets;
     return usage;
   }
@@ -435,6 +449,7 @@ export class UsageStore {
       const live = this.live.get(a.id);
       if (live?.blockedUntil) times.push(live.blockedUntil);
       if (live) times.push(live.at + STALE_MS + 1);
+      times.push(...resetHintTimes(u));
     }
     if (this.baseline) times.push(this.baseline.generatedAt + STALE_MS + 1);
     const next = Math.min(...times.filter((t) => t > now));
@@ -460,7 +475,10 @@ export class UsageStore {
       const now = this.compute(a);
       this.history?.observe(a.id, now);
       const was = this.sent.get(a.id);
-      if (!sameUsage(was, now, exact)) {
+      const hint = JSON.stringify(resetHint({ usage: now }, this.clock.now()) ?? null);
+      const hintWas = this.sentHint.get(a.id);
+      this.sentHint.set(a.id, hint);
+      if (!sameUsage(was, now, exact) || (hintWas !== undefined && hintWas !== hint)) {
         this.sent.set(a.id, now);
         ids.push(a.id);
       }
@@ -496,6 +514,19 @@ export class UsageStore {
       this.log.warn('usage: could not write usage.json', { error: String(err) });
     }
   }
+}
+
+// The newer of two reads of a login's resets: by its readAt, else by when
+// the reading carrying it was taken.
+function newestResets(...reads: ({ resets: UsageResets; at: number } | undefined)[]): UsageResets | undefined {
+  let best: { resets: UsageResets; at: number } | undefined;
+  for (const r of reads) {
+    if (!r || typeof r.resets?.available !== 'number') continue;
+    const read = Date.parse(r.resets.readAt ?? '');
+    const at = Number.isFinite(read) ? read : r.at;
+    if (!best || at > best.at) best = { resets: r.resets, at };
+  }
+  return best?.resets;
 }
 
 // A window whose reset has passed is full again until the next reading.

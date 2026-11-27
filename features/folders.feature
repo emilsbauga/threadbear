@@ -24,7 +24,7 @@ Feature: A folder in the side pane
   Scenario: Expanding a folder lists its rows under it
     Given the thread's folder is showing in the pane for "Rebuild the three landing pages"
     When I expand the folder row "logs"
-    Then the folder shows 6 rows in all
+    Then the folder shows 7 rows in all
 
   @folder.list
   Scenario: A double-click goes into a folder, and Back comes back

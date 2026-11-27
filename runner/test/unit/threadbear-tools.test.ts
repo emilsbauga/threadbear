@@ -1829,7 +1829,7 @@ test("end_turn lists only today's form, whichever forms it takes", async () => {
   const h = makeHarness();
   const { thread } = start(h);
   const one = await mcpClient(h, thread.id, true).endTurnShown();
-  assert.deepEqual(Object.keys(one.inputSchema.properties).sort(), ['archive', 'askWhen', 'asks', 'byline', 'findings', 'headline', 'needs', 'next', 'snooze', 'waitFor']);
+  assert.deepEqual(Object.keys(one.inputSchema.properties).sort(), ['archive', 'askWhen', 'asks', 'byline', 'findings', 'headline', 'needs', 'next', 'nextPick', 'nextSuggested', 'snooze', 'waitFor']);
   assert.ok(!one.inputSchema.required?.length, 'every field is optional');
   const ask = (one.inputSchema.properties.asks as { items: { required: string[]; properties: Record<string, { description?: string; items?: { type?: string } }> } }).items;
   assert.deepEqual(ask.required, ['question']);
@@ -1849,7 +1849,7 @@ test("An end_turn that fits neither form hears today's shape and order in words"
   const one = await mcpClient(h, thread.id, true).endTurn(garbled);
   assert.equal(one.error, true);
   assert.match(one.text, /asks\[0\]\.options\[0\]/);
-  assert.match(one.text, /\{ headline\?, needs\?, asks\?: \{ question, options\?: \{ label, does\? \}\[\], suggested\?, links\? \}\[\], next\?, archive\?, snooze\?, waitFor\? \}/);
+  assert.match(one.text, /\{ headline\?, needs\?, asks\?: \{ question, options\?: \{ label, does\? \}\[\], suggested\?, links\? \}\[\], next\?, nextPick\?, nextSuggested\?, archive\?, snooze\?, waitFor\? \}/);
   assert.match(one.text, /then write your reply after it/);
   assert.doesNotMatch(one.text, /MCP error/);
   const old = await mcpClient(h, thread.id, false).endTurn({ needs: 'maybe' });
@@ -2599,3 +2599,36 @@ test('send_message to the thread on another Mac that started this one says to pu
   assert.match((await call('send_message', { threadId: '0288', text: 'x' })).text, /No thread with id 0288/);
   assert.match((await call('send_message', { threadId: '0000dead-0000-0000-0000-000000000000', text: 'x' })).text, /No thread with id 0000dead/);
 });
+
+// Antigravity/Neon sent empty tool.result text on failed end_turn calls, so
+// event-only nudge checks couldn't tell the nudge had already been given and
+// refused forever. The in-memory per-turn guard must still stop after one
+// nudge, and reset when a new turn starts.
+test('end_turn nudges at most once per turn even when tool.result text is empty, then resets next turn', async () => {
+  const h = makeHarness();
+  const { thread, s } = start(h);
+  const mcp = mcpClient(h, thread.id, true);
+  const input = { headline: 'Needs a pick', asks: [{ question: 'Which option?', options: [{ label: 'Option A', does: 'Do A' }, { label: 'Option B', does: 'Do B' }] }] };
+
+  toolCall(s, 'e1', END_TURN, input);
+  const first = await mcp.endTurn(input);
+  assert.equal(first.error, true, 'first call triggers the plainCard nudge');
+  assert.match(first.text, /read this card as the user will/);
+  // Simulate an ACP adapter emitting an empty tool.result text for the refusal.
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e1', ok: false, text: '', truncated: false, images: [] } });
+
+  toolCall(s, 'e2', END_TURN, input);
+  const second = await mcp.endTurn(input);
+  assert.equal(second.error, false, `second call must be accepted instead of looping: ${second.text}`);
+  s.out({ kind: 'event', event: { type: 'tool.result', itemId: 'e2', ok: true, text: second.text, truncated: false, images: [] } });
+  s.text('m1', 'Over to you.');
+  s.result('completed');
+
+  // Next turn: the guard resets because turn.started has a new seq.
+  h.runner.send(thread.id, 'Try again');
+  toolCall(s, 'e3', END_TURN, input);
+  const third = await mcp.endTurn(input);
+  assert.equal(third.error, true, 'new turn nudges once again');
+  assert.match(third.text, /read this card as the user will/);
+});
+

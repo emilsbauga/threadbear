@@ -55,14 +55,28 @@ const ask = (method, params) =>
 
 const GROK = AGENT === 'Grok';
 const AGY = AGENT === 'Antigravity';
+const OPENCODE_EFFORTS = !GROK && !AGY && Boolean(env.FAKE_ACP_OPENCODE_EFFORTS);
 const sessions = new Map();
 let mode = AGENT === 'Antigravity' ? 'default' : 'build';
 let model = GROK ? 'grok-4.7' : AGENT === 'Antigravity' ? 'gemini-3.8-flash' : 'fake/one';
-let effort = 'high';
+let effort = OPENCODE_EFFORTS ? 'default' : 'high';
+const agyThinkingOptions = () =>
+  model === 'gemini-4-neon'
+    ? [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }, { value: 'xhigh', name: 'Extra' }]
+    : [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }];
+const opencodeEffortOption = () => {
+  if (!OPENCODE_EFFORTS || model === 'fake/two') return [];
+  const opts =
+    model === 'fake/one'
+      ? [{ value: 'minimal' }, { value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }, { value: 'max' }, { value: 'default' }]
+      : [{ value: 'low' }, { value: 'high' }, { value: 'default' }];
+  return [{ id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: effort, options: opts }];
+};
 const configOptions = () =>
   AGY
     ? [
         { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: model, options: [{ value: 'gemini-4-neon', name: 'Gemini 4 Neon' }, { value: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' }] },
+        { id: 'thinking_level', name: 'Thinking Level', category: 'thought_level', type: 'select', currentValue: effort, options: agyThinkingOptions() },
         { id: 'mode', name: 'Session Mode', category: 'mode', type: 'select', currentValue: mode, options: [{ value: 'default' }, { value: 'auto_edit' }, { value: 'yolo' }] },
       ]
     : GROK
@@ -72,9 +86,22 @@ const configOptions = () =>
       ]
     : [
         { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: model, options: [{ value: 'fake/one', name: 'Fake One' }, { value: 'fake/two', name: 'Fake Two' }] },
+        ...opencodeEffortOption(),
         { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: mode, options: [{ value: 'build', name: 'build' }, { value: 'plan', name: 'plan' }, { value: 'ask', name: 'ask' }, { value: 'agent', name: 'agent' }] },
       ];
 const levels = (ids) => ids.map((id) => ({ id, value: id, label: id, default: id === 'high' }));
+const agyModels = () => ({
+  currentModelId: `${model}-${effort}`,
+  availableModels: [
+    { modelId: 'gemini-4-neon-high', name: 'Gemini 4 Neon (High)' },
+    { modelId: 'gemini-4-neon-xhigh', name: 'Gemini 4 Neon (XHigh)' },
+    { modelId: 'gemini-4-neon-medium', name: 'Gemini 4 Neon (Medium)' },
+    { modelId: 'gemini-4-neon-low', name: 'Gemini 4 Neon (Low)' },
+    { modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
+    { modelId: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)' },
+    { modelId: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)' },
+  ],
+});
 const grokModels = () => ({
   currentModelId: model,
   availableModels: [
@@ -414,7 +441,7 @@ const handlers = {
     if (AGY) {
       const commands = [{ name: 'plan', description: 'Plan carefully' }, { name: 'logout', description: 'Log out' }, ...(env.FAKE_ACP_NO_USAGE_COMMAND ? [] : [{ name: 'usage', description: 'Show model token usage and quota limits.' }])];
       setImmediate(() => update(sessionId, { sessionUpdate: 'available_commands_update', availableCommands: commands }));
-      return { sessionId, configOptions: configOptions(), _meta: { antigravity: { tier: { name: 'Google AI Ultra', id: 'g1-ultra-lite-tier' } } } };
+      return { sessionId, configOptions: configOptions(), models: agyModels(), _meta: { antigravity: { tier: { name: 'Google AI Ultra', id: 'g1-ultra-lite-tier' } } } };
     }
     return { sessionId, configOptions: configOptions(), ...(GROK ? { models: grokModels() } : {}) };
   },
@@ -444,8 +471,11 @@ const handlers = {
   'session/set_config_option': (p) => {
     if (env.FAKE_ACP_NO_SET_MODE && p.configId === 'mode') throw new Error('no such mode');
     if (p.configId === 'mode' && !env.FAKE_ACP_IGNORE_MODE) mode = p.value;
-    if (p.configId === 'model') model = p.value;
-    if (p.configId === 'reasoning_effort') effort = p.value;
+    if (p.configId === 'model') {
+      model = p.value;
+      if (AGY && model !== 'gemini-4-neon' && effort === 'xhigh') effort = 'high';
+    }
+    if (p.configId === 'reasoning_effort' || p.configId === 'thinking_level' || p.configId === 'effort') effort = p.value;
     log({ set: { [p.configId]: p.value } });
     return { configOptions: configOptions() };
   },

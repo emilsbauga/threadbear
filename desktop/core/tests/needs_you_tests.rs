@@ -483,6 +483,48 @@ fn testAsksTickedOnTheRunnerComeTicked() {
     assert_eq!(open.ticked, ticks(&[0]));
 }
 
+#[test]
+fn task_board_resolution_keeps_other_asks_open_and_dismisses_the_last() {
+    let mut model = from_events(vec![needs_you(
+        3,
+        "t1",
+        json!([{"action": "Pick a day", "options": ["Friday", "Monday"]},
+               {"action": "Pick a room", "options": ["Blue", "Red"]}]),
+    )]);
+    model.apply(vec![event_turn(
+        4,
+        "asks.ticked",
+        json!({"asksSeq": 3, "ticked": [0], "resolved": [0]}),
+        None,
+    )]);
+    let Some(RowContent::Asks(open)) = model.open_card().map(|row| &row.content) else {
+        panic!("the other decision stays open");
+    };
+    assert!(!open.can_answer(0));
+    assert!(open.can_answer(1));
+    let picks = [(0, 1), (1, 0)].into_iter().collect();
+    assert_eq!(open.active_picks(&picks), [(1, 0)].into_iter().collect());
+
+    model.apply(vec![event_turn(
+        5,
+        "asks.ticked",
+        json!({"asksSeq": 3, "ticked": [1]}),
+        None,
+    )]);
+    let Some(RowContent::Asks(open)) = model.open_card().map(|row| &row.content) else {
+        panic!("a checklist tick must not retire a decision");
+    };
+    assert!(!open.can_answer(0));
+    assert!(open.can_answer(1));
+    model.apply(vec![event_turn(
+        6,
+        "asks.ticked",
+        json!({"asksSeq": 3, "ticked": [0, 1], "resolved": [0, 1]}),
+        None,
+    )]);
+    assert!(model.open_card().is_none());
+}
+
 /// Sent is answered: the card doesn't wait for the runner to show the
 /// message, which can sit queued for a while. A failed send brings it back.
 #[test]
@@ -653,6 +695,87 @@ fn a_reviewed_turns_ledger_is_a_row_over_the_reply() {
     );
 }
 
+/// The runner's message bringing a review back is a checklist of its
+/// findings (review_note.rs), and once the agent has answered them the
+/// note takes the ledger, so it shows what was done about each and the
+/// ledger's own row, saying it all again, goes (Mike, 25 Nov 2026).
+#[test]
+fn a_review_note_takes_the_ledger_of_the_turn_that_answered_it() {
+    let note = "Codex reviewed the change you just made (thread 3f88a92e). Its findings, numbered:\n\n#1 [medium] disk_watch.sh:33: Empty timestamps stop snapshots. Case: A full disk.\n#2 [high] Scan misses logs.\n\nIts reply, with the detail:\n\nDetail.\n\nCheck each finding against the code: fix what holds up.";
+    let review = json!({"reviewer": "Codex (codex-1)", "threadId": "3f88a92e-0000", "findings": [
+        {"id": 1, "round": 1, "severity": "medium", "claim": "Empty timestamps stop snapshots.", "outcome": "fixed"},
+        {"id": 2, "round": 1, "severity": "high", "claim": "Scan misses logs.", "outcome": "disputed", "note": "Swap is watched elsewhere."}
+    ]});
+    let mut answered =
+        json!({"turnId": "t2", "outcome": "completed", "durationMs": 1000, "needs": "nothing"});
+    answered["review"] = review.clone();
+    let events = |done: Option<&Value>| {
+        let mut events = vec![
+            event(
+                1,
+                "user.message",
+                json!({"text": "Fix the disk watch", "images": []}),
+            ),
+            text(2, "m1", "Done."),
+            needs_nothing(3, "t1", json!([])),
+            event_turn(4, "turn.started", json!({"turnId": "t2"}), Some("t2")),
+            event_turn(
+                5,
+                "user.message",
+                json!({"text": note, "images": [], "origin": "runner", "wakeReason": "Codex reviewed the change"}),
+                Some("t2"),
+            ),
+            event_turn(
+                6,
+                "assistant.text",
+                json!({"itemId": "m2", "text": "Fixed #1, #2 doesn't hold up."}),
+                Some("t2"),
+            ),
+        ];
+        if let Some(done) = done {
+            events.push(event_turn(7, "turn.completed", done.clone(), Some("t2")));
+        }
+        events
+    };
+    let note_of = |model: &TranscriptModel| {
+        model.rows().iter().find_map(|r| match &r.content {
+            RowContent::User(m) if m.review_note.is_some() => Some(m.clone()),
+            _ => None,
+        })
+    };
+
+    let running = from_events(events(None));
+    let message = note_of(&running).expect("the note reads as a review");
+    let parsed = message.review_note.as_deref().unwrap();
+    assert_eq!(parsed.findings.len(), 2);
+    assert_eq!(parsed.heading(), "Codex · 2 findings");
+    assert!(message.review_ledger.is_none(), "nothing answered yet");
+
+    let done = from_events(events(Some(&answered)));
+    let message = note_of(&done).expect("still a review note");
+    let ledger = message
+        .review_ledger
+        .as_deref()
+        .expect("the ledger came to the note");
+    assert_eq!(ledger.findings[1].outcome.as_deref(), Some("disputed"));
+    assert!(
+        done.row("lr:t2").is_none(),
+        "the note shows every finding, so no second row: {:?}",
+        ids(&done)
+    );
+
+    // A ledger with a finding the note doesn't have (an earlier round's,
+    // paged out of view) keeps its own row.
+    let mut more = review;
+    more["findings"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": 9, "claim": "Older.", "outcome": "fixed"}));
+    answered["review"] = more;
+    let partial = from_events(events(Some(&answered)));
+    assert!(partial.row("lr:t2").is_some(), "{:?}", ids(&partial));
+}
+
 #[test]
 fn a_panels_ledger_names_everyone_and_who_found_each_finding() {
     let review = LabReview::decode(&json!({
@@ -780,4 +903,60 @@ fn a_review_row_folds_its_answered_findings_away() {
         ["Finding 1", "Finding 2"]
     );
     assert!(!panel(vec![]).folds());
+}
+
+#[test]
+fn testDoneCardPickOneFollowUpsAndRecommendation() {
+    let pick_one_event = event_turn(
+        2,
+        "turn.completed",
+        json!({
+            "turnId": "t1",
+            "outcome": "completed",
+            "durationMs": 1000,
+            "needs": "nothing",
+            "next": ["Try option A", "Try option B"],
+            "nextPick": "one",
+            "nextSuggested": 1
+        }),
+        Some("t1"),
+    );
+    let model = from_events(vec![
+        event_turn(1, "turn.started", json!({"turnId": "t1"}), Some("t1")),
+        pick_one_event,
+    ]);
+    let c = card(&model, "ak:2").expect("done card");
+    assert!(c.is_done());
+    assert!(c.next_pick_one());
+    assert_eq!(c.next_pick.as_deref(), Some("one"));
+    assert_eq!(c.next_suggested, Some(1));
+    assert_eq!(
+        RowDebug::text(model.row("ak:2").unwrap()),
+        "open, nothing needed, next (pick one): Try option A; Try option B *"
+    );
+
+    // A single item does not enter pick-one mode even if nextPick is "one".
+    let single = from_events(vec![
+        event_turn(1, "turn.started", json!({"turnId": "t1"}), Some("t1")),
+        event_turn(
+            2,
+            "turn.completed",
+            json!({
+                "turnId": "t1",
+                "outcome": "completed",
+                "durationMs": 1000,
+                "needs": "nothing",
+                "next": ["Only one"],
+                "nextPick": "one",
+                "nextSuggested": 0
+            }),
+            Some("t1"),
+        ),
+    ]);
+    let c_single = card(&single, "ak:2").expect("done card");
+    assert!(!c_single.next_pick_one());
+    assert_eq!(
+        RowDebug::text(single.row("ak:2").unwrap()),
+        "open, nothing needed, next: Only one"
+    );
 }

@@ -49,8 +49,10 @@ cleanup() {
 trap cleanup EXIT
 
 if [ -z "$home" ]; then
+  . "$here/../runner/scripts/find-node.sh"
+  NODE="$(threadbear_find_node)" || exit 1
   home="$tmp/home"
-  node "$here/../mock-runner/server.mjs" --data-dir "$home" --port 0 --quiet --ready-file "$tmp/ready" > "$tmp/mock.log" 2>&1 &
+  "$NODE" "$here/../mock-runner/server.mjs" --data-dir "$home" --port 0 --quiet --ready-file "$tmp/ready" > "$tmp/mock.log" 2>&1 &
   pids+=($!)
   for _ in $(seq 100); do [ -f "$tmp/ready" ] && break; sleep 0.1; done
   [ -f "$tmp/ready" ] || { echo "the mock runner didn't start:" >&2; cat "$tmp/mock.log" >&2; exit 1; }

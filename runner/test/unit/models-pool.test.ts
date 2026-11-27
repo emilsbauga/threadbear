@@ -17,10 +17,11 @@ import { askCli, cliArgs, readReply } from '../../src/models/claude-pool.ts';
 import type { CliRequest, CliResponse } from '../../src/models/claude-pool.ts';
 import { ledgerPath } from '../../src/models/ledger.ts';
 import { SettingsService, settingsMethods } from '../../src/settings.ts';
-import type { Account, Pool } from '../../src/protocol.ts';
+import type { Account, Pool, Provider } from '../../src/protocol.ts';
+import type { Asker } from '../../src/models/acp-oneshot.ts';
 import { skipOnWindows } from '../helpers/platform.ts';
 
-function acct(id: string, opts: { provider?: 'claude' | 'codex'; room?: number; blocked?: boolean } = {}): Account {
+function acct(id: string, opts: { provider?: Provider; room?: number; blocked?: boolean } = {}): Account {
   const a: Account = { id, provider: opts.provider ?? 'claude', title: id, configDir: `/tmp/no-such/${id}` };
   if (opts.room !== undefined || opts.blocked) {
     a.usage = {
@@ -35,7 +36,7 @@ function acct(id: string, opts: { provider?: 'claude' | 'codex'; room?: number; 
 
 type Reply = CliResponse | ((req: CliRequest) => CliResponse | Promise<CliResponse>);
 
-function setup(o: { accounts?: Account[]; pools?: Pool[]; pool?: string | null; replies?: Reply[] } = {}) {
+function setup(o: { accounts?: Account[]; pools?: Pool[]; pool?: string | null; providers?: Provider[] | null; replies?: Reply[]; askers?: Partial<Record<Provider, Asker>> } = {}) {
   const home = tmpDir();
   ensureHome(home);
   let accounts = o.accounts ?? [acct('claude-main', { room: 50 }), acct('claude-1', { room: 80 }), acct('claude-2', { room: 90 }), acct('codex-main', { provider: 'codex', room: 90 })];
@@ -44,7 +45,7 @@ function setup(o: { accounts?: Account[]; pools?: Pool[]; pool?: string | null; 
     { id: 'work', title: 'Work', accountIds: ['claude-2'] },
     { id: 'everything', title: 'Everything', accountIds: ['codex-main', 'claude-main'] },
   ];
-  const settings: ModelSettings = { privateFolders: [], pool: o.pool === undefined ? 'claude' : o.pool };
+  const settings: ModelSettings = { privateFolders: [], pool: o.pool === undefined ? 'claude' : o.pool, ...(o.providers !== undefined ? { providers: o.providers } : {}) };
   const cli: CliRequest[] = [];
   const ranDry: string[] = [];
   const replies = [...(o.replies ?? [])];
@@ -54,6 +55,7 @@ function setup(o: { accounts?: Account[]; pools?: Pool[]; pool?: string | null; 
     log: nullLogger,
     settings: () => settings,
     claudePath: '/fake/claude',
+    askers: o.askers,
     poolHost: {
       pool: (id) => {
         const pool = pools.find((p) => p.id === id);
@@ -142,10 +144,14 @@ test('pool: a login that fails some other way says so, and is not counted as run
   assert.equal(r2.ok ? 'sent' : r2.reason, 'timeout');
 });
 
-test('pool: null, a pool that is gone or one with no Claude login says no-pool, and unavailable() says so', async () => {
-  for (const pool of [null, 'nope', 'codex-only']) {
-    const s = setup({ pool, pools: [{ id: 'claude', title: 'Claude', accountIds: ['claude-main'] }, { id: 'codex-only', title: 'Codex', accountIds: ['codex-main'] }] });
-    assert.equal(s.models.unavailable(), 'Needs a Claude pool to run on', String(pool));
+test('pool: null, a pool that is gone or one with no small-job login says no-pool, and unavailable() says so', async () => {
+  for (const pool of [null, 'nope', 'cursor-only']) {
+    const s = setup({
+      pool,
+      accounts: [acct('claude-main', { room: 50 }), acct('cursor-main', { provider: 'cursor' })],
+      pools: [{ id: 'claude', title: 'Claude', accountIds: ['claude-main'] }, { id: 'cursor-only', title: 'Cursor', accountIds: ['cursor-main'] }],
+    });
+    assert.equal(s.models.unavailable(), 'Needs a pool to run on', String(pool));
     const r = await s.models.generate({ feature: 'titles', prompt: 'a' });
     assert.equal(r.ok ? 'sent' : r.reason, 'no-pool', String(pool));
     assert.equal(s.cli.length, 0);
@@ -160,6 +166,123 @@ test('pool: only the pool\'s Claude logins are used, never a noted login outside
   const work = setup({ pool: 'work' });
   await work.models.generate({ feature: 'titles', prompt: 'a' });
   assert.deepEqual(work.cli.map((c) => c.account.id), ['claude-2'], 'only when Alex picks that pool');
+});
+
+test('pool: when Claude logins in a mixed pool are out of room, small jobs spill over in pool order and return to Claude once it has room', async () => {
+  const grokSeen: string[] = [];
+  const ocSeen: string[] = [];
+  let grokReply: CliResponse = { ok: true, text: 'From Grok' };
+  const s = setup({
+    pool: 'main',
+    pools: [
+      { id: 'main', title: 'Main', accountIds: ['claude-1', 'claude-3', 'antigravity-main', 'grok-main', 'codex-main', 'opencode-main'] },
+      // Separate pool (e.g. Work): must never be touched even when Main is dry.
+      { id: 'work', title: 'Work', accountIds: ['claude-2'] },
+    ],
+    accounts: [
+      acct('claude-1', { blocked: true }),
+      acct('claude-3', { room: 0.4 }),
+      acct('antigravity-main', { provider: 'antigravity', room: 50 }),
+      acct('grok-main', { provider: 'grok', room: 100 }),
+      acct('codex-main', { provider: 'codex', room: 80 }),
+      acct('opencode-main', { provider: 'opencode' }),
+      acct('claude-2', { room: 90 }),
+    ],
+    askers: {
+      grok: async (req) => {
+        grokSeen.push(req.account.id);
+        return grokReply;
+      },
+      opencode: async (req) => {
+        ocSeen.push(req.account.id);
+        return { ok: true, text: 'From OpenCode' };
+      },
+      // Defense in depth: an asker for a smallJobs: false provider is never called.
+      antigravity: async () => {
+        throw new Error('antigravity must never take small jobs');
+      },
+    },
+  });
+
+  // 1. Both Claude logins are out of room -> spills to Grok (first small-job provider in Main after Claude).
+  const r1 = await s.models.generate({ feature: 'wake-when', prompt: 'after Christmas', strong: true });
+  assert.ok(r1.ok);
+  assert.equal(r1.value, 'From Grok');
+  assert.equal(r1.model, 'grok default on grok-main', 'non-Claude answer never claims OPUS');
+  assert.equal(s.cli.length, 0);
+  assert.deepEqual(grokSeen, ['grok-main']);
+  assert.deepEqual(ocSeen, []);
+  assert.equal(s.ledger().at(-1).model, 'grok default');
+
+  // 2. Grok hits its limit -> marked ranDry and spills on to OpenCode in Main.
+  grokReply = { ok: false, timedOut: false, limit: true, message: 'grok-main is out of Grok usage (402)' };
+  const r2 = await s.models.generate({ feature: 'titles', prompt: 'hello' });
+  assert.ok(r2.ok);
+  assert.equal(r2.value, 'From OpenCode');
+  assert.equal(r2.model, 'opencode default on opencode-main');
+  assert.deepEqual(s.ranDry, ['grok-main']);
+  assert.deepEqual(ocSeen, ['opencode-main']);
+  assert.equal(s.ledger().at(-1).model, 'opencode default');
+
+  // 3. Once a Claude login in Main has room again, small jobs return to Claude first.
+  s.setAccounts([
+    acct('claude-1', { room: 60 }),
+    acct('claude-3', { room: 0.4 }),
+    acct('grok-main', { provider: 'grok', room: 100 }),
+    acct('opencode-main', { provider: 'opencode' }),
+    acct('claude-2', { room: 90 }),
+  ]);
+  const r3 = await s.models.generate({ feature: 'titles', prompt: 'back on claude' });
+  assert.ok(r3.ok);
+  assert.equal(r3.model, 'claude-haiku-5-5 on claude-1');
+  assert.deepEqual(s.cli.map((c) => c.account.id), ['claude-1']);
+});
+
+test('pool: a non-limit error on one provider spills to the next small-job provider in the pool, never into another pool', async () => {
+  const ocSeen: string[] = [];
+  const s = setup({
+    pool: 'main',
+    pools: [
+      { id: 'main', title: 'Main', accountIds: ['claude-1', 'claude-3', 'grok-main', 'opencode-main'] },
+      { id: 'work', title: 'Work', accountIds: ['claude-2'] },
+    ],
+    accounts: [
+      acct('claude-1', { blocked: true }),
+      acct('claude-3', { blocked: true }),
+      acct('grok-main', { provider: 'grok', room: 100 }),
+      acct('opencode-main', { provider: 'opencode' }),
+      acct('claude-2', { room: 90 }),
+    ],
+    askers: {
+      grok: async () => ({ ok: false, timedOut: false, limit: false, message: 'Grok needs a sign-in: grok login.' }),
+      opencode: async (req) => {
+        ocSeen.push(req.account.id);
+        return { ok: true, text: 'Recovered on OpenCode' };
+      },
+    },
+  });
+
+  const r = await s.models.generate({ feature: 'titles', prompt: 'a' });
+  assert.ok(r.ok);
+  assert.equal(r.value, 'Recovered on OpenCode');
+  assert.equal(r.model, 'opencode default on opencode-main');
+  assert.deepEqual(s.ranDry, [], 'non-limit error does not mark login ranDry');
+  assert.deepEqual(ocSeen, ['opencode-main']);
+  assert.deepEqual(s.cli, [], 'work pool claude-2 was never touched');
+
+  // If every small-job login in Main is out of room, it fails with no-room rather than touching Work.
+  const dry = setup({
+    pool: 'main',
+    pools: [
+      { id: 'main', title: 'Main', accountIds: ['claude-1', 'codex-main'] },
+      { id: 'work', title: 'Work', accountIds: ['claude-2'] },
+    ],
+    accounts: [acct('claude-1', { blocked: true }), acct('codex-main', { provider: 'codex', room: 90 }), acct('claude-2', { room: 95 })],
+  });
+  const rDry = await dry.models.generate({ feature: 'titles', prompt: 'a' });
+  assert.equal(rDry.ok ? 'sent' : rDry.reason, 'no-room');
+  assert.match(rDry.ok ? '' : rDry.message, /Every login in Main is out of room/);
+  assert.deepEqual(dry.cli, []);
 });
 
 test('pool: classify and extract ask for structured output and read it', async () => {
@@ -206,21 +329,103 @@ test('pool: at most 2 CLIs at once', async () => {
   assert.equal(most, 2);
 });
 
-test('settings: models.pool is a pool id or null, saved to runner.json', () => {
+test('pool: Codex answers after Claude by default even when listed later in the pool, and custom models.providers controls the exact order and inclusion', async () => {
+  const seen: string[] = [];
+  let codexReply: CliResponse = { ok: true, text: 'From Codex' };
+  const s = setup({
+    pool: 'main',
+    pools: [{ id: 'main', title: 'Main', accountIds: ['claude-1', 'grok-main', 'codex-main', 'opencode-main'] }],
+    accounts: [
+      acct('claude-1', { blocked: true }),
+      acct('grok-main', { provider: 'grok', room: 100 }),
+      acct('codex-main', { provider: 'codex', room: 80 }),
+      acct('opencode-main', { provider: 'opencode' }),
+    ],
+    askers: {
+      codex: async (req) => {
+        seen.push(`codex:${req.account.id}`);
+        return codexReply;
+      },
+      grok: async (req) => {
+        seen.push(`grok:${req.account.id}`);
+        return { ok: true, text: 'From Grok' };
+      },
+      opencode: async (req) => {
+        seen.push(`opencode:${req.account.id}`);
+        return { ok: true, text: 'From OpenCode' };
+      },
+    },
+  });
+
+  // Default order: Claude -> Codex -> pool order (Grok, OpenCode).
+  const r1 = await s.models.generate({ feature: 'titles', prompt: 'hello' });
+  assert.ok(r1.ok);
+  assert.equal(r1.value, 'From Codex');
+  assert.equal(r1.model, 'codex default on codex-main');
+  assert.deepEqual(seen, ['codex:codex-main']);
+
+  // Custom order: Grok first, then Codex (omitting OpenCode and Claude).
+  s.settings.providers = ['grok', 'codex'];
+  s.setAccounts([
+    acct('claude-1', { room: 90 }),
+    acct('grok-main', { provider: 'grok', room: 100 }),
+    acct('codex-main', { provider: 'codex', room: 80 }),
+    acct('opencode-main', { provider: 'opencode' }),
+  ]);
+  const r2 = await s.models.generate({ feature: 'titles', prompt: 'custom first' });
+  assert.ok(r2.ok);
+  assert.equal(r2.value, 'From Grok');
+  assert.equal(s.cli.length, 0, 'Claude was omitted from custom models.providers');
+
+  // If both listed providers are dry, omitted providers (Claude, OpenCode) are not touched.
+  s.setAccounts([
+    acct('claude-1', { room: 90 }),
+    acct('grok-main', { provider: 'grok', blocked: true }),
+    acct('codex-main', { provider: 'codex', blocked: true }),
+    acct('opencode-main', { provider: 'opencode' }),
+  ]);
+  const r3 = await s.models.generate({ feature: 'titles', prompt: 'all listed dry' });
+  assert.equal(r3.ok ? 'sent' : r3.reason, 'no-room');
+  assert.equal(s.cli.length, 0);
+
+  // Explicit empty custom list reports no-pool.
+  s.settings.providers = [];
+  assert.equal(s.models.unavailable(), 'Needs a pool to run on');
+  const r4 = await s.models.generate({ feature: 'titles', prompt: 'empty' });
+  assert.equal(r4.ok ? 'sent' : r4.reason, 'no-pool');
+
+  // Resetting to null restores default order (Claude first when it has room).
+  s.settings.providers = null;
+  codexReply = { ok: true, text: 'Unused' };
+  const r5 = await s.models.generate({ feature: 'titles', prompt: 'reset' });
+  assert.ok(r5.ok);
+  assert.equal(r5.model, 'claude-haiku-5-5 on claude-1');
+});
+
+test('settings: models.pool is a pool id or null, and models.providers validates, deduplicates and resets', () => {
   const home = tmpDir();
   ensureHome(home);
   const cfg = testConfig(home);
   const svc = new SettingsService({ config: cfg, publish: () => {}, poolIds: () => ['claude', 'work'] });
   const m = settingsMethods(svc);
   assert.equal(svc.get().models.pool, 'claude');
+  assert.equal(svc.get().models.providers, null);
   assert.throws(() => m['settings.update']({ models: { pool: 'nope' } }), /No pool called nope. Pools: claude, work/);
   assert.throws(() => m['settings.update']({ models: { pool: 3 } }), /pool id or null/);
-  m['settings.update']({ models: { pool: 'work' } });
+  assert.throws(() => m['settings.update']({ models: { providers: 'codex' } }), /list of providers or null/);
+  assert.throws(() => m['settings.update']({ models: { providers: ['cursor'] } }), /models\.providers entries must be one of/);
+  assert.throws(() => m['settings.update']({ models: { providers: ['antigravity'] } }), /models\.providers entries must be one of/);
+  m['settings.update']({ models: { pool: 'work', providers: ['codex', 'claude', 'codex', 'grok'] } });
   assert.equal(cfg.models.pool, 'work');
+  assert.deepEqual(cfg.models.providers, ['codex', 'claude', 'grok']);
+  assert.deepEqual(svc.get().models.providers, ['codex', 'claude', 'grok']);
   assert.equal(readRunnerJson(home).models?.pool, 'work');
-  m['settings.update']({ models: { pool: null } });
+  assert.deepEqual(readRunnerJson(home).models?.providers, ['codex', 'claude', 'grok']);
+  m['settings.update']({ models: { pool: null, providers: null } });
   assert.equal(svc.get().models.pool, null);
+  assert.equal(svc.get().models.providers, null);
   assert.equal(readRunnerJson(home).models?.pool, null);
+  assert.equal(readRunnerJson(home).models?.providers, undefined);
 });
 
 test('cli: the arguments keep everything of Alex\'s setup out and never use --bare', () => {

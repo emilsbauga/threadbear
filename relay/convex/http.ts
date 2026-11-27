@@ -27,21 +27,13 @@ import { checkRegistration, convexSite, deploymentVouches } from './verify';
 import { FCM_TOKEN, androidSealedOk, fcmGone } from './fcmMessage';
 import { reasonKey } from './reasons';
 import { storedVersion } from './versions';
+import { cappedJson } from '../../convex/httpJson';
 
 const http = httpRouter();
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 
-async function body(req: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const text = await req.text();
-    if (text.length > 16_000) return null;
-    const v = text ? JSON.parse(text) : {};
-    return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
+const body = (req: Request) => cappedJson(req, 16_000);
 
 const str = (v: unknown, max: number) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
 
@@ -50,6 +42,7 @@ http.route({
   method: 'POST',
   handler: httpAction(async (ctx, req) => {
     const b = await body(req);
+    if (b === 'tooBig') return json({ error: 'request body too large' }, 413);
     if (!b) return json({ error: 'bad request' }, 400);
     // Anything but a plain version word is stored as "unknown" (versions.ts).
     const version = b.version === undefined ? undefined : storedVersion(b.version);
@@ -92,6 +85,7 @@ http.route({
     const auth = req.headers.get('authorization')?.match(/^Bearer (i_[0-9a-f]+)\.(k_[0-9a-f]+)$/);
     if (!auth) return json({ error: 'unauthorized' }, 401);
     const b = await body(req);
+    if (b === 'tooBig') return json({ error: 'request body too large' }, 413);
     // An Android phone (platform "android") has a Firebase token, not an Apple
     // one, and no sandbox or production.
     const android = b?.platform === 'android';
@@ -140,6 +134,7 @@ http.route({
     const auth = req.headers.get('authorization')?.match(/^Bearer (i_[0-9a-f]+)\.(k_[0-9a-f]+)$/);
     if (!auth) return json({ error: 'unauthorized' }, 401);
     const b = await body(req);
+    if (b === 'tooBig') return json({ error: 'request body too large' }, 413);
     const android = b?.platform === 'android';
     const deviceToken = str(b?.deviceToken, android ? 4096 : 200);
     const environment = b?.environment === 'production' ? 'production' : b?.environment === 'sandbox' ? 'sandbox' : undefined;

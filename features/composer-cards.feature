@@ -114,6 +114,18 @@ Feature: The open card in the composer
     Then the "Archived" section lists "Tidy the imports in the uploader"
     And the runner was told I archived "Tidy the imports in the uploader" as ""
 
+  # 26 Nov: an archived thread's done card still offered Archive.
+  @card.done @swift-pending
+  Scenario: An archived thread's done card offers Back to Inbox
+    When I open the thread "Tidy the imports in the uploader"
+    And I archive the open thread
+    And I click the Archived note
+    Then the open thread is "Tidy the imports in the uploader"
+    And the done card's button is "Unarchive this thread"
+    When I press "archive" on the card
+    Then the "Inbox" section lists "Tidy the imports in the uploader"
+    And the done card's button is "Archive this thread"
+
   @card.done @planned.exp.looseends
   Scenario: A done card lists what the runner found still open
     Given the runner found "4 commits it made in convex-native-v7 aren't pushed" still open on "Tidy the imports in the uploader"

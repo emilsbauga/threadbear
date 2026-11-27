@@ -351,7 +351,12 @@ fn sweep(
     let mut covered_any = false;
     let mut kit_covered = false;
     for kept in &panels.read(cx).pages {
-        let (stamp, b) = kept.drawn.get();
+        let (mut stamp, mut b) = kept.drawn.get();
+        if stamp != frame {
+            if let Some(at) = card_replayed(&kept.drawn, frame) {
+                (stamp, b) = (frame, at);
+            }
+        }
         // A menu opens down and to the right of where it was asked for, about
         // this wide: one reaching the page's column covers it.
         let menu_over = menu_at
@@ -650,13 +655,114 @@ pub(crate) fn live_page(
 }
 
 thread_local! {
-    /// The height the transcript last showed a running live page's card in.
-    static LIVE_ROOM: Cell<f32> = const { Cell::new(0.) };
+    /// The height, in points, each transcript last showed a running live
+    /// page's card in, by the transcript's list, and the transcript being
+    /// laid out now (`transcript_mark`). Each its own: two transcripts with a
+    /// card for one page (the thread and one in a panel beside it) would
+    /// otherwise overwrite one number with theirs each frame, each asking for
+    /// a fresh layout, every frame (Codex's and Gemini's review, 25 Nov).
+    static LIVE_ROOM: std::cell::RefCell<HashMap<EntityId, f32>> =
+        std::cell::RefCell::new(HashMap::new());
+    static TRANSCRIPT: Cell<Option<EntityId>> = const { Cell::new(None) };
+    /// The main panel's frames (shell.rs, a cached view), from `main_panel_mark`.
+    static MAIN: Cell<MainFrames> = const { Cell::new(MainFrames { laid_out: 0, drawn: 0, opaque: false, inside: false, ghost: false }) };
+    /// The running live page's card as the main panel's last layout painted
+    /// it: its page, that layout's frame, and where.
+    static CARD: std::cell::RefCell<Option<(Rc<Cell<(u64, Bounds<Pixels>)>>, u64, Bounds<Pixels>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Clone, Copy)]
+struct MainFrames {
+    /// The last frame it was laid out afresh, and the last it was drawn at
+    /// all (afresh or replayed from GPUI's cache), and whether fully opaque
+    /// then (a drag dims it).
+    laid_out: u64,
+    drawn: u64,
+    opaque: bool,
+    /// Between its start and end marks as it's laid out, and inside the
+    /// drag ghost's copy of it.
+    inside: bool,
+    ghost: bool,
+}
+
+/// Where `main_panel_mark` goes.
+#[derive(Clone, Copy)]
+pub(crate) enum MainMark {
+    /// First and last inside the main panel's cached view, so they run only
+    /// when it's laid out afresh.
+    Start,
+    End,
+    /// Beside the cached view, so it runs whenever the panel's drawn.
+    Drawn,
+    /// Around the drag ghost's copy, which places nothing.
+    GhostStart,
+    GhostEnd,
+}
+
+/// Marks for the main panel's frames. On a frame that only redraws something
+/// else (a running thread's spinner, the sidebar's ticking "20s") GPUI replays
+/// the cached panel as it was, so a live page's card never places its page;
+/// `sweep` then leaves the page where that layout painted it rather than
+/// hiding it. Without this the page blinked on and off (Mike, 25 Nov).
+pub(crate) fn main_panel_mark(mark: MainMark) -> AnyElement {
+    canvas(
+        move |_, window, _| {
+            let frame = frame_now();
+            let mut m = MAIN.with(Cell::get);
+            match mark {
+                MainMark::Start => {
+                    m.laid_out = frame;
+                    m.inside = true;
+                    CARD.with(|c| c.borrow_mut().take());
+                }
+                MainMark::End => m.inside = false,
+                MainMark::Drawn => {
+                    m.drawn = frame;
+                    m.opaque = window.element_opacity() >= 0.999;
+                }
+                MainMark::GhostStart => m.ghost = true,
+                MainMark::GhostEnd => m.ghost = false,
+            }
+            MAIN.with(|c| c.set(m));
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_0()
+    .into_any_element()
+}
+
+/// Where `drawn`'s card was painted in the main panel's last layout, if this
+/// frame drew that layout again from GPUI's cache, fully opaque.
+fn card_replayed(drawn: &Rc<Cell<(u64, Bounds<Pixels>)>>, frame: u64) -> Option<Bounds<Pixels>> {
+    let m = MAIN.with(Cell::get);
+    if m.drawn != frame || !m.opaque || m.laid_out == frame {
+        return None;
+    }
+    CARD.with(|c| match &*c.borrow() {
+        Some((card, at, bounds)) if *at == m.laid_out && Rc::ptr_eq(card, drawn) => Some(*bounds),
+        _ => None,
+    })
 }
 
 /// How tall the transcript is where a live page last ran, if one has.
 pub(crate) fn live_room() -> Option<f32> {
-    Some(LIVE_ROOM.with(Cell::get)).filter(|h| *h > 0.)
+    let transcript = TRANSCRIPT.with(Cell::get)?;
+    LIVE_ROOM.with(|r| r.borrow().get(&transcript).copied())
+}
+
+/// Drawn just before a transcript's list (`Some`, its id) and just after
+/// (`None`): the list lays its rows out, cards and all, in between, so a
+/// card reads and measures its own transcript's room.
+pub(crate) fn transcript_mark(transcript: Option<EntityId>) -> AnyElement {
+    canvas(
+        move |_, _, _| TRANSCRIPT.with(|t| t.set(transcript)),
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_0()
+    .into_any_element()
 }
 
 fn live_key(real: &str, digest: &str, run: u64) -> String {
@@ -689,27 +795,78 @@ pub(crate) fn close_live_pages(keep: Option<(&str, &str, u64)>, cx: &mut App) {
     });
 }
 
-/// Placed this frame: whole, or (`clip`) only if all of it is inside what
-/// the window shows of its scrolled parent.
+/// What a placement's paint does to `CARD`.
+#[derive(Clone, Copy)]
+enum Painted {
+    /// Placed whole in the main panel's layout: where a replayed frame leaves it.
+    Record,
+    /// Placed in the side pane (Full size): no card of it to replay.
+    Clear,
+    Leave,
+}
+
+/// Placed this frame: whole, or (`clip`, a card in a transcript) only if
+/// all of it is inside what the window shows of its scrolled parent.
 fn placed(drawn: Rc<Cell<(u64, Bounds<Pixels>)>>, clip: bool) -> AnyElement {
     canvas(
-        move |bounds, window, _| {
-            let mask = window.content_mask().bounds;
-            if clip {
-                // How tall the transcript shows, for the card to fit next frame
-                // (`live_room`): the answer card under the reply can leave less
-                // room than the card's own height, and then it would never show.
-                let room = f32::from(mask.size.height);
-                if (LIVE_ROOM.with(Cell::get) - room).abs() > 1. {
-                    LIVE_ROOM.with(|r| r.set(room));
-                    window.refresh();
+        {
+            let drawn = drawn.clone();
+            move |bounds, window, _| {
+                let frame = frame_now();
+                let m = MAIN.with(Cell::get);
+                // The drag ghost's small copy of the panel, and a panel
+                // dimmed under a drag, place nothing and measure nothing: an
+                // opaque page over either would hide the drag.
+                if window.element_opacity() < 0.999 || (clip && m.ghost) {
+                    return Painted::Leave;
+                }
+                if !clip {
+                    drawn.set((frame, bounds));
+                    return Painted::Clear;
+                }
+                // How tall the transcript shows, in points, for the card to
+                // fit next frame (`live_room`): the answer card under the
+                // reply can leave less room than the card's own height, and
+                // then it would never show. Laid out again on the next frame,
+                // as asking now, mid-draw, does nothing.
+                let mask = window.content_mask().bounds;
+                let room = f32::from(mask.size.height) / style::zoom_scale();
+                if let Some(transcript) = TRANSCRIPT.with(Cell::get) {
+                    let was = LIVE_ROOM.with(|r| r.borrow_mut().insert(transcript, room));
+                    if was.is_none_or(|was| (was - room).abs() > 1.) {
+                        window.on_next_frame(|window, _| window.refresh());
+                    }
+                }
+                // Partly out of sight it isn't placed. Another card for the
+                // same file may be, so this one leaves the page alone.
+                if mask.intersect(&bounds) != bounds {
+                    return Painted::Leave;
+                }
+                drawn.set((frame, bounds));
+                if m.inside {
+                    Painted::Record
+                } else {
+                    Painted::Leave
                 }
             }
-            if !clip || mask.intersect(&bounds) == bounds {
-                drawn.set((frame_now(), bounds));
-            }
         },
-        |_, _, _, _| {},
+        // Painted only for the layout GPUI kept: the place a replayed frame
+        // leaves the page (`card_replayed`).
+        move |bounds, painted, _, _| {
+            CARD.with(|c| {
+                let mut c = c.borrow_mut();
+                match painted {
+                    Painted::Record => *c = Some((drawn.clone(), frame_now(), bounds)),
+                    Painted::Clear
+                        if c.as_ref()
+                            .is_some_and(|(card, _, _)| Rc::ptr_eq(card, &drawn)) =>
+                    {
+                        *c = None;
+                    }
+                    _ => {}
+                }
+            });
+        },
     )
     .size_full()
     .into_any_element()

@@ -91,6 +91,7 @@ const fakes: Record<string, Record<string, unknown>> = {
   './_generated/server': { env: process.env, mutation: (x: unknown) => x, query: (x: unknown) => x, internalMutation: (x: unknown) => x, internalQuery: (x: unknown) => x, action: (x: unknown) => x, internalAction: (x: unknown) => x, httpAction: (x: unknown) => x },
   './_generated/api': { internal: fnRef(['internal']), api: fnRef(['api']), components: fnRef(['components']) },
   '@convex-dev/state-machines': stateMachines,
+  '@convex-dev/static-hosting': { registerStaticRoutes: () => undefined },
 };
 
 const loaded = new Map<string, Record<string, unknown>>();
@@ -106,7 +107,7 @@ export function load(name: string, root = CONVEX): Record<string, any> {
     const from = m[3]!;
     // Relative to the importing file, as a bundler has it (boxProviders/fly.ts's './types').
     // Node's own modules as they are, for a "use node" file (push.ts).
-    const mod = fakes[from] ?? (from.startsWith('node:') ? (rootRequire(from) as Record<string, unknown>) : from.startsWith('./') ? load(path.posix.join(path.posix.dirname(name), from.slice(2)), root) : undefined);
+    const mod = fakes[from] ?? (from.startsWith('node:') ? (rootRequire(from) as Record<string, unknown>) : from.startsWith('.') ? load(path.posix.join(path.posix.dirname(name), from), root) : undefined);
     if (!mod) throw new Error(`convex-memory: no fake for ${from} (in ${name}.ts)`);
     for (const spec of m[2]!.split(',').map((s) => s.trim()).filter(Boolean)) {
       if (spec.startsWith('type ')) continue;

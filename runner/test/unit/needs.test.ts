@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { PersistedEvent } from '../../src/protocol.ts';
 import { AGENT_MESSAGE_PREFIX } from '../../src/protocol.ts';
-import { handsOverAStep, offersToTakeItBack, PLAIN_CARD_NUDGE, plainCardNudge, wantsPlainCard, TRY_IT_FIRST, tryFirstNudge, archiveFromTool, snoozeFromTool, bylineFromTool, endedThisTurn, CODEX_END_TURN_DESCRIPTION, CODEX_ONE_REPLY_DESCRIPTION, END_TURN_DESCRIPTION, END_TURN_FULL_NAME, endTurnDescription, needsFromText, needsFromTool, ONE_REPLY_DESCRIPTION, replyAsks, replyAsksNudge, replyWithoutRepeat, splitReplySection, summaryFromTool, summaryMarkdown, turnReply, unansweredItems } from '../../src/needs.ts';
+import { handsOverAStep, offersToTakeItBack, PLAIN_CARD_NUDGE, plainCardNudge, plainCardNudged, wantsPlainCard, TRY_IT_FIRST, tryFirstNudge, archiveFromTool, snoozeFromTool, bylineFromTool, endedThisTurn, CODEX_END_TURN_DESCRIPTION, CODEX_ONE_REPLY_DESCRIPTION, END_TURN_DESCRIPTION, END_TURN_FULL_NAME, endTurnDescription, needsFromText, needsFromTool, ONE_REPLY_DESCRIPTION, replyAsks, replyAsksNudge, replyWithoutRepeat, splitReplySection, summaryFromTool, summaryMarkdown, turnReply, unansweredItems } from '../../src/needs.ts';
 import { END_TURN_TOOL } from '../../src/needs.ts';
 import { SERVER_NAME } from '../../src/threadbear-mcp.ts';
 import { ClaudeNormalizer, fileContext } from '../../src/adapters/claude/normalize.ts';
@@ -46,7 +46,39 @@ test('end_turn input: next steps go with needs nothing only', () => {
   assert.equal(needsFromTool({ needs: 'nothing', next: ['x'.repeat(500)] })!.next![0].length, 120);
   assert.deepEqual(needsFromTool({ needs: 'nothing', next: 'not a list' }), { needs: 'nothing' });
   // A card of asks has its own buttons.
-  assert.deepEqual(needsFromTool({ needs: 'you', asks: [{ action: 'Pick one' }], next: ['Later'] }), { needs: 'you', asks: [{ action: 'Pick one' }] });
+  assert.deepEqual(needsFromTool({ needs: 'you', asks: [{ action: 'Pick one' }], next: ['Later'], nextPick: 'one', nextSuggested: 0 }), { needs: 'you', asks: [{ action: 'Pick one' }] });
+  // Pick-one mode and recommendation: only with 2+ items, remapped through dedup.
+  assert.deepEqual(needsFromTool({ needs: 'nothing', next: ['Option A', 'Option B'], nextPick: 'one', nextSuggested: 1 }), {
+    needs: 'nothing',
+    next: ['Option A', 'Option B'],
+    nextPick: 'one',
+    nextSuggested: 1,
+  });
+  // Deduping an earlier duplicate remaps nextSuggested to the kept item's new index.
+  assert.deepEqual(needsFromTool({ needs: 'nothing', next: ['First', '', 'First', 'Second'], nextPick: 'one', nextSuggested: 3 }), {
+    needs: 'nothing',
+    next: ['First', 'Second'],
+    nextPick: 'one',
+    nextSuggested: 1,
+  });
+  // Single item drops nextPick and nextSuggested; "any" omits them; out-of-range drops nextSuggested.
+  assert.deepEqual(needsFromTool({ needs: 'nothing', next: ['Only one'], nextPick: 'one', nextSuggested: 0 }), {
+    needs: 'nothing',
+    next: ['Only one'],
+  });
+  assert.deepEqual(needsFromTool({ needs: 'nothing', next: ['A', 'B'], nextPick: 'any', nextSuggested: 0 }), {
+    needs: 'nothing',
+    next: ['A', 'B'],
+  });
+  assert.deepEqual(needsFromTool({ needs: 'nothing', next: ['A', 'B'], nextPick: 'one', nextSuggested: 5 }), {
+    needs: 'nothing',
+    next: ['A', 'B'],
+    nextPick: 'one',
+  });
+  assert.deepEqual(needsFromTool({ needs: 'nothing', next: ['A', 'B'], nextSuggested: 0 }), {
+    needs: 'nothing',
+    next: ['A', 'B'],
+  });
 });
 
 test('end_turn input: needs left out comes from the asks', () => {
@@ -762,4 +794,12 @@ test('unansweredItems: cards Mike saw, less what he answered by card, words or a
   assert.deepEqual(unansweredItems(events), ['Email Peter the link', 'Send it to the list now?']);
   // A card answer names the ask; what the new card already carries isn't listed again.
   assert.deepEqual(unansweredItems([...events, said('x', { answers: [{ action: 'Send it to the list now?', answer: 'Wait' }] })], ['Email Peter the link']), []);
+});
+
+test('plainCardNudged recognizes Antigravity-prefixed tool errors too', () => {
+  const events = [
+    { seq: 1, ts: '2026-11-26T00:00:00.000Z', threadId: 't', type: 'turn.started' as const, turnId: 'turn-1' },
+    { seq: 2, ts: '2026-11-26T00:00:01.000Z', threadId: 't', type: 'tool.result' as const, itemId: 'c1', ok: false, text: `Encountered error in step execution: ${plainCardNudge()}`, truncated: false, images: [] },
+  ];
+  assert.equal(plainCardNudged(events), true);
 });

@@ -442,23 +442,42 @@ export class AcpNormalizer {
     t.done = true;
     const texts: string[] = [];
     const images: ImageRef[] = [];
-    for (const c of t.output) {
-      if (c?.type !== 'content' || !c.content) continue;
-      if (c.content.type === 'text' && typeof c.content.text === 'string') texts.push(c.content.text);
-      else if (c.content.type === 'image' && typeof c.content.data === 'string' && typeof c.content.mimeType === 'string') {
+    const pushContentBlock = (block: unknown): void => {
+      if (!isPlainObject(block)) return;
+      if (block.type === 'text' && typeof block.text === 'string') texts.push(block.text);
+      else if (block.type === 'image' && typeof block.data === 'string' && typeof block.mimeType === 'string') {
         try {
-          images.push(this.ctx.saveImage(c.content.data, c.content.mimeType, t.row));
+          images.push(this.ctx.saveImage(block.data, block.mimeType, t.row));
         } catch {
           // Not an image this can save: the row still shows its text.
         }
       }
+    };
+    for (const c of t.output) {
+      if (!c) continue;
+      if (c.type === 'content' && c.content) pushContentBlock(c.content);
+      else pushContentBlock(c);
     }
-    if (!texts.length && isPlainObject(t.rawOutput)) {
-      const said = t.rawOutput.output ?? t.rawOutput.error;
-      if (typeof said === 'string') texts.push(said);
-      // Grok's MCP result: `output: { OkayOutput: "Noted: ..." }` (or its
-      // error's). Dropped, end_turn's "Noted" never reached the runner.
-      else if (isPlainObject(said)) for (const v of Object.values(said)) if (typeof v === 'string') texts.push(v);
+    if (!texts.length && t.rawOutput !== undefined && t.rawOutput !== null) {
+      if (typeof t.rawOutput === 'string') {
+        if (t.rawOutput) texts.push(t.rawOutput);
+      } else if (Array.isArray(t.rawOutput)) {
+        for (const item of t.rawOutput) {
+          if (typeof item === 'string' && item) texts.push(item);
+          else pushContentBlock(item);
+        }
+      } else if (isPlainObject(t.rawOutput)) {
+        const said = t.rawOutput.output ?? t.rawOutput.error ?? t.rawOutput.message ?? t.rawOutput.text;
+        if (typeof said === 'string' && said) texts.push(said);
+        // Grok's MCP result: `output: { OkayOutput: "Noted: ..." }` (or its
+        // error's). Dropped, end_turn's "Noted" never reached the runner.
+        else if (isPlainObject(said)) {
+          for (const v of Object.values(said)) if (typeof v === 'string' && v) texts.push(v);
+        }
+        if (!texts.length && Array.isArray(t.rawOutput.content)) {
+          for (const item of t.rawOutput.content) pushContentBlock(item);
+        }
+      }
     }
     out.push({ kind: 'event', event: { type: 'tool.result', itemId: t.row, ok, ...truncateResultText(texts.join('\n'), t.row, this.ctx), images } });
   }

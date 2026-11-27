@@ -19,7 +19,7 @@ import { call, load, memoryBackend } from './convex-memory.ts';
 import { ConvexSync } from '../../src/sync.ts';
 import { Relay } from '../../src/relay.ts';
 import { nullLogger } from '../../src/log.ts';
-import type { ImageRef, LabReviewLedger } from '../../src/protocol.ts';
+import type { Ask, ImageRef, LabReviewLedger } from '../../src/protocol.ts';
 import type { Post, Upload } from '../../src/sync.ts';
 
 const OWNER = 'owner-key';
@@ -28,12 +28,15 @@ const RUNNER = 'mini0000001';
 const END_TURN = 'mcp__threadbear__end_turn';
 
 // What a person sees of a thread, on any of the three: its card and its messages.
-export type Ask = { action: string; options?: string[]; optionNotes?: string[]; suggested?: number; links?: { title: string; url: string }[] };
 export type View = {
+  coordinatorProjectId?: string;
+  unread: boolean;
   needs?: string;
   asks: Ask[];
   next: string[];
   recap?: string;
+  nextPick?: string;
+  nextSuggested?: number;
   // The done card's loose ends, as their words.
   looseEnds: string[];
   // Review by another lab's ledger on the last turn's card.
@@ -54,6 +57,10 @@ export type View = {
 };
 
 export type Play = {
+  /** Supply the coordinator summary hint; its service lifecycle has tests of its own. */
+  coordinate(projectId: string): void;
+  /** Reading a coordinator settles unread, while its open questions remain. */
+  read(): void;
   /** The agent writes text. */
   say(text: string): void;
   /** The agent calls end_turn with these args, and the turn ends. */
@@ -148,7 +155,8 @@ export async function threeWays(play: (p: Play) => void | Promise<void>) {
   const here = (): View => {
     const t = h.runner.get(id);
     const events = h.runner.events(id, {}).events as Record<string, any>[];
-    return { needs: t.needs, recap: t.recap, asks: (t.asks ?? []) as Ask[], next: lastNext(events), looseEnds: (t.looseEnds?.ends ?? []).map((e) => e.text), review: events.filter((e) => e.type === 'turn.completed').at(-1)?.review, plans: plansOf(events), messages: messagesOf(events), notes: loginNotes(events), failed: lastFailed(events), waitState: t.waitState };
+    const end = events.filter((e) => e.type === 'turn.completed').at(-1);
+    return { coordinatorProjectId: t.coordinatorProjectId, unread: t.lastSeq > t.lastSeenSeq, needs: t.needs, recap: t.recap, asks: (t.asks ?? []) as Ask[], next: lastNext(events), nextPick: end?.nextPick, nextSuggested: end?.nextSuggested, looseEnds: (t.looseEnds?.ends ?? []).map((e) => e.text), review: end?.review, plans: plansOf(events), messages: messagesOf(events), notes: loginNotes(events), failed: lastFailed(events), waitState: t.waitState };
   };
   let relayEvents: Record<string, any>[] = [];
   const viaRelay = async (): Promise<View> => {
@@ -164,13 +172,13 @@ export async function threeWays(play: (p: Play) => void | Promise<void>) {
     const listed = relay.overlay(remote()).threads.find((t) => t.threadId === id) as { looseEnds?: { seq: number; ends: { text: string }[] } } | undefined;
     const ends = listed?.looseEnds && end && listed.looseEnds.seq === end.seq ? listed.looseEnds.ends.map((e) => e.text) : [];
     // The state as another Mac's sidebar has it: the thread's index row.
-    const indexed = ((await b.ctx.db.query('threadIndex').collect()) as unknown as { threadId: string; waitState?: string }[]).find((r) => r.threadId === id);
-    return { needs: end?.needs, recap: rows.find(r => r.threadId === id)?.recap, asks: (end?.asks ?? []) as Ask[], next: (end?.next ?? []) as string[], looseEnds: ends, review: end?.review, plans: plansOf(events), messages: messagesOf(events), notes: loginNotes(events), failed: lastFailed(events), waitState: indexed?.waitState };
+    const indexed = ((await b.ctx.db.query('threadIndex').collect()) as unknown as { threadId: string; waitState?: string; coordinatorProjectId?: string; unread?: boolean }[]).find((r) => r.threadId === id);
+    return { coordinatorProjectId: indexed?.coordinatorProjectId, unread: indexed?.unread ?? false, needs: end?.needs, recap: rows.find(r => r.threadId === id)?.recap, asks: (end?.asks ?? []) as Ask[], next: (end?.next ?? []) as string[], nextPick: end?.nextPick, nextSuggested: end?.nextSuggested, looseEnds: ends, review: end?.review, plans: plansOf(events), messages: messagesOf(events), notes: loginNotes(events), failed: lastFailed(events), waitState: indexed?.waitState };
   };
   const viaPhone = async (): Promise<View> => {
     const r = (await call(b.ctx, mods.phone.thread!, { token: TOKEN, threadId: id })) as { thread: Record<string, any>; messages: { role: 'user' | 'assistant'; text: string; origin?: string }[] };
     const page = await call(b.ctx, mods.phone.messages!, { token: TOKEN, threadId: id, notes: true }) as { messages: { role: string; text: string; plan?: boolean; planDecision?: string }[] };
-    return { needs: r.thread.needs, recap: r.thread.recap, asks: (r.thread.asks ?? []) as Ask[], next: (r.thread.next ?? []) as string[], looseEnds: ((r.thread.looseEnds ?? []) as { text: string }[]).map((e) => e.text), review: r.thread.review, plans: page.messages.filter((m) => m.plan).map((m) => `${m.text.split('\n')[0]} (${m.planDecision ?? 'waiting'})`), messages: r.messages.map((m) => ({ role: m.role, text: m.text, pictures: 0, ...(m.origin ? { origin: m.origin } : {}) })), notes: page.messages.filter(m => m.role === 'note').map(m => m.text), failed: r.thread.status === 'error', waitState: r.thread.waitState };
+    return { coordinatorProjectId: r.thread.coordinatorProjectId, unread: r.thread.unread, needs: r.thread.needs, recap: r.thread.recap, asks: (r.thread.asks ?? []) as Ask[], next: (r.thread.next ?? []) as string[], nextPick: r.thread.nextPick, nextSuggested: r.thread.nextSuggested, looseEnds: ((r.thread.looseEnds ?? []) as { text: string }[]).map((e) => e.text), review: r.thread.review, plans: page.messages.filter((m) => m.plan).map((m) => `${m.text.split('\n')[0]} (${m.planDecision ?? 'waiting'})`), messages: r.messages.map((m) => ({ role: m.role, text: m.text, pictures: 0, ...(m.origin ? { origin: m.origin } : {}) })), notes: page.messages.filter(m => m.role === 'note').map(m => m.text), failed: r.thread.status === 'error', waitState: r.thread.waitState };
   };
   const views = { here: here(), relay: await viaRelay(), phone: await viaPhone() };
   await sync.stop();
@@ -208,6 +216,14 @@ export async function playInto(post: Post, runner: { key: string; runnerId: stri
     let n = 0;
     let lastPlan = '';
     await play({
+      coordinate: (projectId) => {
+        const summarize = h.runner.summary.bind(h.runner);
+        h.runner.summary = (st) => {
+          const summary = summarize(st);
+          return summary.id === thread.id ? { ...summary, coordinatorProjectId: projectId } : summary;
+        };
+      },
+      read: () => { h.runner.markSeen(thread.id, h.runner.get(thread.id).lastSeq); },
       say: (text) => s.text(`m${++n}`, text),
       proposePlan: (text) => {
         lastPlan = `p${++n}`;

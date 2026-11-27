@@ -66,9 +66,9 @@ Options: Thanks
    or none).
 3. Write TASK.md in this folder from "Each run" below, with their answers.
    Start memory.md with a line saying when it was set up.
-4. Make the schedule with schedule_message: `new_thread` true, this folder,
-   their time as a cron, and a message that says "Read TASK.md in this folder
-   and do it."
+4. Make the schedule with schedule_message: `new_thread` true, `star` true
+   (so each brief waits in Starred), this folder, their time as a cron, and a
+   message that says "Read TASK.md in this folder and do it."
 5. Run it once now (or tell them it starts tomorrow) and ask whether the length
    and sections are right. Change TASK.md if not.
 

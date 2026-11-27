@@ -60,7 +60,10 @@ export const buttonsPart = {
     // What the maker's agent can do now: a button can't hand Mike a
     // thread or a message with more access than that, as its title is the
     // agent's and he presses it trusting it (threadbear-mcp.ts, "Raising access").
-    const maker = this.accessOf(threadId);
+    // Its saved mode, as send_message judges it, not accessOf: a turn begun
+    // with more keeps that until it ends, after Mike lowers the thread
+    // (Codex's review, 26 Nov 2026).
+    const maker = st.rec.permissionMode;
     const button: ReplyButton = { id: this.newButtonId(st), title, createdAt: this.isoNow(), ...(st.rt.turn ? { turnId: st.rt.turn.turnId } : {}) };
     if (input.start) {
       const s = input.start;
@@ -125,7 +128,7 @@ export const buttonsPart = {
     // Access is checked again now, not only when it was made: the maker or
     // the target may have changed mode since (Codex's review, 7 Nov 2026).
     // A refusal here is saved as a failed press, like any other.
-    const maker = this.accessOf(threadId);
+    const maker = st.rec.permissionMode;
     const over = button.start && RANK[button.start.permissionMode] > RANK[maker]
       ? `This thread now has ${MODE_NAMES[maker]}, so its button can't start a thread with ${MODE_NAMES[button.start.permissionMode]}.`
       : button.send && this.threads.has(button.send.threadId) && RANK[this.accessOf(button.send.threadId)] > RANK[maker]

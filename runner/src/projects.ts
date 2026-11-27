@@ -41,6 +41,7 @@ export type IconChoice = { path?: string; symbol?: string };
 // one (which saves it, sends its summary and says what changed), and the
 // clients.
 export type ProjectHost = {
+  beforeProjectRemoval?(projectId: string): void;
   threadRecords(): ThreadRecord[];
   // Changes a thread's record, then saves it and sends its summary. `note`
   // goes in the transcript.
@@ -71,6 +72,9 @@ export type CreateProjectParams = {
 };
 
 export type UpdateProjectParams = {
+  // The values the editor started from. Checked on the owning runner in
+  // the same call as the write, so another thread cannot be overwritten.
+  ifUnchanged?: { goals?: string; state?: string; notes?: string };
   title?: string;
   folders?: string[];
   goals?: string;
@@ -407,6 +411,13 @@ export class Projects {
 
   update(projectId: string, params: UpdateProjectParams): Project {
     const rec = this.must(projectId);
+    if (params.ifUnchanged !== undefined) {
+      const expected = params.ifUnchanged;
+      if (!expected || typeof expected !== 'object' || Array.isArray(expected)) throw bad('ifUnchanged must name the fields the editor started from.');
+      for (const field of ['goals', 'state', 'notes'] as const) {
+        if (expected[field] !== undefined && (typeof expected[field] !== 'string' || rec[field] !== expected[field])) throw bad(`The project ${field} changed while you were editing. Your draft is kept; read the newer text before saving again.`);
+      }
+    }
     const next = { ...rec };
     if (params.title !== undefined) next.title = checkTitle(params.title);
     if (next.title !== rec.title) next.titleBy = params.by ?? 'mike';
@@ -489,6 +500,7 @@ export class Projects {
     const from = this.must(projectId);
     const into = this.must(intoId);
     if (from.id === into.id) throw bad("A project can't be merged into itself.");
+    this.mustHost().beforeProjectRemoval?.(from.id);
     const now = this.iso();
     const kept: ProjectRecord = {
       ...into,
@@ -526,6 +538,7 @@ export class Projects {
 
   delete(projectId: string): Record<string, never> {
     const rec = this.must(projectId);
+    this.mustHost().beforeProjectRemoval?.(rec.id);
     for (const t of this.threadsIn(rec.id)) {
       this.mustHost().editThread(t, (r) => {
         r.projects = (r.projects ?? []).filter((m) => m.id !== rec.id);
@@ -935,6 +948,7 @@ export function projectMethods(projects: Projects): Record<string, (p: Record<st
     }),
     'projects.update': (p) => ({
       project: projects.update(reqStr(p, 'projectId'), {
+        ...(p.ifUnchanged !== undefined ? { ifUnchanged: p.ifUnchanged as UpdateProjectParams['ifUnchanged'] } : {}),
         title: str(p, 'title'),
         folders: strList(p, 'folders'),
         goals: str(p, 'goals'),

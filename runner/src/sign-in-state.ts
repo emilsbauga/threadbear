@@ -12,6 +12,7 @@
 // loginExpiresAt), which reads its own sign-in locally and quickly. Never
 // the Keychain: tokens stay the CLI's business.
 import { execFile } from 'node:child_process';
+import { atomicWriteFileSync, readJsonSync } from './fsutil.ts';
 import type { Account } from './protocol.ts';
 import type { Clock, TimerHandle } from './clock.ts';
 import type { Logger } from './log.ts';
@@ -30,6 +31,26 @@ const TIMEOUT_MS = 15_000;
 // one-off 401 mustn't keep a good login out until its end date. An ended
 // sign-in needs no refusal to count (viewOf).
 export const REFUSAL_HOLD_MS = 60 * 60_000;
+// "Your organization has disabled Claude subscription access for Claude
+// Code" or "Claude Code can't use your Claude subscription, usually because
+// a payment is past due": signed in, and the CLI refuses turns because of org
+// access or billing. Nothing in its profile or `auth status` says so, only a
+// turn, and signing in again won't help: it's held out a day, then a turn may
+// try it again.
+export const ACCESS_OFF_TEXT = /disabled claude subscription access|can't use your claude subscription|payment is past due/i;
+export const ACCESS_OFF_HOLD_MS = 24 * 3600_000;
+// Refusals still held, kept in the data dir across restarts, and read by
+// test-login.ts so the dev runner and e2e tests don't pick such a login.
+export const REFUSALS_FILE = 'sign-in-refusals.json';
+type Refusal = { endsAt?: number; at: number; holdMs?: number };
+
+const holding = (r: Refusal, now: number) => now - r.at < (r.holdMs ?? REFUSAL_HOLD_MS);
+
+// The logins a runner's refusals file still holds out.
+export function heldRefusals(file: string, now: number): Set<string> {
+  const saved = readJsonSync<Record<string, Refusal>>(file) ?? {};
+  return new Set(Object.entries(saved).filter(([, r]) => typeof r?.at === 'number' && holding(r, now)).map(([id]) => id));
+}
 
 export type AuthStatus = { loggedIn: boolean; endsAt?: number };
 type Reading = AuthStatus & { checkedAt: number };
@@ -80,13 +101,15 @@ export type SignInOptions = {
   clock: Clock;
   log: Logger;
   exec?: AuthExec;
+  // Where refusals are kept (<data dir>/REFUSALS_FILE); none: memory only.
+  file?: string;
 };
 
 export class SignInState {
   private readings = new Map<string, Reading>();
   // A refused turn, with the sign-in's end as it was then: a reading with
   // another end is a new sign-in, and takes the refusal back.
-  private refused = new Map<string, { endsAt?: number; at: number }>();
+  private refused = new Map<string, Refusal>();
   private listeners = new Set<() => void>();
   private timer?: TimerHandle;
   private running?: Promise<void>;
@@ -95,6 +118,18 @@ export class SignInState {
 
   constructor(o: SignInOptions) {
     this.o = o;
+    const saved = o.file ? readJsonSync<Record<string, Refusal>>(o.file) : undefined;
+    for (const [id, r] of Object.entries(saved ?? {})) if (typeof r?.at === 'number' && holding(r, o.clock.now())) this.refused.set(id, r);
+  }
+
+  private save(): void {
+    if (!this.o.file) return;
+    const now = this.o.clock.now();
+    try {
+      atomicWriteFileSync(this.o.file, JSON.stringify(Object.fromEntries([...this.refused].filter(([, r]) => holding(r, now))), null, 2) + '\n');
+    } catch (e) {
+      this.o.log.warn('sign-in: could not save refusals', { error: String(e) });
+    }
   }
 
   start(): void {
@@ -115,7 +150,7 @@ export class SignInState {
     if (account.provider !== 'claude') return {};
     const now = this.o.clock.now();
     const refusal = this.refused.get(account.id);
-    return viewOf(this.reading(account), !!refusal && now - refusal.at < REFUSAL_HOLD_MS && (!account.yearToken || refusal.endsAt === this.reading(account)?.endsAt), now);
+    return viewOf(this.reading(account), !!refusal && holding(refusal, now) && (!account.yearToken || refusal.endsAt === this.reading(account)?.endsAt), now);
   }
 
   // A year-long token's reading is the runner's own count: `auth status`
@@ -127,11 +162,14 @@ export class SignInState {
   }
 
   // A turn on this login failed with its login refused: it counts as signed
-  // out now, and the CLI is asked again for its end date.
-  noteRefused(accountId: string): void {
+  // out now (for holdMs, REFUSAL_HOLD_MS when not given), and the CLI is
+  // asked again for its end date.
+  noteRefused(accountId: string, holdMs?: number): void {
     const account = this.o.accounts().find((a) => a.id === accountId);
     const before = account ? JSON.stringify(this.view(account)) : '';
-    this.refused.set(accountId, { endsAt: account ? this.reading(account)?.endsAt : this.readings.get(accountId)?.endsAt, at: this.o.clock.now() });
+    const endsAt = account ? this.reading(account)?.endsAt : this.readings.get(accountId)?.endsAt;
+    this.refused.set(accountId, { ...(endsAt !== undefined ? { endsAt } : {}), at: this.o.clock.now(), ...(holdMs ? { holdMs } : {}) });
+    this.save();
     // The sweep every CHECK_MS tells listeners when the hold runs out.
     if (account && JSON.stringify(this.view(account)) !== before) this.changed();
     if (account?.provider === 'claude') void this.queue(() => this.check(account));
@@ -139,7 +177,9 @@ export class SignInState {
 
   // A turn on it went through: whatever refused it before is over.
   noteWorked(accountId: string): void {
-    if (this.refused.delete(accountId)) this.changed();
+    if (!this.refused.delete(accountId)) return;
+    this.save();
+    this.changed();
   }
 
   // Asked now rather than at the next sweep: the app's Sign in… has just
@@ -202,6 +242,7 @@ export class SignInState {
     const was = this.refused.get(account.id)?.endsAt;
     if (was !== undefined && status.loggedIn && status.endsAt !== undefined && status.endsAt > this.o.clock.now() && status.endsAt !== was) {
       this.refused.delete(account.id);
+      this.save();
     }
     if (tell && JSON.stringify(this.view(account)) !== before) this.changed();
   }

@@ -65,3 +65,16 @@ Feature: Pull requests open beside the thread
     Then the PR's status reads "Open"
     And the PR's changes are still being read
     And the PR lists the file "runner/src/swift-changes.ts"
+
+  @pane.prs @swift-pending
+  Scenario: Open in Panel on a PR link opens its tab, not GitHub's page
+    When a reply linking "the fix" to "https://github.com/acme/app/pull/72" streams in
+    And I choose "Open in Panel" from the menu of the link "the fix"
+    Then the pane shows the PR "Fewer approvals when a fork brings in a release"
+
+  @pane.prs @coordinators @swift-pending
+  Scenario: A PR link in a project coordinator's conversation opens beside it
+    When I open the project "Threadbear"
+    And a reply linking "the fix" to "https://github.com/acme/app/pull/72" streams in
+    And I click the link "the fix"
+    Then the pane shows the PR "Fewer approvals when a fork brings in a release"

@@ -112,6 +112,20 @@ test('access is checked again when pressed', () => {
   assert.ok(h.runner.listButtons(thread.id).buttons[0].failed);
 });
 
+test('lowering a thread mid-turn holds its buttons to the new mode at once', () => {
+  const { h, thread, folder } = fixture();
+  const { button } = h.runner.createButton(thread.id, { title: 'Go', start: { text: 'x', cwd: folder } });
+  assert.equal(button.start?.permissionMode, 'full');
+  h.runner.update({ threadId: thread.id, permissionMode: 'ask' });
+  // The turn begun in Full access is still running (Codex's review, 26 Nov 2026).
+  assert.equal(h.runner.accessOf(thread.id), 'full');
+  assert.throws(() => h.runner.createButton(thread.id, { title: 'Go', start: { text: 'x', cwd: folder, permissionMode: 'full' } }), /can't start a thread with Full access/);
+  assert.equal(h.runner.createButton(thread.id, { title: 'Go', start: { text: 'x', cwd: folder } }).button.start?.permissionMode, 'ask');
+  const full = h.runner.create({ text: 'Other', accountId: 'claude-3' }).thread;
+  assert.throws(() => h.runner.createButton(thread.id, { title: 'Go', send: { threadId: full.id, text: 'x' } }), /send_message asks/);
+  assert.throws(() => h.runner.pressButton(thread.id, button.id), /now has Ask before edits/);
+});
+
 // Run on the card was taken out (14 Nov 2026). A thread from while it was
 // on can still have one of its buttons, with a command and no start or send.
 test("a left-over Run from a card's command does nothing when pressed", () => {

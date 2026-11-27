@@ -274,6 +274,7 @@ public struct PhoneThread: Codable, Sendable, Hashable, Identifiable {
     @OptionalFlexibleDate public var archivedAt: Date?
     /// Mike starred it: the Starred section at the top (backend API 27).
     @OptionalFlexibleDate public var starredAt: Date?
+    @OptionalCoordinatorProject public var coordinatorProjectId: String?
     public var costUsd: Double?
     public var projects: [ProjectRef]?
     /// The working line ("Running npm test"), while a turn or background
@@ -292,6 +293,17 @@ public struct PhoneThread: Codable, Sendable, Hashable, Identifiable {
     /// A finished turn's suggested follow-ups (end_turn's `next`), for the
     /// done card.
     public var next: [String]?
+    /// "one" when `next` items are mutually exclusive directions (backend API 103).
+    public var nextPick: String?
+    /// Index into `next` of the agent's recommendation when `nextPick` is "one" (a Convex number).
+    public var nextSuggested: Double?
+    /// Validated integer index for `nextSuggested` when `nextPick == "one"`.
+    public var nextSuggestedIndex: Int? {
+        guard nextPick == "one", let next, next.count > 1,
+              let idx = nextSuggested.flatMap({ $0.wholeCount() }),
+              next.indices.contains(idx) else { return nil }
+        return idx
+    }
     /// What the runner found still open on a thread whose last turn needs
     /// nothing (docs/protocol/threads.md, "Loose ends"; backend API 73), for the
     /// done card's "Still open" list. Nil when it hasn't checked, and from
@@ -331,9 +343,11 @@ public struct PhoneThread: Codable, Sendable, Hashable, Identifiable {
         costUsd: Double? = nil, projects: [ProjectRef]? = nil, working: String? = nil,
         pendingApproval: PendingApproval? = nil, earliestSeq: Double? = nil,
         asks: [PhoneAsk]? = nil, asksSeq: Double? = nil, next: [String]? = nil,
+        nextPick: String? = nil, nextSuggested: Double? = nil,
         needs: String? = nil, pendingReviews: Double? = nil, waitingForRoom: PhoneWaitingForRoom? = nil,
-        links: [PhoneLink]? = nil, asked: String? = nil, looseEnds: [PhoneLooseEnd]? = nil, waitState: String? = nil
+        links: [PhoneLink]? = nil, asked: String? = nil, looseEnds: [PhoneLooseEnd]? = nil, waitState: String? = nil, coordinatorProjectId: String? = nil
     ) {
+        self._coordinatorProjectId = OptionalCoordinatorProject(wrappedValue: coordinatorProjectId)
         self.waitState = waitState
         self.looseEnds = looseEnds
         self.asked = asked
@@ -362,6 +376,8 @@ public struct PhoneThread: Codable, Sendable, Hashable, Identifiable {
         self.asks = asks
         self.asksSeq = asksSeq
         self.next = next
+        self.nextPick = nextPick
+        self.nextSuggested = nextSuggested
         self.needs = needs
         self.pendingReviews = pendingReviews
         self.waitingForRoom = waitingForRoom
@@ -1192,5 +1208,37 @@ public enum ThreadChange: Sendable, Hashable {
         case let .rename(title): ["title": .string(title)]
         case let .star(on): ["star": .bool(on)]
         }
+    }
+}
+
+
+/// An optional routing hint must not make an otherwise readable thread disappear.
+@propertyWrapper
+public struct OptionalCoordinatorProject: Codable, Sendable, Hashable {
+    public var wrappedValue: String?
+
+    public init(wrappedValue: String?) {
+        self.wrappedValue = wrappedValue.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(wrappedValue: try? decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(wrappedValue)
+    }
+}
+
+extension KeyedDecodingContainer {
+    public func decode(_ type: OptionalCoordinatorProject.Type, forKey key: Key) throws -> OptionalCoordinatorProject {
+        try decodeIfPresent(type, forKey: key) ?? OptionalCoordinatorProject(wrappedValue: nil)
+    }
+}
+
+extension KeyedEncodingContainer {
+    public mutating func encode(_ value: OptionalCoordinatorProject, forKey key: Key) throws {
+        if let id = value.wrappedValue { try encode(id, forKey: key) }
     }
 }

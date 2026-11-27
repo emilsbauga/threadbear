@@ -9,11 +9,12 @@ import { ErrorCode, RpcError } from '../protocol.ts';
 import { cutOut } from '../store.ts';
 import { accountRoom, resetTime } from '../usage.ts';
 import { DEFAULT_POOL_FOLDERS, peekRunnerJson, readRunnerJson, writeRunnerJson } from '../config.ts';
-import { UNKNOWN_WAIT_MS, WAIT_SLACK_MS, backAt, blockedUntil, limitWhy, loginOk, nextLogin, pickInPool, poolAccounts, poolForFolder, poolProviders, readPools, roomWait, validatePools } from '../pools.ts';
+import { UNKNOWN_WAIT_MS, WAIT_SLACK_MS, backAt, blockedUntil, limitWhy, loginOk, nextLogin, pickInPool, pickLogin, poolAccounts, poolForFolder, poolProviders, readPools, roomWait, validatePools } from '../pools.ts';
 import { historyItems, selectHistory } from '../handoff-history.ts';
 import type { ThreadState } from '../runner.ts';
+import type { ThreadRecord } from '../store.ts';
 import { CARRY_ON_BACK, CARRY_ON_MOVED, CARRY_ON_SIGNED_OUT } from './carry-on.ts';
-import { isClaudeModel, modelRow, modelTitle } from './models.ts';
+import { modelAccounts, modelRow, modelTitle, ModelListsPending, nativeModelProvider, pickerModelRow } from './models.ts';
 import { providerName } from '../providers.ts';
 
 export const poolsPart = {
@@ -119,54 +120,88 @@ export const poolsPart = {
     return (live.find((p) => p.accountIds.includes(account)) ?? live[0])?.id;
   },
 
-  // The provider a model id belongs to, when that can be told.
-  modelProvider(this: Runner, model: string): Provider | undefined {
-    if (isClaudeModel(model)) return 'claude';
-    const accounts = this.safeAccounts();
-    if (model.startsWith('gpt-') || accounts.some((a) => a.provider === 'codex' && modelRow(a, model))) return 'codex';
-    if (accounts.some((a) => a.provider === 'claude' && modelRow(a, model))) return 'claude';
-    // Last, as an ACP agent's list can name Claude's and Codex's models too:
-    // only an id nothing else claims means that agent.
-    return accounts.find((a) => modelRow(a, model))?.provider;
-  },
-
-  // The pool and login for a new thread with no accountId: the pool named,
-  // else the folder's, else the default; and when a model is named whose
-  // provider has no login there, the first pool that has one. The login is
-  // the pool's one of the thread's provider (its model's, else the pool's
-  // first) with the most room, else one of another provider with room,
-  // else the first of its provider. undefined when no pool has a login
-  // this runner can use.
-  pickForNew(this: Runner, p: { poolId?: string; cwd: string; model?: string; provider?: Provider }): { poolId: string; accountId: string } | undefined {
-    const accounts = this.usableAccounts();
+  // Start in the named, folder or default pool. An advertised model limits
+  // the pick to its logins, with other pools considered for an implicit pick.
+  pickForNew(this: Runner, p: { poolId?: string; cwd: string; model?: string; provider?: Provider; onlyProvider?: Provider }): { poolId?: string; accountId: string } | undefined {
+    const accounts = this.usableAccounts().filter((a) => !p.onlyProvider || a.provider === p.onlyProvider);
     const pools = this.pools().filter((x) => poolAccounts(x, accounts).length);
-    let pool: Pool | undefined;
-    if (p.poolId !== undefined) {
-      pool = pools.find((x) => x.id === p.poolId);
-      if (!pool) throw new RpcError(ErrorCode.badParams, `No pool called ${p.poolId}. Pools: ${pools.map((x) => x.id).join(', ') || 'none'}`);
-    }
-    // The provider the picker's pick was under, when it says: a model id
-    // can be claimed by several (OpenCode lists gpt-… ids too).
-    const wanted = (p.poolId !== undefined ? p.provider : undefined) ?? (p.model ? this.modelProvider(p.model) : undefined);
-    if (!pool) {
-      pool = poolForFolder(pools, p.cwd) ?? pools.find((x) => x.id === this.defaultPoolId(pools, accounts)) ?? pools[0];
-      if (!pool) return undefined;
-      // Naming a model picks its provider: create_thread with an Opus
-      // model and no account must not land on Codex and drop the model.
-      if (wanted && !poolProviders(pool, accounts).includes(wanted)) pool = pools.find((x) => poolProviders(x, accounts).includes(wanted)) ?? pool;
-    }
-    const providers = poolProviders(pool, accounts);
-    const provider = wanted && providers.includes(wanted) ? wanted : providers[0];
-    // The last login used wins a tie, or when nothing says another has
-    // more room, as pickAccount has it.
+    const named = p.poolId !== undefined;
+    const pool = named
+      ? pools.find((x) => x.id === p.poolId)
+      : poolForFolder(pools, p.cwd) ?? pools.find((x) => x.id === this.defaultPoolId(pools, accounts)) ?? pools[0];
+    if (named && !pool) throw new RpcError(ErrorCode.badParams, `No pool called ${p.poolId}. Pools: ${pools.map((x) => x.id).join(', ') || 'none'}`);
     const json = peekRunnerJson(this.cfg.home).defaults;
-    let accountId = pickInPool(pool, accounts, { provider, prefer: json?.accountId ?? this.cfg.defaults.accountId });
-    if (!accountId) {
-      const next = nextLogin(pool, accounts, { accountId: '', provider }, this.clock.now());
+    const prefer = json?.accountId ?? this.cfg.defaults.accountId;
+    const now = this.clock.now();
+    const hint = named ? p.provider : undefined;
+    if (p.model) {
+      const model = p.model;
+      const search = pool ? [pool, ...pools.filter((x) => !named && x !== pool)] : [];
+      const pooledIds = new Set(search.flatMap((x) => x.accountIds));
+      const canPin = (a: Account) => !named && !a.signedOut && !a.planEnded && !a.note;
+      const members = accounts.filter((a) => (!hint || a.provider === hint) && (pooledIds.has(a.id) || canPin(a)));
+      const matches = modelAccounts(members, model);
+      // An unresolved ACP login can still publish the requested picker
+      // id, even if another login already lists it as a resolved alias.
+      if (!matches.some((a) => pickerModelRow(a, model))) {
+        const cold = members.filter((a) => a.models === undefined && a.provider !== 'claude' && a.provider !== 'codex');
+        if (cold.length) throw new ModelListsPending(cold);
+      }
+      const pooled = matches.filter((a) => pooledIds.has(a.id));
+      const candidates = pooled.length ? pooled : matches;
+      // Both remote pickers show duplicate ids once, with Claude and
+      // Codex first. A Mac picker can name its provider.
+      const first = candidates.find((a) => a.provider === 'claude') ?? candidates.find((a) => a.provider === 'codex') ?? candidates[0];
+      if (first) {
+        const eligible = candidates.filter((a) => a.provider === first.provider);
+        let withoutRoom: { poolId: string; accountId: string } | undefined;
+        for (const candidate of search) {
+          const accountId = pickInPool(candidate, eligible, { provider: first.provider, prefer, now });
+          if (accountId) return { poolId: candidate.id, accountId };
+          const member = poolAccounts(candidate, eligible)[0];
+          if (member) withoutRoom ??= { poolId: candidate.id, accountId: member.id };
+        }
+        if (withoutRoom) return withoutRoom;
+        return { accountId: pickLogin(eligible, { provider: first.provider, prefer, now }) ?? first.id };
+      }
+
+      // Prefixes are a cold native fallback only once ACP lists are known.
+      const native = nativeModelProvider(model);
+      if (native) {
+        const unprobed = members.filter((a) => a.provider === native && a.models === undefined && this.modelFits(a, model));
+        for (const candidate of search) {
+          const accountId = pickInPool(candidate, unprobed, { provider: native, prefer, now });
+          if (accountId) return { poolId: candidate.id, accountId };
+        }
+      }
+    }
+
+    // With no match, use the usual pool. checkSettings explains any model
+    // substitution on the login chosen here.
+    if (!pool) return undefined;
+    const providers = poolProviders(pool, accounts);
+    const provider = hint && providers.includes(hint) ? hint : providers[0];
+    let accountId = pickInPool(pool, accounts, { provider, prefer, now });
+    if (!accountId && !(p.model && hint === provider)) {
+      const next = nextLogin(pool, accounts, { accountId: '', provider }, now);
       if (!('waitUntil' in next)) accountId = next.accountId;
     }
     accountId ??= poolAccounts(pool, accounts).find((a) => a.provider === provider)?.id ?? poolAccounts(pool, accounts)[0].id;
     return { poolId: pool.id, accountId };
+  },
+
+  // The same list drives retries, waits and moves. The current login can
+  // resume while its list loads again after a runner restart.
+  poolTurnAccounts(this: Runner, rec: ThreadRecord, pool: Pool, accounts: Account[] = this.usableAccounts()): Account[] {
+    const { model, explicitModel } = rec;
+    if (!model || !explicitModel) return accounts;
+    const peers = poolAccounts(pool, accounts).filter((a) => a.provider === rec.provider);
+    const current = peers.find((a) => a.id === rec.accountId && a.models === undefined);
+    const matches = explicitModel === 'unresolved'
+      ? modelAccounts(peers, model)
+      : peers.filter((a) => explicitModel === 'pickerId' ? pickerModelRow(a, model) !== undefined : modelRow(a, model)?.model === model);
+    if (current) matches.push(current);
+    return matches;
   },
 
   // A turn ended failed with errorKind usageLimit. A pool thread marks the
@@ -200,7 +235,7 @@ export const poolsPart = {
     if (this.bucket(rec) !== 'inbox') return;
     // A message sent meanwhile goes next; the before-a-turn check moves it.
     if (rec.queue.length) return;
-    const accounts = this.usableAccounts();
+    const accounts = this.poolTurnAccounts(rec, pool);
     const title = was?.title ?? rec.accountId;
     const waits = rec.carryOnAtReset !== false;
     // A carry-on that runs dry too moves on again while another login has
@@ -208,7 +243,12 @@ export const poolsPart = {
     // login that runs dry is marked blocked until its window resets.
     const next = nextLogin(pool, accounts, rec, now);
     if ('waitUntil' in next) {
-      if (waits) this.startWait(st, next, `Every login in ${pool.title} is out of room.`);
+      if (waits) {
+        const lead = rec.explicitModel && rec.model
+          ? `No login in ${pool.title} has room for ${was ? modelTitle(was, rec.model) : rec.model}.`
+          : `Every login in ${pool.title} is out of room.`;
+        this.startWait(st, next, lead);
+      }
       return;
     }
     this.moveLogin(st, accounts.find((a) => a.id === next.accountId)!, `${title} ${was ? limitWhy(was, now, true) : 'hit its usage limit'}`);
@@ -233,7 +273,8 @@ export const poolsPart = {
     if (was?.provider !== 'claude') return;
     // The refusal may not have reached the list (no SignInState: tests, or
     // a fork's): never move back onto it.
-    const next = nextLogin(pool, accounts.map((a) => (a.id === rec.accountId ? { ...a, signedOut: true } : a)), rec, this.clock.now());
+    const eligible = this.poolTurnAccounts(rec, pool, accounts).map((a) => (a.id === rec.accountId ? { ...a, signedOut: true } : a));
+    const next = nextLogin(pool, eligible, rec, this.clock.now());
     if ('waitUntil' in next) return;
     this.moveLogin(st, accounts.find((a) => a.id === next.accountId)!, `${was?.title ?? rec.accountId} is signed out`);
     this.carryOn(st, CARRY_ON_SIGNED_OUT);
@@ -342,7 +383,7 @@ export const poolsPart = {
     const stuck = rec.status === 'error' && rec.limitHitTurn !== undefined;
     if (!stuck || rec.waitingForRoom || rt.turn || rec.queue.length || this.bucket(rec) !== 'inbox') return;
     const pool = this.poolById(rec.poolId);
-    if (pool) this.startWait(st, roomWait(pool, this.usableAccounts(), this.clock.now()), 'Carrying on by itself once there is room.');
+    if (pool) this.startWait(st, roomWait(pool, this.poolTurnAccounts(rec, pool), this.clock.now()), 'Carrying on by itself once there is room.');
     else this.waitForOwnLogin(st, 'is at its limit.');
   },
 
@@ -385,12 +426,13 @@ export const poolsPart = {
       return;
     }
     let moved = false;
-    const to = early === undefined ? undefined : accounts.find((a) => a.id === early);
+    const eligible = this.poolTurnAccounts(rec, pool, accounts);
+    const to = early === undefined ? undefined : eligible.find((a) => a.id === early && loginOk(a) && pool.accountIds.includes(a.id));
     if (to) {
       this.moveLogin(st, to, current ? `${current.title} ${limitWhy(current, now, true)}` : `${rec.accountId} isn't on this Mac`);
       moved = true;
-    } else if (!current || !pool.accountIds.includes(current.id) || !loginOk(current)) {
-      const next = nextLogin(pool, accounts, rec, now);
+    } else if (!current || !eligible.includes(current) || !pool.accountIds.includes(current.id) || !loginOk(current)) {
+      const next = nextLogin(pool, eligible, rec, now);
       if ('waitUntil' in next) {
         this.startWait(st, next, `Still no room in ${pool.title}.`);
         return;
@@ -439,7 +481,7 @@ export const poolsPart = {
     const now = this.clock.now();
     // Another login: never the one it ran dry on, whose block a reading
     // from another of its sessions can clear (a model's own limit).
-    const next = nextLogin(pool, this.usableAccounts(), rec, now);
+    const next = nextLogin(pool, this.poolTurnAccounts(rec, pool), rec, now);
     if ('waitUntil' in next) return undefined;
     // The login the wait is for is back at its reset, a minute before
     // `until`. That's the timer's, with its minute of grace, as a provider
@@ -458,7 +500,7 @@ export const poolsPart = {
     if (!w || rt.deleted || rt.turn || rec.queue.length || this.bucket(rec) !== 'inbox' || rec.carryOnAtReset === false) return false;
     const pool = this.poolById(rec.poolId);
     if (!pool?.accountIds.includes(rec.accountId) || !this.readBack.has(rec.accountId)) return false;
-    const current = this.usableAccounts().find((a) => a.id === rec.accountId);
+    const current = this.poolTurnAccounts(rec, pool).find((a) => a.id === rec.accountId);
     return !!current && loginOk(current);
   },
 

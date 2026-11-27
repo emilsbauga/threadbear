@@ -84,6 +84,10 @@ gpui-base = { path = "vendor/gpui-base" }
 # a click that opened a row moved its heading as the transcript followed its
 # tail, and the heading's tip came up over the findings under the pointer and
 # stayed (23 Nov). Its delayed show checks that too before it shows.
+# And scroll events immediately activate InputRateTracker's high-rate state
+# (window.rs): otherwise scrolling an inactive or freshly woken window hits the
+# 33.3 ms throttle on Frame 2 waiting for 6 events, piling wheel deltas into a
+# jerk (Mike, 26 Nov).
 gpui-pre = { path = "vendor/gpui-pre" }
 # gpui-pre-macos 0.3.11 as published, except that with a native view inside
 # the window holding the keyboard (a web panel's page), a key without ⌘ or
@@ -93,6 +97,17 @@ gpui-pre = { path = "vendor/gpui-pre" }
 # And a scroll with no gesture phase or momentum is ScrollSource::Wheel
 # (events.rs): Mike's Razer wheel reports pixels, so it looked like a trackpad.
 gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
+# gpui-pre-windows 0.3.11 as published (its first commit under vendor/), except
+# that the pointer leaving the window (or a file drag leaving it) sends
+# MouseExited and then a move to where it went (events.rs,
+# `dispatch_pointer_left`, `pointer_left_to`). Upstream only cleared the
+# window's hovered flag, so a row's hover buttons and its tooltip stayed up
+# after the pointer went off the window onto the desktop (Mike's XPS, 25 Nov).
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+# gpui-pre-apple 0.3.11 as published, except that the Metal display link asks
+# for the screen's full frame rate (display_link.rs). By default it drew at 60 on
+# Mike's 120 Hz MacBook screen, and scrolling looked juddery (25 Nov).
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }
 
 # Scripted screenshots run in debug apps, often at background priority. An
 # unoptimized PNG encode stalled the app for 30 seconds (14 Nov). Optimize

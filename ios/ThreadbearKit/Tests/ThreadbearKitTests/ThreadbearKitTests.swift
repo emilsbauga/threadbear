@@ -113,6 +113,34 @@ import UniformTypeIdentifiers
         let detail = try JSONDecoder().decode(ThreadDetail?.self, from: Data("null".utf8))
         #expect(detail == nil)
     }
+
+    @Test func doneCardPickOneNextAndSuggestedDecode() throws {
+        let valid = """
+        {"threadId":"t1","runnerId":"laptop","title":"A","cwd":"/x","accountId":"claude-3","provider":"claude",
+         "status":"idle","needsYou":false,"unread":false,"preview":"","lastActivityAt":0,"needs":"nothing",
+         "next":["Option A","Option B"],"nextPick":"one","nextSuggested":1.0}
+        """
+        let row = try JSONDecoder().decode(PhoneThread.self, from: Data(valid.utf8))
+        #expect(row.nextPick == "one")
+        #expect(row.nextSuggestedIndex == 1)
+
+        // Huge, negative, fractional, out-of-range, or single-item values never trap and become nil.
+        for bad in [
+            #"{"next":["A","B"],"nextPick":"one","nextSuggested":1e100}"#,
+            #"{"next":["A","B"],"nextPick":"one","nextSuggested":2}"#,
+            #"{"next":["A","B"],"nextPick":"one","nextSuggested":0.5}"#,
+            #"{"next":["A"],"nextPick":"one","nextSuggested":0}"#,
+            #"{"next":["A","B"],"nextSuggested":0}"#,
+        ] {
+            let json = """
+            {"threadId":"t1","runnerId":"laptop","title":"A","cwd":"/x","accountId":"claude-3","provider":"claude",
+             "status":"idle","needsYou":false,"unread":false,"preview":"","lastActivityAt":0,"needs":"nothing",
+             \(bad.dropFirst().dropLast())}
+            """
+            let decoded = try JSONDecoder().decode(PhoneThread.self, from: Data(json.utf8))
+            #expect(decoded.nextSuggestedIndex == nil, "\(bad)")
+        }
+    }
 }
 
 @Suite struct InboxTests {

@@ -15,7 +15,8 @@ import type { Logger } from '../log.ts';
 import type { Account, Pool, Provider } from '../protocol.ts';
 import type { Asker } from './acp-oneshot.ts';
 import { expandHome } from '../config.ts';
-import { pickInPool } from '../pools.ts';
+import { pickInPool, poolProviders } from '../pools.ts';
+import { providerInfo } from '../providers.ts';
 import { askCli, cliDir } from './claude-pool.ts';
 import type { AskCli, CliResponse } from './claude-pool.ts';
 import { Ledger } from './ledger.ts';
@@ -60,8 +61,10 @@ export type SummarizeParams = Common & { text: string; maxWords?: number };
 // strong: Opus (ROUTES.decide) rather than Haiku.
 export type GenerateParams = Common & { prompt: string; system?: string; maxTokens?: number; strong?: boolean };
 
-// pool: the pool whose Claude logins answer; null for none (no small jobs).
-export type ModelSettings = { privateFolders: string[]; pool?: string | null };
+// pool: the pool whose logins answer; null for none (no small jobs).
+// providers: custom provider order inside that pool; unset/null is Claude,
+// then Codex, then the pool's remaining small-job providers in pool order.
+export type ModelSettings = { privateFolders: string[]; pool?: string | null; providers?: Provider[] | null };
 
 // What the Models layer needs of the runner.
 export type PoolHost = {
@@ -137,9 +140,9 @@ export class Models {
   }
 
   // Why no call could go out at all, or undefined when one might: there's
-  // a pool with a Claude login. Room isn't checked; a call finds that out.
+  // a pool with a small-job login. Room isn't checked; a call finds that out.
   unavailable(): string | undefined {
-    return this.poolLogins() ? undefined : 'Needs a Claude pool to run on';
+    return this.poolLogins() ? undefined : 'Needs a pool to run on';
   }
 
   private poolLogins(): { pool: Pool; accounts: Account[] } | undefined {
@@ -147,8 +150,10 @@ export class Models {
     if (id === null || !this.opts.poolHost) return undefined;
     const found = this.opts.poolHost.pool(id);
     if (!found) return undefined;
-    const can = new Set<string>(['claude', ...Object.keys(this.opts.askers ?? {})]);
-    const accounts = found.accounts.filter((a) => can.has(a.provider) && found.pool.accountIds.includes(a.id));
+    const can = new Set<string>(['claude', ...Object.keys(this.opts.askers ?? {}).filter((p) => providerInfo(p).smallJobs)]);
+    const configured = this.opts.settings().providers;
+    const allowed = configured ? new Set<string>(configured) : undefined;
+    const accounts = found.accounts.filter((a) => can.has(a.provider) && (!allowed || allowed.has(a.provider)) && found.pool.accountIds.includes(a.id));
     return accounts.length ? { pool: found.pool, accounts } : undefined;
   }
 
@@ -227,30 +232,35 @@ export class Models {
   }
 
   // One route: skipped with no pool or no login with room; else run on a
-  // login, and on the next one if that says it's out of room.
+  // login in the configured provider order (default: Claude, then Codex, then
+  // other small-job providers in the pool in pool order), moving on when one
+  // is out of room or a provider fails.
   private async viaPool<T>(job: ModelJob, p: Common, model: string, a: Attempt<T>): Promise<ModelResult<T> | { ok: false; skipped: Failure }> {
-    if (!this.poolLogins()) {
+    const initial = this.poolLogins();
+    if (!initial) {
       const id = this.poolId();
-      return skip('no-pool', id === null ? 'Small jobs are on no pool.' : `No pool called ${id} has a Claude login.`);
+      return skip('no-pool', id === null ? 'Small jobs are on no pool.' : `No pool called ${id} has a login that can run small jobs.`);
     }
     // Before taking a slot: a pool nothing can answer on says so at once.
-    const askable = this.providerToAsk();
-    if (!askable || !this.askFor(askable)) return skip('off', 'Pool calls are off in this runner.');
+    if (!this.providersToAsk(initial).some((provider) => this.askFor(provider))) return skip('off', 'Pool calls are off in this runner.');
     await this.acquirePool();
     try {
       const tried: string[] = [];
+      const failedProviders = new Set<Provider>();
+      let lastError: Failure | undefined;
       let title = '';
       for (;;) {
         // Read again each time round: the last call may have used up a login.
         const found = this.poolLogins();
-        if (!found) return skip('no-pool', 'The pool has no Claude login.');
+        if (!found) return skip('no-pool', 'The pool has no login that can run small jobs.');
         title = found.pool.title;
-        const id = pickInPool(found.pool, found.accounts, { provider: askable, current: this.lastLogin, exclude: tried });
-        const account = id ? found.accounts.find((x) => x.id === id) : undefined;
-        if (!account) break;
+        const picked = this.pickAccount(found, tried, failedProviders);
+        if (!picked) break;
+        const { provider, account, ask } = picked;
         tried.push(account.id);
         const started = this.opts.clock.now();
-        const res: CliResponse = await this.askFor(askable)!({
+        const usedModel = provider === 'claude' ? model : `${provider} default`;
+        const res: CliResponse = await ask({
           account,
           model,
           system: a.system,
@@ -264,7 +274,7 @@ export class Models {
         this.record({
           job,
           feature: p.feature,
-          model,
+          model: usedModel,
           started,
           ok: res.ok && !unreadable,
           accountId: account.id,
@@ -276,7 +286,7 @@ export class Models {
           // Another provider's agent answers on its own default, not the
           // Claude model asked for, so its label says so: a caller acting
           // only on Opus's answer (the quiet inbox) can tell.
-          return { ok: true, value, model: `${askable === 'claude' ? model : `${askable} default`} on ${account.id}`, ...tokensOf(res), ...(res.notionalUsd !== undefined ? { notionalUsd: res.notionalUsd } : {}) };
+          return { ok: true, value, model: `${usedModel} on ${account.id}`, ...tokensOf(res), ...(res.notionalUsd !== undefined ? { notionalUsd: res.notionalUsd } : {}) };
         }
         if (!res.ok && res.limit) {
           this.opts.poolHost?.ranDry(account.id);
@@ -284,21 +294,49 @@ export class Models {
           continue;
         }
         if (!res.ok && res.timedOut) return { ok: false, reason: 'timeout', message: res.message };
-        return { ok: false, reason: 'provider', message: res.ok ? "The model's answer couldn't be read." : res.message };
+        // Non-limit error (provider down, not signed in, unreadable answer):
+        // skip the rest of this provider's logins for this call, but allow
+        // spilling over to the next small-job provider in the pool.
+        failedProviders.add(provider);
+        if (this.lastLogin === account.id) this.lastLogin = undefined;
+        lastError = { ok: false, reason: 'provider', message: res.ok ? "The model's answer couldn't be read." : res.message };
       }
+      if (lastError) return lastError;
       return skip('no-room', `Every login in ${title || 'the pool'} is out of room.`);
     } finally {
       this.releasePool();
     }
   }
 
-  // Which provider of the pool answers: Claude's whenever the pool has one,
-  // as small jobs are written for Haiku and Opus. So the built-in `claude`
-  // pool never turns into another agent; one of those answers only where
-  // someone picked a pool with no Claude login in it.
-  private providerToAsk(): Provider | undefined {
-    const accounts = this.poolLogins()?.accounts;
-    return accounts?.find((a) => a.provider === 'claude')?.provider ?? accounts?.[0]?.provider;
+  // The pool's small-job providers in the order we try them: Mike's custom
+  // `models.providers` order when set, else Claude first (small jobs are
+  // written for Haiku and Opus, and quietInboxMine acts only on Opus), then
+  // Codex, then any other small-job providers in the pool in pool order
+  // (e.g. Grok, OpenCode). Never leaves the chosen pool, so separate pools
+  // (e.g. work) stay isolated.
+  private providersToAsk(found: { pool: Pool; accounts: Account[] }): Provider[] {
+    const order = poolProviders(found.pool, found.accounts);
+    const configured = this.opts.settings().providers;
+    if (configured) return configured.filter((p) => order.includes(p));
+    const preferred = (['claude', 'codex'] as const).filter((p) => order.includes(p));
+    return [...preferred, ...order.filter((p) => !preferred.includes(p as (typeof preferred)[number]))];
+  }
+
+  private pickAccount(
+    found: { pool: Pool; accounts: Account[] },
+    tried: string[],
+    failedProviders: ReadonlySet<Provider>,
+  ): { provider: Provider; account: Account; ask: Asker } | undefined {
+    const now = this.opts.clock.now();
+    for (const provider of this.providersToAsk(found)) {
+      if (failedProviders.has(provider)) continue;
+      const ask = this.askFor(provider);
+      if (!ask) continue;
+      const id = pickInPool(found.pool, found.accounts, { provider, current: this.lastLogin, exclude: tried, now });
+      const account = id ? found.accounts.find((x) => x.id === id) : undefined;
+      if (account) return { provider, account, ask };
+    }
+    return undefined;
   }
 
   private askFor(provider: Provider): Asker | undefined {

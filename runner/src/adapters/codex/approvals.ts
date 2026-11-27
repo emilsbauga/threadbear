@@ -298,6 +298,8 @@ export type ApprovalsDeps = {
   // those itself, as a Claude thread on Full never asks (Ian, 13 Nov: a
   // GPT-6.1-Sol thread on Full access showed Allow and Deny for a command).
   fullAccess?(): boolean;
+  coordinatorRole?: 'coordinator' | 'helper';
+  checkCoordinator?(method: string, input: Record<string, unknown>): string | undefined;
 };
 
 type Pending = { method: string; abort: AbortController };
@@ -324,6 +326,18 @@ export class CodexApprovals {
   // this session with no itemId (there's no tool row for it here).
   handle(id: RequestId, method: string, params: unknown, o: { fromChild: boolean }): void {
     const p = (params ?? {}) as Record<string, unknown>;
+    const writeReq = method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval' || method === 'item/permissions/requestApproval' || method === 'execCommandApproval' || method === 'applyPatchApproval';
+    if (this.deps.coordinatorRole === 'coordinator' && writeReq) {
+      this.deps.note('The project coordinator stays read-only. Delegate implementation to a helper with the coordinator tool.');
+      const r = refusal(method);
+      if ('result' in r) return this.deps.reply(id, r.result);
+      return this.deps.replyError(id, r.error.code, r.error.message);
+    }
+    if (writeReq && this.deps.checkCoordinator?.(method, p)) {
+      const r = refusal(method);
+      if ('result' in r) return this.deps.reply(id, r.result);
+      return this.deps.replyError(id, r.error.code, r.error.message);
+    }
     switch (method) {
       case 'item/commandExecution/requestApproval':
         return this.command(id, p as CommandExecutionRequestApprovalParams, o.fromChild);

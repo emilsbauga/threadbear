@@ -5,6 +5,7 @@ import { acpAccounts } from './adapters/acp/agents.ts';
 import path from 'node:path';
 import { isEffortLevel, type Account, type EffortLevel, type ModelChoice } from './protocol.ts';
 import type { UsageStore } from './usage.ts';
+import { resetHint } from './reset-hint.ts';
 import type { Config } from './config.ts';
 import { isDirectory } from './fsutil.ts';
 
@@ -190,7 +191,8 @@ function settingsModel(account: Account): string | undefined {
 }
 
 // What the registry needs from the UsageStore (usage.ts).
-export type AccountUsageSource = Pick<UsageStore, 'usageFor' | 'identityFor'>;
+// `now`, the store's clock, for the reset hint; Date.now() without it.
+export type AccountUsageSource = Pick<UsageStore, 'usageFor' | 'identityFor'> & Partial<Pick<UsageStore, 'now'>>;
 // What the registry needs from SignInState (sign-in-state.ts).
 export type AccountSignInSource = { view(account: Account): { signedOut?: true; loginEndsAt?: string } };
 
@@ -218,6 +220,11 @@ export class AccountRegistry {
   onChange(fn: (accounts: Account[]) => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  /** The next list() reads the folders again: a login folder was just made or taken away. */
+  rescanNow(): void {
+    this.at = 0;
   }
 
   // Re-scans at most every 10 seconds so a newly added login shows up
@@ -315,6 +322,8 @@ export class AccountRegistry {
     out.title = out.provider === 'codex' ? codexTitle(out.email, out.id) : out.provider === 'claude' ? (out.email ?? out.id) : out.title;
     const usage = ended ? undefined : this.usage.usageFor(out);
     if (usage) out.usage = usage;
+    const hint = resetHint(out, this.usage.now?.() ?? Date.now());
+    if (hint) out.resetHint = hint;
     return out;
   }
 

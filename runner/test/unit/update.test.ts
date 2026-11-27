@@ -1191,3 +1191,19 @@ test("a build leaves its checks out when a landing passed them at that commit, a
   await follower.u.check();
   assert.deepEqual(skipped, [false]);
 });
+
+test('beforeBuild runs ahead of deploy and its failure does not stop the build', async () => {
+  const order: string[] = [];
+  const h = harness({}, {
+    beforeBuild: async () => {
+      order.push('before');
+      throw new Error('disk check failed');
+    },
+    deploy: async () => {
+      order.push('deploy');
+      return { ok: false, error: 'boom', transient: true };
+    },
+  });
+  await h.u.check();
+  assert.deepEqual(order, ['before', 'deploy']);
+});

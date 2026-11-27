@@ -4,7 +4,7 @@ import { makeHarness, tick } from '../helpers/fakes.ts';
 import { checkSummary } from '../helpers/protocol-check.ts';
 import { RpcError } from '../../src/protocol.ts';
 import { NO_WAKE_TIME } from '../../src/runner.ts';
-import { awayFor, hibernateNote, localWhen, readWakeAnswer, wakePrompt } from '../../src/wake-when.ts';
+import { awayFor, hibernateNote, localWhen, parseWakeTime, readWakeAnswer, wakePrompt } from '../../src/wake-when.ts';
 import type { GenerateParams, ModelResult } from '../../src/models/index.ts';
 
 const DAY = 86_400_000;
@@ -65,14 +65,14 @@ test('hibernateWhen: away at once, then until the time Opus gives, with a note',
   const gate = new Promise<void>((r) => (release = r));
   const { h, thread, asked, s } = setup(async () => {
     await gate;
-    return ok({ until: new Date(h.clock.now() + 2 * DAY).toISOString(), topic: null, why: 'Saturday' });
+    return ok({ until: new Date(h.clock.now() + 2 * DAY).toISOString(), topic: null, why: 'After Christmas' });
   });
-  const call = h.runner.hibernateWhen({ threadId: thread.id, said: 'at the weekend' });
+  const call = h.runner.hibernateWhen({ threadId: thread.id, said: 'after Christmas' });
   // Away before the model answers, saying it's being worked out.
   const away = h.runner.get(thread.id);
   assert.deepEqual(checkSummary(away), []);
   assert.equal(away.snoozedUntil, NO_WAKE_TIME);
-  assert.deepEqual(away.wakeWhen, { said: 'at the weekend', pending: true });
+  assert.deepEqual(away.wakeWhen, { said: 'after Christmas', pending: true });
   assert.deepEqual(h.runner.list().map((t) => t.id), []);
   assert.equal(s.ended, true);
   release();
@@ -83,9 +83,9 @@ test('hibernateWhen: away at once, then until the time Opus gives, with a note',
   assert.match(asked[0].prompt, /How it started \(the user\): Plan the workbench drawers/);
   assert.equal(res.until, new Date(h.clock.now() + 2 * DAY).toISOString());
   assert.equal(res.thread.snoozedUntil, res.until);
-  assert.deepEqual(res.thread.wakeWhen, { said: 'at the weekend' });
+  assert.deepEqual(res.thread.wakeWhen, { said: 'after Christmas' });
   assert.deepEqual(checkSummary(res.thread), []);
-  assert.match(h.events(thread.id).at(-1).text, /^Hibernating until .+\. You said "at the weekend"\.$/);
+  assert.match(h.events(thread.id).at(-1).text, /^Hibernating until .+\. You said "after Christmas"\.$/);
   // Comes back as any snooze does, and forgets the words.
   h.clock.advance(2 * DAY);
   const back = h.runner.get(thread.id);
@@ -103,8 +103,121 @@ test('hibernateWhen: a model that fails or says nothing usable puts it back, unr
   assert.deepEqual(h.runner.list().map((x) => x.id), [thread.id]);
   await assert.rejects(h.runner.hibernateWhen({ threadId: thread.id, said: '  ' }), (e: RpcError) => e.code === -32602);
   const off = setup(() => ({ ok: false, reason: 'no-room', message: 'Every login in Claude is out of room.' }));
-  await assert.rejects(off.h.runner.hibernateWhen({ threadId: off.thread.id, said: 'tomorrow' }), /out of room/);
+  await assert.rejects(off.h.runner.hibernateWhen({ threadId: off.thread.id, said: 'after Christmas' }), /out of room/);
   assert.equal(off.h.runner.get(off.thread.id).snoozedUntil, undefined);
+});
+
+test('parseWakeTime: common time phrases are parsed locally, while topics and fuzzy phrases return undefined', () => {
+  // Thursday 29 October 2026, 10:00 local time (timezone-independent).
+  const thu10am = new Date(2026, 9, 29, 10, 0, 0, 0).getTime();
+  const iso = (y: number, m: number, d: number, h: number, min = 0) => new Date(y, m, d, h, min, 0, 0).toISOString();
+  const okUntil = (said: string, at = thu10am) => {
+    const r = parseWakeTime(said, at);
+    assert.ok(r && 'until' in r, `expected local time for "${said}", got ${JSON.stringify(r)}`);
+    return r.until;
+  };
+
+  // Relative durations
+  assert.equal(okUntil('30m'), new Date(thu10am + 30 * 60_000).toISOString());
+  assert.equal(okUntil('2h'), new Date(thu10am + 2 * 3_600_000).toISOString());
+  assert.equal(okUntil('in 2 hours'), new Date(thu10am + 2 * 3_600_000).toISOString());
+  assert.equal(okUntil('in an hour'), new Date(thu10am + 3_600_000).toISOString());
+  assert.equal(okUntil('in half an hour'), new Date(thu10am + 30 * 60_000).toISOString());
+  assert.equal(okUntil('1h 30m'), new Date(thu10am + 90 * 60_000).toISOString());
+  assert.equal(okUntil('1.5 hours'), new Date(thu10am + 90 * 60_000).toISOString());
+  assert.equal(okUntil('in 2 weeks'), iso(2026, 10, 12, 10, 0));
+  assert.equal(okUntil('in a couple of days'), iso(2026, 9, 31, 10, 0));
+  assert.equal(okUntil('in a month'), iso(2026, 10, 29, 10, 0));
+
+  // Relative days and clock times
+  assert.equal(okUntil('tomorrow'), iso(2026, 9, 30, 9, 0));
+  assert.equal(okUntil('until tomorrow'), iso(2026, 9, 30, 9, 0));
+  assert.equal(okUntil('tomorrow morning'), iso(2026, 9, 30, 9, 0));
+  assert.equal(okUntil('tomorrow afternoon'), iso(2026, 9, 30, 14, 0));
+  assert.equal(okUntil('tomorrow at 2:30pm'), iso(2026, 9, 30, 14, 30));
+  assert.equal(okUntil('day after tomorrow'), iso(2026, 9, 31, 9, 0));
+  assert.equal(okUntil('tonight'), iso(2026, 9, 29, 19, 0));
+  assert.equal(okUntil('tonight at 8pm'), iso(2026, 9, 29, 20, 0));
+  assert.equal(okUntil('this afternoon'), iso(2026, 9, 29, 14, 0));
+  assert.equal(okUntil('today 5pm'), iso(2026, 9, 29, 17, 0));
+  assert.equal(okUntil('5pm'), iso(2026, 9, 29, 17, 0));
+  assert.equal(okUntil('8am'), iso(2026, 9, 30, 8, 0), 'earlier clock time rolls to tomorrow');
+  assert.equal(okUntil('14:30'), iso(2026, 9, 29, 14, 30));
+
+  // Weekend, next week, next month
+  assert.equal(okUntil('at the weekend'), iso(2026, 9, 31, 9, 0));
+  assert.equal(okUntil('this weekend'), iso(2026, 9, 31, 9, 0));
+  assert.equal(okUntil('next weekend'), iso(2026, 10, 7, 9, 0));
+  assert.equal(okUntil('next week'), iso(2026, 10, 2, 9, 0));
+  assert.equal(okUntil('next month'), iso(2026, 10, 1, 9, 0));
+
+  // Weekdays
+  assert.equal(okUntil('Friday'), iso(2026, 9, 30, 9, 0));
+  assert.equal(okUntil('Friday 9am'), iso(2026, 9, 30, 9, 0));
+  assert.equal(okUntil('Monday 10:30am'), iso(2026, 10, 2, 10, 30));
+  assert.equal(okUntil('next Monday'), iso(2026, 10, 2, 9, 0));
+  assert.equal(okUntil('next Friday'), iso(2026, 10, 6, 9, 0));
+  assert.equal(okUntil('on Wednesday at 2pm'), iso(2026, 10, 4, 14, 0));
+  assert.equal(okUntil('Thursday'), iso(2026, 10, 5, 9, 0), 'same weekday without time is next week');
+  assert.equal(okUntil('Thursday 5pm'), iso(2026, 9, 29, 17, 0), 'same weekday with future time is today');
+
+  // Calendar dates & ISO
+  assert.equal(okUntil('15 Dec'), iso(2026, 11, 15, 9, 0));
+  assert.equal(okUntil('Dec 15 at 2pm'), iso(2026, 11, 15, 14, 0));
+  assert.equal(okUntil('2026-11-28'), iso(2026, 10, 28, 9, 0));
+  assert.equal(okUntil('2026-11-28T09:00:00+08:00'), '2026-11-28T01:00:00.000Z');
+
+  // Bounds and invalid dates
+  assert.match((parseWakeTime('2020-01-01T00:00:00Z', thu10am) as { error: string }).error, /already passed/);
+  assert.match((parseWakeTime('0m', thu10am) as { error: string }).error, /already passed/);
+  assert.match((parseWakeTime('2031-01-01', thu10am) as { error: string }).error, /two years/);
+  assert.match((parseWakeTime('2026-02-30', thu10am) as { error: string }).error, /doesn't exist/);
+
+  // Topics, compound phrases and fuzzy expressions must fall through to the model
+  for (const fuzzy of [
+    'woodworking',
+    'next time I talk about woodworking',
+    'woodworking, or tomorrow',
+    'next time I talk about woodworking, or in two days',
+    'when the parts arrive',
+    'until the GPUI app replaces the Swift app',
+    'MACG-3843',
+    'after PR 123',
+    'after Christmas',
+    'in a few weeks',
+    'tomorrow if it stops raining',
+    'Friday after the release',
+    'later',
+    'whenever',
+    'banana',
+  ]) {
+    assert.equal(parseWakeTime(fuzzy, thu10am), undefined, `should defer "${fuzzy}" to model`);
+  }
+});
+
+test('hibernateWhen: plain times hibernate locally with no model call, even when out of room or models are off', async () => {
+  const off = setup(() => ({ ok: false, reason: 'no-room', message: 'Every login in Main is out of room.' }));
+  const res = await off.h.runner.hibernateWhen({ threadId: off.thread.id, said: 'tomorrow morning' });
+  assert.equal(off.asked.length, 0, 'model was never called');
+  assert.ok(res.until);
+  assert.equal(res.thread.snoozedUntil, res.until);
+  assert.deepEqual(res.thread.wakeWhen, { said: 'tomorrow morning' });
+  assert.deepEqual(checkSummary(res.thread), []);
+  assert.match(off.h.events(off.thread.id).at(-1).text, /^Hibernating until .+\. You said "tomorrow morning"\.$/);
+
+  // Even with no Models layer at all, plain times still work.
+  const bare = makeHarness();
+  const { thread } = bare.runner.create({ text: 'Fix it later', accountId: 'claude-3' });
+  const r2 = await bare.runner.hibernateWhen({ threadId: thread.id, said: 'in 2 hours' });
+  assert.equal(r2.until, new Date(bare.clock.now() + 2 * 3_600_000).toISOString());
+  assert.equal(bare.runner.get(thread.id).snoozedUntil, r2.until);
+
+  // Agent end_turn snooze with a natural time phrase also skips the model.
+  const agent = setup(() => ({ ok: false, reason: 'no-room', message: 'Every login in Main is out of room.' }));
+  turnWithSnooze(agent.h, agent.thread.id, { needs: 'nothing', snooze: 'in 2 hours' });
+  await tick();
+  assert.equal(agent.asked.length, 0);
+  assert.equal(agent.h.runner.get(agent.thread.id).snoozedUntil, new Date(agent.h.clock.now() + 2 * 3_600_000).toISOString());
 });
 
 test('hibernateWhen: a private folder sends his words alone', async () => {

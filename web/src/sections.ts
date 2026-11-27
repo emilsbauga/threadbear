@@ -4,8 +4,8 @@
 // shared/cases/wait-states.json. No React here, so the tests can run it bare.
 import { folderName } from './format.ts';
 
-export type SectionKey = 'starred' | 'backlog' | 'inbox' | 'running' | 'hibernating' | 'archived';
-export const SECTIONS: SectionKey[] = ['starred', 'backlog', 'inbox', 'running', 'hibernating', 'archived'];
+export type SectionKey = 'starred' | 'coordinators' | 'backlog' | 'inbox' | 'running' | 'hibernating' | 'archived';
+export const SECTIONS: SectionKey[] = ['starred', 'coordinators', 'backlog', 'inbox', 'running', 'hibernating', 'archived'];
 
 export type InboxOrder = 'needsYou' | 'newest' | 'oldest';
 
@@ -24,6 +24,7 @@ export type ThreadRow = {
   starredAt?: string;
   backlogged?: boolean;
   backlog?: { text: string; revision: number; imageCount: number };
+  coordinatorProjectId?: string;
   archivedAt?: string;
   snoozedUntil?: string;
   snoozedUntilRestart?: boolean;
@@ -143,6 +144,11 @@ function legacySection(r: ThreadRow, now: number, wakes: Map<string, number>): '
 // Legacy: whether it counts in the Needs you filter, before the live check.
 const legacyCounts = (r: ThreadRow) => legacyUrgency(r) === 0 || r.needsYou || legacyWaitingOnMike(r);
 
+// Missing or malformed metadata keeps an ordinary thread in its usual section.
+export function isCoordinator(r: ThreadRow): boolean {
+  return typeof r.coordinatorProjectId === 'string' && r.coordinatorProjectId.trim().length > 0;
+}
+
 // ------------------------------------------------------------ headings
 
 // The sub line of a hibernating row that waits for more than a time:
@@ -191,6 +197,7 @@ export function wakesOf(schedules: ScheduleRow[]): Map<string, number> {
 // so is one put away waiting on its own work (onThreads, landing,
 // appRestart), which goes under Running though it has a snooze.
 export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<string, number>, order: InboxOrder) {
+  const coordinators: T[] = [];
   const starred: T[] = [];
   const backlog: T[] = [];
   const inbox: T[] = [];
@@ -200,6 +207,10 @@ export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<st
     const state = waitStateOf(r);
     if (r.archivedAt || state === 'archived') continue;
     if (r.backlog || r.backlogged) { backlog.push(r); continue; }
+    if (isCoordinator(r)) {
+      coordinators.push(r);
+      continue;
+    }
     if (r.starredAt) {
       starred.push(r);
       continue;
@@ -211,6 +222,7 @@ export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<st
     else if (section === 'scheduled') scheduled.push(r);
   }
   // Oldest star first, so they stay put while Mike goes back and forth.
+  coordinators.sort((a, b) => a.coordinatorProjectId!.localeCompare(b.coordinatorProjectId!) || a.threadId.localeCompare(b.threadId));
   starred.sort((a, b) => a.starredAt!.localeCompare(b.starredAt!) || a.threadId.localeCompare(b.threadId));
   if (order === 'needsYou') inbox.sort((a, b) => urgency(a) - urgency(b) || newestFirst(a, b));
   // A card waiting on Mike (ask_secret, a question, a permission) goes first
@@ -218,7 +230,7 @@ export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<st
   else if (order === 'newest') inbox.sort((a, b) => cardFirst(a, b) || newestFirst(a, b));
   else inbox.sort((a, b) => cardFirst(a, b) || newestFirst(b, a));
   running.sort(newestFirst);
-  return { starred, backlog: backlog.sort(newestFirst), inbox, running, scheduled };
+  return { coordinators, starred, backlog: backlog.sort(newestFirst), inbox, running, scheduled };
 }
 
 // The Hibernating heading's rows: soonest to wake first, each once (a thread
@@ -227,7 +239,7 @@ export function build<T extends ThreadRow>(rows: T[], now: number, wakes: Map<st
 export function hibernating<T extends ThreadRow>(scheduled: T[], snoozed: T[], wakes: Map<string, number>): T[] {
   const seen = new Set<string>();
   const wakesAt = (r: T) => (r.snoozedUntil ? Date.parse(r.snoozedUntil) : (wakes.get(r.threadId) ?? Infinity));
-  return [...scheduled, ...snoozed].filter((r) => !seen.has(r.threadId) && seen.add(r.threadId)).sort((a, b) => (wakesAt(a) === wakesAt(b) ? newestFirst(a, b) : wakesAt(a) - wakesAt(b)));
+  return [...scheduled, ...snoozed].filter((r) => !isCoordinator(r) && !seen.has(r.threadId) && seen.add(r.threadId)).sort((a, b) => (wakesAt(a) === wakesAt(b) ? newestFirst(a, b) : wakesAt(a) - wakesAt(b)));
 }
 
 // Most recently archived first, as the Mac has it. The backend sends the den

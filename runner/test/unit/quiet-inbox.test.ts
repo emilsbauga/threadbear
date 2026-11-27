@@ -71,6 +71,25 @@ test('a thread another thread started archives itself when it finishes with noth
   assert.equal(h.runner.get(parent).archivedAt, undefined);
 });
 
+test('a thread Alex asked for as its own stays, even though another thread started it', async () => {
+  const h = setup();
+  const parent = mine(h);
+  // create_thread's nested: false. The reply is the thing he asked to read,
+  // and no thread holds it (26 Nov 2026, the perpetual spinach lookup).
+  const own = h.runner.create({
+    text: 'Where can I get perpetual spinach?',
+    accountId: 'claude-main',
+    startedBy: { kind: 'thread', label: 'Agent', threadId: parent },
+    detached: true,
+  }).thread.id;
+  finish(h, own);
+  const control = helper(h, parent);
+  finish(h, control);
+  await until(() => Boolean(h.runner.get(control).archivedAt), 'the nested helper archived');
+  await settle();
+  assert.equal(h.runner.get(own).archivedAt, undefined, 'a detached thread stays');
+});
+
 test('only for threads another thread started', async () => {
   const h = setup();
   // Alex's own, a tool's and a schedule's stay: they're often what he wants to read.

@@ -108,6 +108,88 @@ function start(allowRules: string[] = [], extra: Record<string, unknown> = {}, d
   return { session, state, outputs, approvals, adapter };
 }
 
+test('a coordinator gate runs before Full access and blocks writes and native sub-agents', async () => {
+  let paused = false;
+  const calls: { name: string; agentId?: string }[] = [];
+  const { session, state, approvals } = start([], {
+    permissionMode: 'full',
+    coordinator: {
+      role: 'coordinator',
+      checkTool: (call: { name: string; agentId?: string }) => {
+        calls.push(call);
+        return paused ? 'Coordinator paused.' : undefined;
+      },
+    },
+  });
+  const pre = state.options.hooks.PreToolUse[0].hooks[0];
+  const hook = (name: string, input: unknown = {}, agentId?: string) => pre({ hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: 'call-1', tool_input: input, ...(agentId ? { agent_id: agentId } : {}) });
+  try {
+    for (const name of ['Bash', 'Write', 'Skill', 'Agent', 'Task', 'mcp__other__write', 'mcp__threadbear__create_thread']) {
+      assert.equal((await hook(name)).hookSpecificOutput.permissionDecision, 'deny', name);
+    }
+    assert.equal((await hook('Bash', { agent_id: 'worker-1' })).hookSpecificOutput.permissionDecision, 'deny', 'the model cannot smuggle a helper identity in tool input');
+    assert.deepEqual(await hook('mcp__threadbear__read_project'), {});
+    assert.deepEqual(await hook('mcp__threadbear__coordinator', { action: 'startHelper', brief: 'Do work' }), {});
+    assert.equal(calls.at(-1)?.name, 'mcp__threadbear__coordinator');
+    assert.deepEqual(await hook('ToolSearch', { query: 'threadbear coordinator' }), {}, 'deferred MCP tools must remain discoverable');
+    assert.equal(state.options.agents, undefined, 'helpers run as runner-managed sessions rather than SDK-native sub-agents');
+    paused = true;
+    assert.equal((await hook('Read')).hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(approvals.length, 0, 'a gate refusal cannot turn into a user card');
+  } finally {
+    state.close!();
+    await session.end();
+  }
+});
+
+test('coordinator verification failures deny a tool instead of dropping the boundary', async () => {
+  const { session, state } = start([], { permissionMode: 'full', coordinator: { role: 'coordinator', checkTool: () => { throw new Error('record unavailable'); } } });
+  try {
+    const pre = state.options.hooks.PreToolUse[0].hooks[0];
+    const result = await pre({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_use_id: 'r1', tool_input: {} });
+    assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(result.hookSpecificOutput.permissionDecisionReason, /could not verify/);
+    const approval = await state.options.canUseTool('Write', {}, { signal: new AbortController().signal, toolUseID: 'w1', agentID: 'worker-1' });
+    assert.equal(approval.behavior, 'deny');
+  } finally {
+    state.close!();
+    await session.end();
+  }
+});
+
+test('coordinator helper sessions allow work tools, route questions to the coordinator, and never open user cards', async () => {
+  const questions: unknown[] = [];
+  const { session, state, approvals } = start([], {
+    permissionMode: 'ask',
+    coordinator: {
+      role: 'helper',
+      checkTool: () => undefined,
+      helperQuestion: (agentId: string, items: unknown[]) => questions.push({ agentId, items }),
+    },
+  });
+  try {
+    const pre = state.options.hooks.PreToolUse[0].hooks[0];
+    assert.deepEqual(await pre({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_use_id: 'w0', tool_input: { file_path: '/tmp/a', content: 'b' } }), {});
+    assert.deepEqual(await pre({ hook_event_name: 'PreToolUse', tool_name: 'mcp__threadbear__read_project', tool_use_id: 'r0', tool_input: {} }), {});
+    const q = { questions: [{ question: 'Which repo?', options: [{ label: 'Threadbear' }] }] };
+    const denied = await pre({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_use_id: 'q1', tool_input: q });
+    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(denied.hookSpecificOutput.permissionDecisionReason, /coordinator/i);
+    assert.equal(questions.length, 1);
+    for (const name of ['mcp__threadbear__end_turn', 'mcp__threadbear__ask_secret', 'mcp__threadbear__delete_thread', 'mcp__threadbear__coordinator', 'Agent', 'Task']) {
+      const result = await pre({ hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: 'x1', tool_input: {} });
+      assert.equal(result.hookSpecificOutput.permissionDecision, 'deny', name);
+    }
+    const r = await state.options.canUseTool('Write', { file_path: '/tmp/a', content: 'b' }, { signal: new AbortController().signal, toolUseID: 'w1' });
+    assert.equal(r.behavior, 'deny');
+    assert.match(r.message, /coordinator/i);
+    assert.equal(approvals.length, 0);
+  } finally {
+    state.close!();
+    await session.end();
+  }
+});
+
 test("a folder's own settings load normally; with untrusted Claude settings, only Alex's, plus the rest as flag settings and the folder's CLAUDE.md", async () => {
   const plain = start();
   assert.deepEqual(plain.state.options.settingSources, ['user', 'project', 'local']);
@@ -439,6 +521,30 @@ test("models() asks a promptless CLI for its picker; the 'default' row is left o
   assert.deepEqual(state.options.tools, []);
   assert.equal(state.options.env.CLAUDE_CONFIG_DIR, dir);
   assert.deepEqual(modelChoices([{ value: '', displayName: '' } as never]), []);
+});
+
+test('a cancelled Claude model read closes the query even when initialization is hung', async () => {
+  const { fn, state } = fakeQuery();
+  const dir = tmpDir();
+  let closed = false;
+  const adapter = new ClaudeAdapter({
+    claudePath: '/nonexistent', registry: new ProcessRegistry(dir, nullLogger), log: nullLogger,
+    queryFn: (...args) => {
+      const query = fn(...args);
+      return {
+        ...query,
+        initializationResult: () => new Promise(() => {}),
+        close: () => { closed = true; query.close(); },
+      };
+    },
+  });
+  const abort = new AbortController();
+  const result = adapter.models({ id: 'claude-3', provider: 'claude', title: 'x', configDir: dir }, abort.signal);
+  const rejects = assert.rejects(result, /probe timed out/);
+  abort.abort(new Error('probe timed out'));
+  await rejects;
+  assert.equal(closed, true);
+  assert.equal(state.options.abortController.signal.aborted, true);
 });
 
 test('thread rules go to the CLI as allowedTools; messages carry the turn id', async () => {

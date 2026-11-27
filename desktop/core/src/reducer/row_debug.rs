@@ -118,22 +118,27 @@ impl RowDebug {
                     let next = if card.next.is_empty() {
                         String::new()
                     } else {
+                        let pick_one = card.next_pick_one();
                         let items: Vec<String> = card
                             .next
                             .iter()
                             .enumerate()
                             .map(|(i, n)| {
-                                format!(
-                                    "{}{n}",
-                                    if picked(&card.picked_next, i) {
-                                        "[x] "
-                                    } else {
-                                        ""
-                                    }
-                                )
+                                let mark = if picked(&card.picked_next, i) {
+                                    "[x] "
+                                } else {
+                                    ""
+                                };
+                                let star = if pick_one && card.next_suggested == Some(i) {
+                                    " *"
+                                } else {
+                                    ""
+                                };
+                                format!("{mark}{n}{star}")
                             })
                             .collect();
-                        format!(", next: {}", items.join("; "))
+                        let label = if pick_one { "next (pick one)" } else { "next" };
+                        format!(", {label}: {}", items.join("; "))
                     };
                     return format!("{openness}, nothing needed{loose}{next}");
                 }

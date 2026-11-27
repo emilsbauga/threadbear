@@ -5,7 +5,6 @@
 import type { Runner } from '../runner.ts';
 import type { RunnerPart } from './part.ts';
 import { fitReview, keepPictureMarkers, reviewImages, reviewInput, reviewDraft, reviewReply, sameDraft, type ReviewInput } from '../reviews.ts';
-import { experimentOn } from '../experiments.ts';
 import type { ImageRef } from '../protocol.ts';
 import type { DesignReview, ReviewDraft, ReviewUserMark } from '../protocol.ts';
 import { ErrorCode, RpcError } from '../protocol.ts';
@@ -24,8 +23,7 @@ export const reviewsPart = {
   createReview(this: Runner, threadId: string, raw: ReviewInput): { review: DesignReview } {
     const st = this.mustGet(threadId);
     this.checkAccepting();
-    // The agent's marks on its pictures only with the reviewCanvas experiment on.
-    const input = reviewInput(raw, st.rec.cwd, {marks: experimentOn(this.cfg.home, 'reviewCanvas')});
+    const input = reviewInput(raw, st.rec.cwd);
     const id = crypto.randomUUID();
     const dir = path.join(this.store.mediaDir(threadId), 'reviews', id);
     const now = this.isoNow();
@@ -106,6 +104,16 @@ export const reviewsPart = {
     return {review: structuredClone(next), turnId};
   },
 
+  // A coordinator decision accepted a message already on its way to the
+  // agent. Save the review's answer without sending a second message.
+  recordReviewReply(this: Runner, threadId: string, reviewId: string, reply: ReviewDraft): void {
+    const st = this.mustGet(threadId);
+    const review = this.mustReview(st, reviewId);
+    if (review.status !== 'pending') return;
+    const draft = reviewDraft(review, reply, true);
+    this.persistReview(st, { ...review, draft, response: draft, status: 'answered', revision: review.revision + 1, updatedAt: this.isoNow() });
+  },
+
   cancelReview(this: Runner, threadId: string, reviewId: string, revision: number): {review: DesignReview} {
     const st = this.mustGet(threadId);
     this.checkAccepting();
@@ -125,7 +133,7 @@ export const reviewsPart = {
   supersedeReviews(this: Runner, st: ThreadState, text: string, opts: SendOptions): void {
     if (!fromMike(text, opts)) return;
     for (const review of st.rec.reviews ?? []) {
-      if (review.status !== 'pending') continue;
+      if (review.status !== 'pending' || this.coordinators?.keepsDesignReview(st.rec.id, review.id)) continue;
       this.persistReview(st, {...review, status: 'superseded', revision: review.revision + 1, updatedAt: this.isoNow()});
     }
   },
@@ -329,8 +337,8 @@ export type ReviewsPart = RunnerPart<typeof reviewsPart>;
 // A client from before reply pictures (the frozen Swift app) sends a draft
 // without `images`: the pictures already saved stay, rather than going with
 // their [Picture N] still in the words. `images: []` takes them away. The
-// same for marks, from a client that doesn't draw them (the phone, or the
-// window with the reviewCanvas experiment off).
+// same for marks, from a client that doesn't draw them (the phone, or
+// an older desktop app).
 function withSavedImages(review: DesignReview, raw: ReviewDraft): ReviewDraft {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const images = !('images' in raw) && review.draft.images?.length ? {images: review.draft.images} : {};

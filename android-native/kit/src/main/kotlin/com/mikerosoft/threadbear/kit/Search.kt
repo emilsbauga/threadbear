@@ -15,8 +15,9 @@ data class ThreadSearch(
     /** The scheduled threads and the snoozed ones, as the Hibernating heading has them. */
     val hibernating: List<PhoneThread> = emptyList(),
     val archived: List<PhoneThread> = emptyList(),
+    val coordinators: List<PhoneThread> = emptyList(),
 ) {
-    val isEmpty get() = starred.isEmpty() && inbox.isEmpty() && running.isEmpty() && hibernating.isEmpty() && archived.isEmpty()
+    val isEmpty get() = coordinators.isEmpty() && starred.isEmpty() && inbox.isEmpty() && running.isEmpty() && hibernating.isEmpty() && archived.isEmpty()
 
     companion object {
         fun of(
@@ -32,12 +33,13 @@ data class ThreadSearch(
             // it (snoozed but not yet out of the inbox view): show it once.
             val seen = HashSet<String>()
             fun keep(threads: List<PhoneThread>) = threads.filter { matchesFolded(it, q) && seen.add(it.threadId) }
+            val coordinators = keep(sections.coordinators)
             val starred = keep(sections.starred)
             val inbox = keep(sections.inbox)
             val running = keep(sections.running)
             val asleep = InboxSections.hibernating(keep(sections.scheduled), keep(hibernating), wakes)
             val den = keep(archived) + olderArchived.filter { seen.add(it.threadId) }
-            return ThreadSearch(starred, inbox, running, asleep, den)
+            return ThreadSearch(starred, inbox, running, asleep, den, coordinators)
         }
 
         /**

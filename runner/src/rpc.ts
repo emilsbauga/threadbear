@@ -10,7 +10,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Runner, Notification, CliControl } from './runner.ts';
 import type { Logger } from './log.ts';
 import { ARCHIVE_VERDICTS, UNARCHIVE_VERDICTS, CLI_POLICIES, EFFORT_LEVELS, ErrorCode, PROVIDERS, RpcError, isEffortLevel, isPermissionMode, isProvider, isCliProvider } from './protocol.ts';
-import type { ArchiveVerdict, UnarchiveVerdict, ApprovalDecision, AskAnswer, CliPolicy, EffortLevel, ImageRef, PermissionMode, Provider, ShareAccess, ThreadStartedBy, ThreadSummary } from './protocol.ts';
+import type { Account, ArchiveVerdict, UnarchiveVerdict, ApprovalDecision, AskAnswer, CliPolicy, EffortLevel, ImageRef, PermissionMode, Provider, ShareAccess, ThreadStartedBy, ThreadSummary } from './protocol.ts';
 import { MAX_BYLINE } from './needs.ts';
 import { isMoved, mergeSummaries, type Bucket } from './handover.ts';
 import { AUTH_VERSION, authProof, isNonce, isThreadId, newNonce, proofMatches, threadKey, type AuthChannel } from './rpc-auth.ts';
@@ -154,6 +154,8 @@ export type RelayHandler = {
   logins(runnerId: string): Promise<unknown>;
   /** accounts.yearToken for one of another runner's logins, through an allow-listed `call`. */
   yearToken?(runnerId: string, params: { accountId: string } & YearTokenParams): Promise<unknown>;
+  /** accounts.useReset for one of another runner's logins, through an allow-listed `call`. */
+  useReset?(runnerId: string, accountId: string): Promise<unknown>;
 };
 
 export type RpcServerOptions = {
@@ -252,6 +254,22 @@ export class RpcServer {
         resolve({ port: typeof addr === 'object' && addr ? addr.port : this.opts.port });
       });
     });
+  }
+
+  // accounts.useReset for a login in another runner's list (a remote
+  // thread's login list). A subscription is one limit wherever it's signed
+  // in, so it's spent on this runner's login of the same provider and email
+  // when there is one, which also shows here at once; else on that runner,
+  // through Convex.
+  private async useResetElsewhere(runnerId: string, accountId: string): Promise<unknown> {
+    const relay = this.opts.relay;
+    if (!relay) throw new RpcError(ErrorCode.other, "This Mac's runner can't reach other runners through Convex.");
+    const theirs = ((await relay.logins(runnerId)) as { accounts?: Account[] } | undefined)?.accounts?.find((a) => a.id === accountId);
+    const email = theirs?.email?.toLowerCase();
+    const mine = email ? this.opts.runner.safeAccounts().find((a) => a.provider === theirs!.provider && a.email?.toLowerCase() === email && !a.signedOut && !a.planEnded) : undefined;
+    if (mine) return this.opts.runner.useReset(mine.id);
+    if (!relay.useReset) throw new RpcError(ErrorCode.other, "This Mac's runner can't use another runner's resets.");
+    return relay.useReset(runnerId, accountId);
   }
 
   async close(): Promise<void> {
@@ -832,7 +850,7 @@ export class RpcServer {
         // create_thread this way: there's no sandbox to start it in now
         // (taken out 16 Nov 2026), and it mustn't start outside one.
         if (p.confined === true) throw bad("This asks for a thread shut in a sandbox, which Threadbear no longer has, so it wasn't started.");
-        const res = (method === 'threads.createDraft' ? r.createDraft.bind(r) : r.create.bind(r))({
+        const res = await (method === 'threads.createDraft' ? r.createDraft.bind(r) : r.createAfterModelProbe.bind(r))({
           text: optString(p, 'text') ?? '',
           images: optImages(p),
           cwd: optString(p, 'cwd'),
@@ -1119,9 +1137,13 @@ export class RpcServer {
       }
       case 'actions.run':
         return r.runAction(reqString(p, 'threadId'), reqString(p, 'actionId'));
-      // Mike's click on the limit box; never a thread's (rpc-gate refuses it).
-      case 'accounts.useReset':
-        return r.useReset(reqString(p, 'accountId'));
+      // Mike's click on the limit box, a Usage row or a login list; never a
+      // thread's (rpc-gate refuses it). With another runner's runnerId, the
+      // same subscription here if this runner has it, else through Convex.
+      case 'accounts.useReset': {
+        const other = optString(p, 'runnerId');
+        return other ? this.useResetElsewhere(other, reqString(p, 'accountId')) : r.useReset(reqString(p, 'accountId'));
+      }
       // The Usage panel's Find work for it; never a thread's (rpc-gate).
       case 'accounts.findWork':
         return r.findWork(reqString(p, 'accountId'));

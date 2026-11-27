@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { FakeAccounts, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
+import { FakeAccounts, FakeAdapter, makeHarness, tick, tmpDir, withCodex } from '../helpers/fakes.ts';
 import { checkSequence, checkSummary } from '../helpers/protocol-check.ts';
 import { makePng } from '../helpers/png.ts';
-import { RpcError } from '../../src/protocol.ts';
+import { AGENT_MESSAGE_PREFIX, RpcError, type ModelChoice } from '../../src/protocol.ts';
+import { MODEL_LIST_TIMEOUT_MS } from '../../src/adapters/types.ts';
 import { askedLine, UNTIL_RESTART, WROTE_INSTEAD } from '../../src/runner.ts';
 import { PATIENCE_MS } from '../helpers/patience.ts';
 
@@ -940,6 +941,48 @@ test('the model list comes from the adapter at startup and reaches clients', asy
   };
   await h.runner.probeModels();
   assert.equal(h.runner.hello().accounts[0].models?.length, 1);
+});
+
+test('model probes run independently, release a hung login at the deadline, and ignore its late answer', async () => {
+  const claude = new FakeAdapter();
+  const opencode = new FakeAdapter('opencode');
+  const late = Promise.withResolvers<ModelChoice[]>();
+  const opus = { id: 'opus', model: 'claude-opus-4-6', title: 'Opus' };
+  const gpt = { id: 'gpt-open', model: 'gpt-open', title: 'GPT in OpenCode' };
+  let signal: AbortSignal | undefined;
+  let claudeCalls = 0;
+  let openCalls = 0;
+  claude.models = async (_account, probeSignal) => {
+    signal = probeSignal;
+    return ++claudeCalls === 1 ? late.promise : [opus];
+  };
+  opencode.models = async () => {
+    openCalls++;
+    return [gpt];
+  };
+  const h = makeHarness(undefined, {}, {
+    adapters: { claude, opencode },
+    accounts: new FakeAccounts([
+      { id: 'claude-main', provider: 'claude', title: 'Claude', configDir: '/tmp/claude' },
+      { id: 'opencode-main', provider: 'opencode', title: 'OpenCode', configDir: '/tmp/open' },
+    ]),
+  });
+  const probe = h.runner.probeModels();
+  await tick();
+  assert.deepEqual(h.runner.hello().accounts.find((a) => a.id === 'opencode-main')?.models, [gpt]);
+  assert.equal(claudeCalls, 1);
+  assert.equal(openCalls, 1);
+  assert.equal(signal?.aborted, false);
+  const firstSignal = signal;
+  h.clock.advance(MODEL_LIST_TIMEOUT_MS);
+  await probe;
+  assert.equal(firstSignal?.aborted, true);
+  assert.equal(h.runner.hello().accounts.find((a) => a.id === 'claude-main')?.models, undefined);
+  await h.runner.probeModels((a) => a.provider === 'claude');
+  assert.equal(claudeCalls, 2);
+  late.resolve([]);
+  await tick();
+  assert.deepEqual(h.runner.hello().accounts.find((a) => a.id === 'claude-main')?.models, [opus]);
 });
 
 test('a CLI that dies mid-turn fails the turn with an error event', () => {
@@ -2701,3 +2744,91 @@ test('a CLI whose end throws at once is still let go', async () => {
   await tick();
   assert.notEqual(h.adapter.last, first, 'a new CLI took the message');
 });
+
+test('carry-on follow-ups survive non-Mike wakes unless replaced, cleared, switched to needs-you, or Mike replies', async () => {
+  const h = makeHarness();
+  const { thread } = create(h);
+  const s = h.adapter.last;
+  s.init();
+  const endTurn = (sess: typeof s, id: string, input: Record<string, unknown>) => {
+    sess.out({ kind: 'event', event: { type: 'tool.call', itemId: id, name: 'mcp__threadbear__end_turn', kind: 'mcp', title: 'end_turn', input } });
+    sess.out({ kind: 'event', event: { type: 'tool.result', itemId: id, ok: true, text: 'Noted.', truncated: false, images: [] } });
+  };
+  const lastDone = (harness: typeof h) => harness.events(thread.id).filter((e) => e.type === 'turn.completed').at(-1)!;
+
+  // Turn 1: agent leaves pick-one carry-ons with a recommendation.
+  endTurn(s, 'e1', { needs: 'nothing', next: ['Option A', 'Option B'], nextPick: 'one', nextSuggested: 1 });
+  s.text('m1', 'Finished the investigation.');
+  s.result('completed');
+  assert.deepEqual(lastDone(h).next, ['Option A', 'Option B']);
+  assert.equal(lastDone(h).nextPick, 'one');
+  assert.equal(lastDone(h).nextSuggested, 1);
+
+  // Persisted on ThreadRecord across a runner restart.
+  h.runner.flush();
+  const h2 = h.restart();
+  assert.deepEqual(h2.runner.get(thread.id).needs, 'nothing');
+
+  // Non-Mike wake (e.g. a review or message from another thread): reminder is injected once per turn.
+  h2.runner.send(thread.id, 'Codex review came back clean.', [], { origin: 'runner' });
+  await tick();
+  const s2 = h2.adapter.last;
+  s2.init();
+  assert.match(s2.sent[0].text, /\[Threadbear note: your previous turn left these carry-on items for the user \(pick one\): 1\. "Option A"; 2\. "Option B" \(recommended\)\./);
+  assert.match(s2.sent[0].text, /Codex review came back clean\./);
+  // A second non-Mike steer in the same turn does not repeat the reminder.
+  h2.runner.send(thread.id, 'Second automated note.', [], { origin: 'runner' });
+  assert.equal(s2.sent[1].text, 'Second automated note.');
+  // Follow-up Done turn omits `next`: prior carry-ons are carried forward automatically.
+  endTurn(s2, 'e2', { needs: 'nothing' });
+  s2.text('m2', 'Noted the clean review.');
+  s2.result('completed', undefined, undefined, { answered: [s2.sent[0].id!, s2.sent[1].id!] });
+  assert.deepEqual(lastDone(h2).next, ['Option A', 'Option B']);
+  assert.equal(lastDone(h2).nextPick, 'one');
+  assert.equal(lastDone(h2).nextSuggested, 1);
+
+  // Non-Mike wake from another thread where the agent replaces `next`.
+  h2.runner.send(thread.id, `${AGENT_MESSAGE_PREFIX}"Helper" (12345678)]\n\nAnother update.`);
+  endTurn(s2, 'e3', { needs: 'nothing', next: ['Fresh step'] });
+  s2.text('m3', 'Updated.');
+  s2.result('completed');
+  assert.deepEqual(lastDone(h2).next, ['Fresh step']);
+  assert.equal(lastDone(h2).nextPick, undefined);
+  assert.equal(lastDone(h2).nextSuggested, undefined);
+
+  // Non-Mike wake where the agent explicitly passes `next: []` to clear.
+  h2.runner.send(thread.id, 'Issue resolved.', [], { origin: 'runner' });
+  endTurn(s2, 'e4', { needs: 'nothing', next: [] });
+  s2.text('m4', 'All clear now.');
+  s2.result('completed');
+  assert.equal(lastDone(h2).next, undefined);
+
+  // Set carry-ons again, then switch to needs: 'you' -> carry-ons are dropped.
+  h2.runner.send(thread.id, 'Do something else');
+  endTurn(s2, 'e5', { needs: 'nothing', next: ['Follow up'] });
+  s2.text('m5', 'Done.');
+  s2.result('completed');
+  assert.deepEqual(lastDone(h2).next, ['Follow up']);
+
+  h2.runner.send(thread.id, 'Review found an issue.', [], { origin: 'runner' });
+  endTurn(s2, 'e6', { needs: 'you', asks: [{ action: 'Approve the fix?' }] });
+  s2.text('m6', 'Need your sign-off.');
+  s2.result('completed');
+  assert.equal(lastDone(h2).next, undefined);
+
+  // Set carry-ons again, then Mike replies -> no reminder injected and carry-ons are cleared.
+  h2.runner.send(thread.id, 'Approved');
+  endTurn(s2, 'e7', { needs: 'nothing', next: ['Check prod'] });
+  s2.text('m7', 'Shipped.');
+  s2.result('completed');
+  assert.deepEqual(lastDone(h2).next, ['Check prod']);
+
+  const beforeMike = s2.sent.length;
+  h2.runner.send(thread.id, 'Thanks!');
+  assert.equal(s2.sent[beforeMike].text, 'Thanks!');
+  endTurn(s2, 'e8', { needs: 'nothing' });
+  s2.text('m8', 'Anytime!');
+  s2.result('completed');
+  assert.equal(lastDone(h2).next, undefined);
+});
+

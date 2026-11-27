@@ -414,17 +414,7 @@ sub-agents above. `HELD_NUDGE` keeps the next turn from dropping the asks.
   there lets the model's empty reply end the turn quietly (CLI 2.1.312;
   older CLIs ignore it and nudge as before). A refused `end_turn` is an
   error result, which doesn't count.
-- **Next steps.** With `needs: "nothing"` (said or worked out),
-  `end_turn` also takes `next?: string[]`: follow-ups in this thread
-  worth doing, each the message Mike would send to start it. The runner
-  keeps up to three distinct strings of up to 120 characters on the
-  `turn.completed` (`next`), and drops them with `needs: "you"`, as a
-  card of asks has buttons of its own. The Mac app's done card shows
-  them as buttons before Archive; one puts its words in the composer
-  (after anything already typed) rather than sending, so a stray click
-  never starts a turn. The description asks only for ones that really
-  came up, never made-up work (Mike, 30 Oct 2026: a follow-up in the
-  closing prose, over a card that only offered Archive, got forgotten).
+- **Next steps.** With `needs: "nothing"`, `end_turn` takes `next?: string[]` (up to three distinct strings ≤ 120 chars on `turn.completed`, dropped on `needs: "you"`), plus `nextPick?: "any" | "one"` and `nextSuggested?: number` (backend API 103). `nextPick: "one"` is emitted only when `next.length > 1` (absent means multi-pick `"any"`), and `nextSuggested` only with `nextPick: "one"` as a valid index into deduplicated `next`. Absent `nextPick` renders under "Or carry on" with multi-select ticks; `"one"` renders under "Or pick one" with radio circles and a star "Recommended" mark on `nextSuggested`. Clicking selects rather than sending. Pending `next`/`nextPick`/`nextSuggested` persist on `ThreadRecord.needs`: on a non-Mike wake (review, another thread, schedule, restart, waitFor), the runner reminds the agent once per turn and carries them forward if a Done turn omits `next` (`next: [...]` replaces, `next: []` clears, `needs: "you"` drops, and any message from Mike clears). Encourage real follow-ups and next-direction forks without filler (Mike, 30 Oct & 26 Nov 2026).
 - **Archiving itself.** `end_turn` also takes `archive?: true`. With
   `needs: "nothing"`, a turn that completes archives its own thread once
   it's over, with a `system.note` saying why; the thread can't archive
@@ -963,7 +953,7 @@ that isn't archived):
 | `waitState` | Section | What it means |
 |---|---|---|
 | `working` | Running | A turn is running or starting. |
-| `job` | Running | No turn, a background job still going, and nothing asked of Mike that it isn't still working on. |
+| `job` | Running | No turn, a background job or (for a project coordinator) a helper still going, and nothing asked of Mike that it isn't still working on. A coordinator whose helper works never reads as `scheduled`, so it isn't said to hibernate with "nothing needs you" while the helper builds what it promised. |
 | `onThreads` | Running | Its agent put it away to hear back from other threads (`waitingOn`). |
 | `landing` | Running | Its agent put it away until something it watches for, with commits not on main. |
 | `appRestart` | Running | Its agent put it away until the app restarts onto what it landed (`awaitingAppRestart`). |

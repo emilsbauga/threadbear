@@ -88,3 +88,40 @@ Feature: Section headings in the sidebar
     When "Add dark mode to the dashboard" waits for the app update
     Then the "Running" section lists "Add dark mode to the dashboard"
     And the row "Add dark mode to the dashboard" says "Waiting for the app update" on the right
+
+  # The Swift app is frozen (AGENTS.md, "The GPUI port"), so only the GPUI app has these.
+  @sidebar.sections @coordinators @swift-pending
+  Scenario: Starred appears above Coordinators by default
+    When I hover the row "Morning brief"
+    And I press the row button "Star: keep at the top"
+    Then the "Starred" section lists "Morning brief"
+    And the "Starred" section comes before the "Coordinators" section
+    And the "Coordinators" section comes before the "Inbox" section
+
+  @sidebar.sections @swift-pending
+  Scenario: Dragging a section heading folds open sections, reorders them live, and remembers the order
+    When I hover the row "Morning brief"
+    And I press the row button "Star: keep at the top"
+    Then the "Starred" section lists "Morning brief"
+    And the "Inbox" section comes before the "Running" section
+    When I start dragging the "Running" heading to "Starred"
+    Then the "Inbox" section is folded
+    And the "Running" section comes before the "Starred" section
+    When I drop the dragged section heading
+    Then the "Running" section comes before the "Starred" section
+    And the "Inbox" section isn't folded
+    When the app is quit and opened again
+    Then the "Running" section comes before the "Starred" section
+
+  @sidebar.sections @swift-pending
+  Scenario: Pressing Escape while dragging a section heading cancels the reorder
+    When I hover the row "Morning brief"
+    And I press the row button "Star: keep at the top"
+    Then the "Starred" section lists "Morning brief"
+    And the "Starred" section comes before the "Inbox" section
+    When I start dragging the "Running" heading to "Starred"
+    Then the "Running" section comes before the "Starred" section
+    When I cancel the section heading drag
+    Then the "Starred" section comes before the "Inbox" section
+    And the "Inbox" section comes before the "Running" section
+    And the "Inbox" section isn't folded

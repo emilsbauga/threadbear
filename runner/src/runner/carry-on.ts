@@ -28,7 +28,7 @@ export function stoppedWorkMessage(what: string[], last: boolean): string {
 // The runner's own message carrying on a turn that was cut off (CARRY_ON_*
 // below): the same work going on, not a new message to the thread.
 export function isCarryOn(msg: { text: string; origin?: MessageOrigin }): boolean {
-  return msg.origin === 'runner' && [CARRY_ON_SIGNED_OUT, CARRY_ON_MOVED, CARRY_ON_RESTART, CARRY_ON_NETWORK, CARRY_ON_TOKEN, CARRY_ON_BACK].includes(msg.text);
+  return msg.origin === 'runner' && [CARRY_ON_SIGNED_OUT, CARRY_ON_MOVED, CARRY_ON_RESTART, CARRY_ON_NETWORK, CARRY_ON_TOKEN, CARRY_ON_BACK, CARRY_ON_HELPER_RESTART].includes(msg.text);
 }
 
 // What the agent is told when Mike writes a message while its question or
@@ -40,6 +40,9 @@ export const WROTE_INSTEAD = "The user didn't answer this; they wrote you a mess
 export const CARRY_ON_SIGNED_OUT = 'Your last login was signed out, so this thread has moved to another one. Carry on from where you left off.';
 export const CARRY_ON_MOVED = 'Your last login hit its usage limit partway through that turn, so this thread has moved to another one. Carry on from where you left off.';
 export const CARRY_ON_RESTART = 'The runner stopped partway through that turn (Threadbear or the Mac restarted) and is back now. Carry on from where you left off.';
+// A project coordinator's hidden helper cut off by a restart, which the
+// runner carries on itself rather than waking its coordinator (coordinators.ts).
+export const CARRY_ON_HELPER_RESTART = "The runner restarted partway through that turn (a Threadbear update, or the Mac restarting) and is back now. Carry on with your brief from where you left off. Check what's already done first (commits, pushes, merges, deploys, messages sent) and don't repeat a send, merge, release or deploy that already happened.";
 // Past this, a cut-off turn is left for Mike: the Mac was off for a while,
 // and he may have moved on.
 export const STOPPED_CARRY_ON_MAX_AGE_MS = 12 * 3_600_000;

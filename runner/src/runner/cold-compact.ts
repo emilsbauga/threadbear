@@ -141,7 +141,11 @@ export const coldCompactPart = {
     const turn = rt.turn;
     if (!turn || !rt.session || turn.precompact || turn.command) return false;
     if (rec.provider !== 'claude') return false;
-    const cold = coldWake(rec, msg, () => this.lastModelMs(st), this.clock.now());
+    const coordinator = this.coordinators?.forThread(rec.id);
+    if (coordinator?.tasks.some((t) => t.run && ['queued', 'running'].includes(t.run.status))) return false;
+    const cold = coordinator && !msg.text.startsWith('/') && (rec.contextTokens ?? 0) >= 150_000
+      ? { tokens: rec.contextTokens!, idleMs: Math.max(0, this.clock.now() - (this.lastModelMs(st) ?? this.clock.now())) }
+      : coldWake(rec, msg, () => this.lastModelMs(st), this.clock.now());
     if (!cold) return false;
     // A real uuid: the SDK drops one that isn't, and with it the frames
     // that say which result is the compaction's (Grok's review).

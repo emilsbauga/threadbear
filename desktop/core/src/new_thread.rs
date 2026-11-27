@@ -161,6 +161,17 @@ pub fn reset_time<Tz: TimeZone>(date: &DateTime<Tz>, now: &DateTime<Tz>) -> Stri
     format!("{} {}", date.day(), MONTHS[date.month0() as usize])
 }
 
+/// `AccountUsageText.resetTime`: "now", "3:40 pm", "Thu 1 pm", "12 Nov".
+pub fn reset_words<Tz: TimeZone>(at: i64, now: i64, zone: &Tz) -> String {
+    match (
+        zone.timestamp_millis_opt(at).single(),
+        zone.timestamp_millis_opt(now).single(),
+    ) {
+        (Some(at), Some(now)) => reset_time(&at, &now),
+        _ => String::new(),
+    }
+}
+
 /// `AccountUsageText.tooltip`: "mike@example.com: 5-hour 89% left, weekly
 /// 78% left, resets Thu 1 pm."
 pub fn room_tooltip<Tz: TimeZone>(account: &Account, now: &DateTime<Tz>) -> String {
@@ -457,6 +468,72 @@ pub fn pool_providers(pool: &Pool, accounts: &[Account]) -> Vec<String> {
     seen
 }
 
+/// The logins not in any pool, optionally only one provider's, in the runner's order.
+pub fn unpooled_logins<'a>(
+    pools: &[Pool],
+    accounts: &'a [Account],
+    provider: Option<&str>,
+) -> Vec<&'a Account> {
+    accounts
+        .iter()
+        .filter(|a| !pools.iter().any(|p| p.account_ids.contains(&a.id)))
+        .filter(|a| provider.is_none_or(|p| a.provider_id() == p))
+        .collect()
+}
+
+/// The providers of logins not in any pool, Claude then Codex then any others in order.
+pub fn unpooled_providers(pools: &[Pool], accounts: &[Account]) -> Vec<String> {
+    let mut order: Vec<String> = Vec::new();
+    for account in unpooled_logins(pools, accounts, None) {
+        let provider = account.provider_id().to_owned();
+        if !order.contains(&provider) {
+            order.push(provider);
+        }
+    }
+    let rank = |p: &str| match p {
+        "claude" => 0,
+        "codex" => 1,
+        _ => 2,
+    };
+    let mut indexed: Vec<(usize, String)> = order.into_iter().enumerate().collect();
+    indexed.sort_by_key(|(i, p)| (rank(p), *i));
+    indexed.into_iter().map(|(_, p)| p).collect()
+}
+
+/// The unpooled login of `provider` to pin to when picking a model from "No pool":
+/// `current` if it is already one of them, else the one with the most known room
+/// among those with room, else the first with room (usage unknown), else the first.
+/// Notes don't disqualify a login here: the user explicitly chose "No pool".
+pub fn pick_unpooled_login(
+    pools: &[Pool],
+    accounts: &[Account],
+    provider: &str,
+    current: Option<&str>,
+) -> Option<String> {
+    let own = unpooled_logins(pools, accounts, Some(provider));
+    if let Some(current) = current {
+        if own.iter().any(|a| a.id == current) {
+            return Some(current.to_owned());
+        }
+    }
+    let mut best: Option<(&Account, f64)> = None;
+    for login in own.iter().copied().filter(|a| has_room(a)) {
+        let Some(login_room) = usage_of(login).as_ref().and_then(room) else {
+            continue;
+        };
+        if best.is_none_or(|(_, have)| login_room > have) {
+            best = Some((login, login_room));
+        }
+    }
+    if let Some((login, _)) = best {
+        return Some(login.id.clone());
+    }
+    own.iter()
+        .find(|a| has_room(a))
+        .or(own.first())
+        .map(|a| a.id.clone())
+}
+
 /// `AccountUsageText.ChipBadge`: after a chip's title, "· 12%" in orange
 /// when a login is running out, "Limit reached" in red at its limit.
 #[derive(Clone, Debug, PartialEq)]
@@ -495,11 +572,10 @@ pub fn chip_badge(account: Option<&Account>) -> Option<ChipBadge> {
     (left < CHIP_WARNING).then(|| ChipBadge::Low(percent(left)))
 }
 
-/// `Pools.bestRoom`: the most room any of its logins has, a blocked one
-/// counting as none.
-pub fn best_room(pool: &Pool, accounts: &[Account]) -> Option<f64> {
-    pool_logins(pool, accounts, None)
-        .into_iter()
+/// The most room any login in `logins` has, a blocked one counting as none.
+pub fn best_room_of(logins: &[&Account]) -> Option<f64> {
+    logins
+        .iter()
         .filter_map(|a| {
             let usage = usage_of(a)?;
             if usage.blocked {
@@ -513,16 +589,19 @@ pub fn best_room(pool: &Pool, accounts: &[Account]) -> Option<f64> {
         })
 }
 
-/// `Pools.chipBadge`: the model chip's badge on a pool thread, only once
-/// every login in the pool is running out (or all are at their limit).
-pub fn pool_chip_badge(pool: &Pool, accounts: &[Account]) -> Option<ChipBadge> {
-    let usages: Vec<Option<AccountUsage>> = pool_logins(pool, accounts, None)
-        .into_iter()
-        .map(usage_of)
-        .collect();
-    if usages.is_empty() {
+/// `Pools.bestRoom`: the most room any of its logins has, a blocked one
+/// counting as none.
+pub fn best_room(pool: &Pool, accounts: &[Account]) -> Option<f64> {
+    best_room_of(&pool_logins(pool, accounts, None))
+}
+
+/// A group's badge (pool or unpooled bucket): only once every login in it is
+/// running out (or all are at their limit).
+pub fn group_chip_badge(logins: &[&Account]) -> Option<ChipBadge> {
+    if logins.is_empty() {
         return None;
     }
+    let usages: Vec<Option<AccountUsage>> = logins.iter().map(|a| usage_of(a)).collect();
     if usages.iter().all(|u| u.as_ref().is_some_and(|u| u.blocked)) {
         return Some(ChipBadge::Blocked);
     }
@@ -534,7 +613,13 @@ pub fn pool_chip_badge(pool: &Pool, accounts: &[Account]) -> Option<ChipBadge> {
     if !low {
         return None;
     }
-    best_room(pool, accounts).map(|best| ChipBadge::Low(percent(best)))
+    best_room_of(logins).map(|best| ChipBadge::Low(percent(best)))
+}
+
+/// `Pools.chipBadge`: the model chip's badge on a pool thread, only once
+/// every login in the pool is running out (or all are at their limit).
+pub fn pool_chip_badge(pool: &Pool, accounts: &[Account]) -> Option<ChipBadge> {
+    group_chip_badge(&pool_logins(pool, accounts, None))
 }
 
 /// `AccountUsageText.switchTarget`: where a thread that hit its limit could
@@ -1784,5 +1869,89 @@ mod tests {
             abbreviate_home("C:\\Users\\mikec\\x", "/Users/alex"),
             "C:\\Users\\mikec\\x"
         );
+    }
+
+    #[test]
+    fn unpooled_logins_and_picking_prefer_most_room_and_keep_current() {
+        let mk =
+            |id: &str, provider: &str, room_pct: Option<f64>, blocked: bool, note: Option<&str>| {
+                let usage = if blocked {
+                    Some(serde_json::json!({ "blocked": true, "windows": [] }))
+                } else {
+                    room_pct.map(|r| {
+                    serde_json::json!({
+                        "windows": [{ "kind": "weekly", "title": "Weekly", "remainingPercent": r }]
+                    })
+                })
+                };
+                Account {
+                    id: id.into(),
+                    provider: provider.into(),
+                    note: note.map(str::to_owned),
+                    usage,
+                    ..Account::default()
+                }
+            };
+        let pools = vec![Pool {
+            id: "main".into(),
+            title: "Main".into(),
+            account_ids: vec!["claude-pooled".into()],
+            ..Pool::default()
+        }];
+        let accounts = vec![
+            mk("claude-pooled", "claude", Some(100.), false, None),
+            mk("cursor-solo", "cursor", Some(90.), false, None),
+            mk("claude-low", "claude", Some(15.), false, Some("Personal")),
+            mk("claude-high", "claude", Some(88.), false, Some("Studio")),
+            mk("codex-solo", "codex", None, false, None),
+            mk("claude-dry", "claude", None, true, None),
+        ];
+
+        let all = unpooled_logins(&pools, &accounts, None);
+        assert_eq!(
+            all.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            vec![
+                "cursor-solo",
+                "claude-low",
+                "claude-high",
+                "codex-solo",
+                "claude-dry"
+            ]
+        );
+        // Claude, then Codex, then others in order.
+        assert_eq!(
+            unpooled_providers(&pools, &accounts),
+            vec!["claude", "codex", "cursor"]
+        );
+        // Picks the unpooled login with the most room, even when it has a note.
+        assert_eq!(
+            pick_unpooled_login(&pools, &accounts, "claude", None).as_deref(),
+            Some("claude-high")
+        );
+        // Keeps the current unpooled login when already pinned to one of that provider.
+        assert_eq!(
+            pick_unpooled_login(&pools, &accounts, "claude", Some("claude-low")).as_deref(),
+            Some("claude-low")
+        );
+        // Ignores current if it is in a pool.
+        assert_eq!(
+            pick_unpooled_login(&pools, &accounts, "claude", Some("claude-pooled")).as_deref(),
+            Some("claude-high")
+        );
+        // Unknown usage still gets picked when it's the only one with room.
+        assert_eq!(
+            pick_unpooled_login(&pools, &accounts, "codex", None).as_deref(),
+            Some("codex-solo")
+        );
+        // Group badge: low when every unpooled login is below CHIP_WARNING.
+        let just_low = unpooled_logins(&pools, &accounts[..3], Some("claude"));
+        assert_eq!(
+            group_chip_badge(&just_low),
+            Some(ChipBadge::Low("15%".into()))
+        );
+        assert_eq!(best_room_of(&just_low), Some(15.));
+        // Group badge: None when at least one login has plenty of room.
+        assert_eq!(group_chip_badge(&all), None);
+        assert_eq!(best_room_of(&all), Some(90.));
     }
 }

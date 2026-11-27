@@ -44,7 +44,7 @@ afterEach(async () => {
   for (const d of made.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, string>; opts?: Partial<StartSessionOptions>; deny?: boolean; answer?: (r: ToolApprovalRequest) => ToolApprovalAnswer | Promise<ToolApprovalAnswer>; question?: (r: QuestionRequest) => QuestionAnswer | Promise<QuestionAnswer> } = {}) {
+function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, string>; opts?: Partial<StartSessionOptions>; mcpServers?: () => Record<string, { command: string; args: string[] }>; deny?: boolean; answer?: (r: ToolApprovalRequest) => ToolApprovalAnswer | Promise<ToolApprovalAnswer>; question?: (r: QuestionRequest) => QuestionAnswer | Promise<QuestionAnswer> } = {}) {
   const root = tmp();
   made.push(root);
   const cwd = path.join(root, 'work');
@@ -83,6 +83,7 @@ function rig(o: { mode?: PermissionMode; agent?: AcpAgent; env?: Record<string, 
     log: nullLogger,
     env: { PATH: process.env.PATH, FAKE_ACP_LOG: logFile, ...o.env },
     timings: { closeWaitMs: 300 },
+    ...(o.mcpServers ? { mcpServers: o.mcpServers } : {}),
   });
   const start = (): AcpSession => {
     const s = adapter.start(
@@ -1752,3 +1753,87 @@ test('agents without a usage command have no readLimits, so nothing polls them',
   assert.equal(r.adapter.readLimits, undefined);
   assert.equal(r.adapter.limitsPollMs, undefined);
 });
+
+// Agent Archive on Gemini (26 Nov 2026): Antigravity takes it as a stdio
+// server; its read tools go ahead, a coordinator's included, only when every
+// frame of the call agrees it's that tool.
+const archive = () => ({ 'agent-archive': { command: '/bin/node', args: ['archive.js', 'mcp'] } });
+const archiveMeta = { is_mcp_tool_call: true, mcp: { server: 'agent-archive', tool: 'search_archive' } };
+
+test('Antigravity gets Agent Archive as a stdio server; OpenCode does not', async () => {
+  const r = agy({ mcpServers: archive });
+  await ready(r, r.start());
+  const servers = r.log().find((l) => l.newSession)?.newSession as { mcpServers: Record<string, unknown>[] };
+  assert.deepEqual(servers.mcpServers.find((m) => m.name === 'agent-archive'), { name: 'agent-archive', command: '/bin/node', args: ['archive.js', 'mcp'], env: [] });
+  const o = rig({ mcpServers: archive });
+  await ready(o, o.start());
+  const other = o.log().find((l) => l.newSession)?.newSession as { mcpServers: Record<string, unknown>[] };
+  assert.equal(other.mcpServers.some((m) => m.name === 'agent-archive'), false);
+});
+
+test("Antigravity: a coordinator's Agent Archive read goes ahead; a mismatched or unknown one doesn't", async () => {
+  const r = agy({ mcpServers: archive, opts: { coordinator: { role: 'coordinator', checkTool: () => undefined } } });
+  const s = r.start();
+  await ready(r, s);
+  frame(s, { toolCallId: 'a1', kind: 'other', title: 'agent-archive_search_archive', _meta: archiveMeta });
+  const ok = fakeRequest(r, s, { toolCallId: 'a1', kind: 'other', _meta: archiveMeta, rawInput: { arguments: { query: 'South West Devs' } } });
+  await until(() => ok.length === 1);
+  assert.deepEqual(ok[0], { outcome: { outcome: 'selected', optionId: 'once' } });
+  // An earlier frame said it was another server's tool.
+  frame(s, { toolCallId: 'a2', kind: 'other', _meta: { is_mcp_tool_call: true, mcp: { server: 'production', tool: 'exec' } } });
+  const mixed = fakeRequest(r, s, { toolCallId: 'a2', kind: 'other', _meta: archiveMeta, rawInput: {} });
+  await until(() => mixed.length === 1);
+  assert.deepEqual(mixed[0], { outcome: { outcome: 'selected', optionId: 'reject' } });
+  // Not one of its read tools, or a call with no id, so no history to check.
+  const writeMeta = { is_mcp_tool_call: true, mcp: { server: 'agent-archive', tool: 'delete_everything' } };
+  frame(s, { toolCallId: 'a3', kind: 'other', _meta: writeMeta });
+  const unknown = fakeRequest(r, s, { toolCallId: 'a3', kind: 'other', _meta: writeMeta, rawInput: {} });
+  await until(() => unknown.length === 1);
+  assert.deepEqual(unknown[0], { outcome: { outcome: 'selected', optionId: 'reject' } });
+  const fresh = fakeRequest(r, s, { toolCallId: '', kind: 'other', _meta: archiveMeta, rawInput: {} });
+  await until(() => fresh.length === 1);
+  assert.deepEqual(fresh[0], { outcome: { outcome: 'selected', optionId: 'reject' } });
+  assert.equal(r.cards.length, 0, 'a coordinator never puts up a card for these');
+});
+
+test('Antigravity: models list per-model effort levels and defaultEffort, and turns apply thinking_level', async () => {
+  const r = agy({ mode: 'full', opts: { model: 'gemini-4-neon', effort: 'xhigh' } });
+  const models = await r.adapter.models(r.account);
+  assert.deepEqual(models, [
+    { id: 'gemini-4-neon', model: 'gemini-4-neon', title: 'Gemini 4 Neon', effortLevels: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'high' },
+    { id: 'gemini-3.8-flash', model: 'gemini-3.8-flash', title: 'Gemini 3.8 Flash', effortLevels: ['low', 'medium', 'high'], defaultEffort: 'high' },
+  ]);
+  const s = r.start();
+  await turn(r, s, 'hello');
+  const sets = () => r.log().flatMap((l) => (l.set ? [l.set] : []));
+  assert.deepEqual(sets(), [{ model: 'gemini-4-neon' }, { thinking_level: 'xhigh' }]);
+  assert.ok(r.outputs.some((o) => o.kind === 'effort' && o.level === 'xhigh'));
+  // Clearing back to Default resets thinking_level to the model's default (high).
+  await s.setEffort(undefined);
+  await turn(r, s, 'hello');
+  assert.deepEqual(sets().at(-1), { thinking_level: 'high' });
+  await s.setModel('gemini-3.8-flash');
+  await s.setEffort('low');
+  await turn(r, s, 'hello');
+  assert.deepEqual(sets().slice(-2), [{ model: 'gemini-3.8-flash' }, { thinking_level: 'low' }]);
+});
+
+test('OpenCode: models probe per-model thought_level options and turns apply and reset effort to default', async () => {
+  const r = rig({ mode: 'full', env: { FAKE_ACP_OPENCODE_EFFORTS: '1' }, opts: { model: 'fake/one', effort: 'max' } });
+  const models = await r.adapter.models(r.account);
+  assert.deepEqual(models, [
+    { id: 'fake/one', model: 'fake/one', title: 'Fake One', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'fake/two', model: 'fake/two', title: 'Fake Two' },
+  ]);
+  const before = r.log().length;
+  const s = r.start();
+  await turn(r, s, 'hello');
+  const sets = () => r.log().slice(before).flatMap((l) => (l.set ? [l.set] : []));
+  assert.deepEqual(sets(), [{ model: 'fake/one' }, { effort: 'max' }]);
+  assert.ok(r.outputs.some((o) => o.kind === 'effort' && o.level === 'max'));
+  // Clearing back to Default sends OpenCode's explicit "default" option.
+  await s.setEffort(undefined);
+  await turn(r, s, 'hello');
+  assert.deepEqual(sets().at(-1), { effort: 'default' });
+});
+

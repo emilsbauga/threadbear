@@ -143,7 +143,7 @@ test("a still that can't be shrunk is only no preview, never an error naming a p
   }
 });
 
-// The reviewCanvas experiment's marks stay on the Mac: the phone doesn't
+// The review board's marks stay on the Mac: the phone doesn't
 // draw them, and a cut-out's path is a file on the Mac.
 test('marks, the agent\'s and Mike\'s, never reach the phone', () => {
   const marked: DesignReview = {

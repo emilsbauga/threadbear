@@ -41,6 +41,7 @@ mod keyboard;
 mod pools;
 mod reviewers;
 mod runners;
+mod small_jobs;
 
 /// The sections down the sidebar (`SettingsTab`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1562,7 +1563,7 @@ impl SettingsWindow {
                     });
                 let label = match &set {
                     Some(id) => pools.iter().find(|p| &p.0 == id).map_or_else(
-                        || format!("{id}, which has no Claude login"),
+                        || format!("{id}, which has no small-job login"),
                         |p| p.1.clone(),
                     ),
                     None => "None".to_owned(),
@@ -1586,18 +1587,29 @@ impl SettingsWindow {
                     "settings-small-jobs",
                     label,
                     face,
-                    "Which pool's Claude logins write titles and do the librarian's work",
+                    "Which pool's logins write titles and do the librarian's work",
                     choices,
                     cx,
                 );
-                sections.push(section(
+                let small_jobs = section(
                     "settings-small-jobs-section",
                     "Small jobs",
-                    "Titles and the librarian use Haiku on one of this pool's Claude logins, the one with the most room, and count towards its usage. When every login is out of room they wait. None turns them off.",
-                    "change this, or which model and effort new threads start on. Your agent edits them in runner.json.",
+                    "Titles and the librarian run on one of this pool's logins, trying providers in order (Claude uses Haiku, then Codex and other small-job providers when out of room), and count towards its usage. When every login is out of room they wait. None turns them off.",
+                    "change this, its provider order, or which model and effort new threads start on. Your agent edits them in runner.json.",
                     vec![row("Run on", menu, cx)],
                     cx,
-                ));
+                );
+                if let Some(order) = self.small_jobs_provider_order(settings, &logins, &small, cx) {
+                    sections.push(
+                        v_flex()
+                            .gap(px(20.))
+                            .child(small_jobs)
+                            .child(order)
+                            .into_any_element(),
+                    );
+                } else {
+                    sections.push(small_jobs);
+                }
             }
         }
         let secondary = style::secondary_text(cx);
@@ -1893,7 +1905,7 @@ fn waiting_text(app: &WeakEntity<Threadbear>, cx: &App) -> String {
         return "Not connected to the runner.".into();
     };
     let t = app.read(cx);
-    if t.settings_unsupported {
+    if t.settings_unsupported() {
         "This runner is too old for settings. It gets them when it next updates.".into()
     } else if !t.connected() {
         "Not connected to the runner.".into()
@@ -2229,8 +2241,8 @@ impl Render for SettingsWindow {
             Some(app) => {
                 let t = app.read(cx);
                 (
-                    t.runner_settings.as_ref().map(RunnerSettings::decode),
-                    t.settings_error.clone(),
+                    t.runner_settings().map(RunnerSettings::decode),
+                    t.settings_error().map(str::to_owned),
                 )
             }
             None => (None, None),
@@ -2318,12 +2330,10 @@ impl Render for SettingsWindow {
 #[cfg(feature = "automation")]
 impl SettingsWindow {
     pub(crate) fn dump(&self, cx: &App) -> Value {
-        let settings = self.app.upgrade().and_then(|a| {
-            a.read(cx)
-                .runner_settings
-                .as_ref()
-                .map(RunnerSettings::decode)
-        });
+        let settings = self
+            .app
+            .upgrade()
+            .and_then(|a| a.read(cx).runner_settings().map(RunnerSettings::decode));
         json!({
             "tab": self.tab.name(),
             "appearance": style::appearance().name(),
@@ -2347,6 +2357,7 @@ impl SettingsWindow {
             "labPanel": settings.as_ref().and_then(|s| s.lab_panel.as_ref()).map(|l| l.iter().map(|r| r.provider.clone()).collect::<Vec<_>>()),
             "privateFolders": settings.as_ref().map(|s| s.private_folders.clone()),
             "smallJobsPool": settings.as_ref().and_then(|s| s.pool.clone()),
+            "smallJobsProviders": settings.as_ref().and_then(|s| s.providers.clone()),
             // General's Web runtime row, as it reads.
             "webRuntime": crate::web_runtime::settings_words(cx),
             "runners": self.runners_dump(cx),

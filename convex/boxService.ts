@@ -26,7 +26,7 @@ import { v, type Infer } from 'convex/values';
 import { internalAction, internalMutation, internalQuery, type ActionCtx, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import { box as boxMachine, machines } from './machines';
+import { box as boxMachine, boxTokenGrant as grantMachine, machines } from './machines';
 import { newestAttempt } from './boxMachine';
 import { SAVE_MS, WAKE_GRACE_MS } from './boxStates';
 import { activeMove, archive, askToSave, BOOT_PREFIX, BOX_LIMITS, isKeyMachine, mayMintAttempt, newAttempt, overHours, randomHex, usedTodayMs } from './boxes';
@@ -1848,6 +1848,8 @@ export const forgetBox = machines.internalMutation({
       return null;
     }
     if ((await boxMachine.send(machineCtx, boxId, { type: 'PURGE' })).status !== 'done') return null;
+    const grant = await ctx.db.query('boxTokenGrants').withIndex('by_box', (q) => q.eq('boxId', boxId)).unique();
+    if (grant) await grantMachine.purge(machineCtx, grant._id);
     await boxMachine.purge(machineCtx, boxId);
     // Its storage count too: a box's runner id is never anyone else's
     // (purgeStep), so nothing goes on from it (purgeRunnerRows keeps it for

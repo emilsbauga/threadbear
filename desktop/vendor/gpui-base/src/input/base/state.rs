@@ -2922,7 +2922,10 @@ impl<M: InputModeKind> InputBaseState<M> {
         let delta = event.delta.pixel_delta(line_height);
 
         let old_offset = self.scroll_handle.offset();
-        let precise = matches!(event.delta, gpui::ScrollDelta::Pixels(_));
+        // A mouse wheel never stretches the edge, smooth or not (ScrollBounce
+        // has the same rule and why).
+        let precise = matches!(event.delta, gpui::ScrollDelta::Pixels(_))
+            && event.source != gpui::ScrollSource::Wheel;
         if !precise || !self.scroll_bounce || cx.reduce_motion() || !self.overflows_vertically() {
             let displaced = self.overscroll.offset() != 0.;
             self.overscroll.reset();

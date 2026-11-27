@@ -189,6 +189,7 @@ for (const mode of MODES) {
         ['accounts.recheck', {}],
         ['accounts.yearToken', { accountId: 'claude-main' }],
         ['accounts.yearToken', { accountId: 'claude-main', runnerId: 'cb921b2447ea', code: 'abcdefgh#ijklmnop' }],
+        ['runners.shareLogins', { runnerId: 'cb921b2447ea', on: true }],
         ['panels.convexKey', { threadId: me.id, panelId: 'x' }],
         ['no.such.method', {}],
       ];
@@ -257,6 +258,8 @@ test("a Full access thread can't make a year-long token, here or on another runn
     for (const params of [{ accountId: 'claude-main' }, { accountId: 'claude-main', runnerId: 'cb921b2447ea', code: 'abcdefgh#ijklmnop' }]) {
       await assert.rejects(c.call('accounts.yearToken', params), /user's to do/);
     }
+    // Nor send this Mac's logins to another runner (login-share.ts).
+    await assert.rejects(c.call('runners.shareLogins', { runnerId: 'cb921b2447ea', on: true }), /user's to do/);
     c.close();
   } finally {
     await server.close();
@@ -1485,8 +1488,8 @@ test("a process that left another runner's thread's shell is found by its group'
   // A pipeline's tb in a terminal, whose group's first command has exited, has its parents: the owner.
   const pipeline = async () => [...(await twoRunners()), { pid: 950, ppid: 600, pgid: 949, sid: 600 }];
   assert.deepEqual(await threadOfSocket(sockAt, { ...base, platform: 'darwin', table: pipeline, lsof: async () => [950], envOf: envsWith({ ...cliEnvs, 950: 'node tb' }) }), { kind: 'owner' });
-  // Windows can't read another process's environment: as before (SECURITY.md).
-  assert.deepEqual(await threadOfSocket(sockAt, { ...base, platform: 'win32', table: twoRunners, lsof: async () => [500], envOf: undefined }), { kind: 'owner' });
+  // Windows: no groups or sessions, but the parents' environments are read too (its helper's PEB read).
+  await assert.rejects(threadOfSocket(sockAt, { ...base, platform: 'win32', table: twoRunners, lsof: async () => [500] }), (e) => e instanceof ForeignPeer);
 });
 
 test("ps's environments: one line a process, a line break in a value can't make another, and arguments aren't the environment", async () => {
@@ -1511,8 +1514,8 @@ test("ps's environments: one line a process, a line break in a value can't make 
 
 // The remediation's test, for real: two runners, a limited thread's "CLI" on
 // A (a process with its key) starting ordinary tb with THREADBEAR_HOME at B.
-test('two runners: tb from a limited thread on A pointed at B is turned away by B; a terminal, and the thread on A, still work', async (t) => {
-  if (process.platform === 'win32') return t.skip("Windows can't read another process's environment (the client asks instead, below)");
+// On Windows too, where the runner reads environments through its helper.
+test('two runners: tb from a limited thread on A pointed at B is turned away by B; a terminal, and the thread on A, still work', async () => {
   const { threadOfSocket, ownThreadMarks } = await import('../../src/peer.ts');
   const own = await ownThreadMarks();
   // Runner A knows its CLIs' pids; B knows none of them.
@@ -1520,7 +1523,11 @@ test('two runners: tb from a limited thread on A pointed at B is turned away by 
   let tokenA = '';
   const a = await serve({ callerOf: (sock) => threadOfSocket(sock, { registry: { threadOfPid: (p) => cliPids.get(p) }, known: () => true, log: nullLogger, own, keyOf: (id) => threadKey(tokenA, id), lookupMs: PATIENCE_MS }) });
   tokenA = a.token;
-  const b = await serve({ callerOf: (sock) => threadOfSocket(sock, { registry: { threadOfPid: () => undefined }, known: () => false, log: nullLogger, own: { keys: new Set([...own.keys, keyF]), ids: new Set([...own.ids, 'dev-starter']) }, lookupMs: PATIENCE_MS }) });
+  // A's Full thread that started B: B's own marks have its key and id.
+  const starter = { keys: new Set<string>(), ids: new Set<string>() };
+  const b = await serve({ callerOf: (sock) => threadOfSocket(sock, { registry: { threadOfPid: () => undefined }, known: () => false, log: nullLogger, own: { keys: new Set([...own.keys, ...starter.keys]), ids: new Set([...own.ids, ...starter.ids]), jobs: own.jobs }, lookupMs: PATIENCE_MS }) });
+  // tb on Windows asks its own runner first, at the port in its runner.json.
+  writeRunnerJson(a.h.home, { ...readRunnerJson(a.h.home), port: a.port });
   const run = async (cliEnv: Record<string, string>, tbEnv: Record<string, string>, args: string[], threadId?: string) => {
     const script = `const {spawn}=require('child_process');const p=spawn(process.execPath,${JSON.stringify([TB, ...args])},{env:{...process.env,...${JSON.stringify(tbEnv)}},stdio:'inherit'});p.on('exit',(c)=>process.exit(c??9));`;
     let out = '';
@@ -1541,7 +1548,9 @@ test('two runners: tb from a limited thread on A pointed at B is turned away by 
     for (const tbEnv of [atB, { ...atB, THREADBEAR_THREAD_KEY: '', THREADBEAR_THREAD_ID: '' }]) {
       const r = await run(onA, tbEnv, ['new', '--full', '--account', 'claude-3', 'sneaky'], limited.id);
       assert.notEqual(r.code, 0, r.out);
-      assert.match(r.out, /another runner/, r.out);
+      // Turned away by B (4403), or on Windows, with its key still there, by tb asking A first;
+      // with it wiped, by B on every system.
+      assert.match(r.out, tbEnv === atB ? /another runner|on ask/ : /another runner/, r.out);
     }
     assert.equal(b.h.runner.list(['inbox']).length, before, 'B made nothing');
     // A terminal (no thread key above it but this test's own) is B's owner.
@@ -1549,7 +1558,10 @@ test('two runners: tb from a limited thread on A pointed at B is turned away by 
     assert.equal(mine.code, 0, mine.out);
     assert.equal(b.h.runner.list(['inbox']).find((x) => x.id === mine.out.trim())?.permissionMode, 'full');
     // The thread that started B (its key among B's own) is B's owner too.
-    const dev = await run({ THREADBEAR_THREAD_ID: 'dev-starter', THREADBEAR_THREAD_KEY: keyF, THREADBEAR_RUNNER_HOME: a.h.home }, atB, ['new', '--account', 'claude-3', 'from the thread that started it']);
+    const full = thread(a.h, 'full', 'started B');
+    starter.keys.add(threadKey(a.token, full.id));
+    starter.ids.add(full.id);
+    const dev = await run({ THREADBEAR_THREAD_ID: full.id, THREADBEAR_THREAD_KEY: threadKey(a.token, full.id), THREADBEAR_RUNNER_HOME: a.h.home }, atB, ['new', '--account', 'claude-3', 'from the thread that started it'], full.id);
     assert.equal(dev.code, 0, dev.out);
     // The limited thread on its own runner: its own limits, as ever.
     const own = await run(onA, { THREADBEAR_HOME: a.h.home, THREADBEAR_URL: a.url }, ['new', '--full', '--account', 'claude-3', 'raise'], limited.id);
@@ -1579,4 +1591,61 @@ test("on Windows a thread's tb asks its own runner before using another runner's
   assert.equal(await crossHomeRefusal(other.home, {}, { platform: 'win32', connect: never }), undefined);
   // A thread id with no key (an old CLI, a patch's action) can't ask: refused.
   assert.match((await crossHomeRefusal(other.home, { ...env, THREADBEAR_THREAD_KEY: '' }, { platform: 'win32', connect: never }))!, /couldn't be asked/);
+});
+
+// Windows: a thread's CLI and everything it starts are in its job, whatever
+// their parents say (Git Bash's processes lose theirs at each exec, and keep
+// their environment where the PEB doesn't show it). The real two-runner run
+// on a Windows machine is the test above; these are its rules.
+test('on Windows a connection is placed by the Threadbear jobs its process is in', async () => {
+  const { threadOfSocket, ownThreadMarks, ForeignPeer, UnresolvedPeer, AmbiguousPeer } = await import('../../src/peer.ts');
+  const job = (c: string) => `Local\\threadbear-job-${c.repeat(32)}`;
+  // tb (500) whose parent has gone, as under Git Bash: nothing above it to read.
+  const snapshot = async () => ({ connections: [{ localAddress: '127.0.0.1', localPort: 1234, remoteAddress: '127.0.0.1', remotePort: 8797, pid: 500 }], processes: [{ pid: 500, ppid: 450, created: 10n }] });
+  const registry = { threadOfPid: () => undefined, threadOfJob: (n: string) => (n === job('a') ? 'mine' : n === job('b') ? 'other' : undefined) };
+  const base = { registry, known: (id: string) => id === 'mine' || id === 'other', log: nullLogger, platform: 'win32' as const, snapshot, envOf: async (pids: number[]) => new Map(pids.map((p) => [p, ''])) };
+  const inJobs = (...names: string[]) => async (pids: number[]) => new Map(pids.map((p) => [p, names]));
+  // In this runner's thread's job: that thread, its key wiped or not.
+  assert.deepEqual(await threadOfSocket(sockAt, { ...base, jobsOf: inJobs(job('a')) }), { kind: 'thread', threadId: 'mine' });
+  // In another runner's thread's job: turned away.
+  await assert.rejects(threadOfSocket(sockAt, { ...base, jobsOf: inJobs(job('c')) }), (e) => e instanceof ForeignPeer);
+  // ...unless this runner was started in that job (a dev runner from that thread's shell).
+  assert.deepEqual(await threadOfSocket(sockAt, { ...base, jobsOf: inJobs(job('c')), own: { keys: new Set(), ids: new Set(), jobs: new Set([job('c')]) } }), { kind: 'owner' });
+  // A dev runner's own thread inside it: that thread.
+  assert.deepEqual(await threadOfSocket(sockAt, { ...base, jobsOf: inJobs(job('c'), job('a')), own: { keys: new Set(), ids: new Set(), jobs: new Set([job('c')]) } }), { kind: 'thread', threadId: 'mine' });
+  // In none: a terminal or the app, the owner.
+  assert.deepEqual(await threadOfSocket(sockAt, { ...base, jobsOf: inJobs() }), { kind: 'owner' });
+  // Two of this runner's threads' jobs: no guessing.
+  await assert.rejects(threadOfSocket(sockAt, { ...base, jobsOf: inJobs(job('a'), job('b')) }), (e) => e instanceof AmbiguousPeer);
+  // Found under one thread's CLI by its parents but in another's job: turned away.
+  const under = { ...base, registry: { ...registry, threadOfPid: (p: number) => (p === 450 ? 'other' : undefined) }, snapshot: async () => ({ ...(await snapshot()), processes: [{ pid: 500, ppid: 450, created: 10n }, { pid: 450, ppid: 1, created: 5n }] }) };
+  await assert.rejects(threadOfSocket(sockAt, { ...under, jobsOf: inJobs(job('a')) }), (e) => e instanceof ForeignPeer);
+  // Its jobs can't be read, or it has gone: no answer.
+  await assert.rejects(threadOfSocket(sockAt, { ...base, jobsOf: async () => { throw new Error('the helper exited'); } }), (e) => e instanceof UnresolvedPeer);
+  await assert.rejects(threadOfSocket(sockAt, { ...base, jobsOf: async () => new Map() }), (e) => e instanceof UnresolvedPeer);
+  // The jobs a runner is itself in are its own marks.
+  const own = await ownThreadMarks({ env: {}, platform: 'win32', self: 77, jobsOf: inJobs(job('c')), envOf: async () => new Map(), table: async () => [] });
+  assert.deepEqual([...(own.jobs ?? [])], [job('c')]);
+});
+
+test("on Windows the helper's environ and jobsOf questions asked together go as one (Gemini's review)", async () => {
+  const { batched } = await import('../../src/peer.ts');
+  const asks: number[][] = [];
+  let release!: () => void;
+  const first = new Promise<void>((r) => (release = r));
+  const ask = batched(async (pids: number[]) => {
+    asks.push(pids);
+    if (asks.length === 1) await first;
+    return new Map(pids.map((p) => [p, `env ${p}`]));
+  });
+  const a = ask([1]);
+  const rest = [ask([2]), ask([3, 2]), ask([4])];
+  release();
+  assert.equal((await a).get(1), 'env 1');
+  const answers = await Promise.all(rest);
+  assert.deepEqual(asks, [[1], [2, 3, 4]], 'the three waiting went as one question');
+  assert.equal(answers[1].get(3), 'env 3');
+  // A failed question fails only those it was for.
+  const failing = batched(async () => { throw new Error('the helper exited'); });
+  await assert.rejects(failing([9]), /exited/);
 });

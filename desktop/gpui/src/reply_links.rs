@@ -408,8 +408,10 @@ impl ThreadPane {
     }
 
     /// Whether the pane beside the transcript is this thread's: it is for
-    /// the selected thread, but a sub-agent's transcript, a project's page
-    /// or a thread in a panel of its own has none showing.
+    /// the selected thread, but a sub-agent's transcript or a thread in a
+    /// panel of its own has none showing. On a project's page it's the
+    /// coordinator's (`pane_thread`): a PR link in its conversation went to
+    /// the browser until 26 Nov.
     fn owns_pane(&self, cx: &App) -> bool {
         let Some(app) = self.composer.read(cx).app.upgrade() else {
             return false;
@@ -417,7 +419,8 @@ impl ThreadPane {
         let app = app.read(cx);
         self.subagent_id.is_none()
             && app.selected.as_deref() == Some(self.summary.id.as_str())
-            && app.projects.open.is_none()
+            && (app.projects.open.is_none()
+                || app.pane_thread().is_some_and(|t| t.id == self.summary.id))
     }
 
     // ---------------------------------------------------------------- clicks
@@ -540,9 +543,13 @@ impl ThreadPane {
     }
 
     /// A web page where `action` says: the browser, or the pane (only the
-    /// selected thread's has one; elsewhere the browser).
+    /// selected thread's has one; elsewhere the browser). A PR in the pane
+    /// is its own tab, not GitHub's page.
     fn open_web_link(&mut self, url: &str, action: WebLinkAction, cx: &mut Context<Self>) {
         if action == WebLinkAction::Panel && self.owns_pane(cx) {
+            if crate::pr_view::pr_url(url).is_some() {
+                return self.open_pr_link(url, cx);
+            }
             let thread = self.summary.clone();
             if let Some(app) = self.composer.read(cx).app.upgrade() {
                 let side = app.read(cx).side.clone();

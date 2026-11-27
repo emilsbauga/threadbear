@@ -8,6 +8,7 @@ import path from 'node:path';
 import type { Account } from '../../src/protocol.ts';
 import { pickTestLogin, testLogin } from '../../src/test-login.ts';
 import { tmpDir } from '../helpers/fakes.ts';
+import { ACCESS_OFF_HOLD_MS, REFUSALS_FILE } from '../../src/sign-in-state.ts';
 
 const claude = (id: string, more: Partial<Account> = {}): Account => ({ id, provider: 'claude', title: id, configDir: `/tmp/${id}`, ...more });
 
@@ -45,4 +46,23 @@ test('TB_E2E_ACCOUNT wins; otherwise discovery, honouring runner.json hiddenLogi
   fs.rmSync(path.join(home, 'runner.json'));
   testLogin(env);
   assert.equal(fs.existsSync(path.join(home, 'runner.json')), false);
+});
+
+// claude-1 on 26 Nov 2026: its org turned Claude Code off, and only a failed
+// turn says so. The real runner keeps that refusal in its data dir
+// (sign-in-state.ts), and the dev runner's pick skips the login while it holds.
+test('skips a login the runner holds as refused in its data dir', () => {
+  const root = tmpDir('tb-testlogin-');
+  const home = path.join(root, 'data');
+  const main = path.join(root, 'dot-claude');
+  const accts = path.join(root, 'Accounts');
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(main);
+  for (const n of ['claude-1', 'claude-2']) fs.mkdirSync(path.join(accts, n), { recursive: true });
+  fs.writeFileSync(path.join(root, 'claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'm@example.com', organizationType: 'claude_max', billingType: 'none' } }));
+  fs.writeFileSync(path.join(home, REFUSALS_FILE), JSON.stringify({ 'claude-1': { at: Date.now(), holdMs: ACCESS_OFF_HOLD_MS } }));
+  const env = { HOME: root, PATH: '', THREADBEAR_HOME: home, THREADBEAR_CLAUDE_MAIN_DIR: main, THREADBEAR_CLAUDE_MAIN_JSON: path.join(root, 'claude.json'), THREADBEAR_ACCOUNTS_DIR: accts };
+  assert.equal(testLogin(env), 'claude-2');
+  fs.writeFileSync(path.join(home, REFUSALS_FILE), JSON.stringify({ 'claude-1': { at: Date.now() - ACCESS_OFF_HOLD_MS - 1, holdMs: ACCESS_OFF_HOLD_MS } }));
+  assert.equal(testLogin(env), 'claude-1');
 });

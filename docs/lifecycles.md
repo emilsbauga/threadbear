@@ -26,10 +26,10 @@ to backfill and no stepping stone. From 20 Nov 2026 an `expired` box is purged
 `deleteAfterDays` have passed again and the provider has no box of it, with
 its thread's and runner's rows (`boxService.ts purgeExpiredBoxes`, a cron that hands each box to `purgeBox` and `forgetBox`, in runs of its own):
 before, every virtual-runner thread left its `runners` row for good. A login's cloud token for boxes
-(`cloudTokens.tokenState`: valid, dead once a box's turn on it is refused)
+(`cloudTokens.tokenState`: valid, with legacy dead rows)
 became one on 19 Nov 2026 (`convex/cloudTokenMachine.ts`), with a
 `tokenState` backfill (rows set before it are valid), and boxes gained
-`needsToken`, waiting for one.
+`needsToken`, waiting for one. Refusals now belong to `boxTokenGrants.grantState` (`boxTokenGrantMachine.ts`: issued/refused), one per box; an owner SET releases previously refused grants. The catalog’s Machines page includes it. Its approved sealed token stays on the grant row, outside event/state history.
 
 ## Still to do, most worth it first
 

@@ -40,7 +40,9 @@ folder browser.
   (`src/menu/mac_look.rs`), patched in
   from `Cargo.toml`. Why, and how to bump it: `docs/gpui-port.md`.
 - **`vendor/gpui-base/` and `vendor/gpui-pre/`**, the kit's base and GPUI
-  itself with input, text, test-support and file-drop fixes. The patches in
+  itself with input, text, test-support and file-drop fixes, and
+  **`vendor/gpui-pre-macos/` and `vendor/gpui-pre-windows/`**, its Mac and
+  Windows platforms with keyboard and pointer-leave fixes. The patches in
   `Cargo.toml` select them; their changes are listed there and in
   `docs/gpui-port.md`.
 - **`gpui/`, the app.** GPUI has no tokio, so the connection runs on its own

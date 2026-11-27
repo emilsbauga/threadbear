@@ -6,7 +6,7 @@ import { ConvexError, v } from 'convex/values';
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import { messageButton, threadFields, updateFailedValidator, views } from './schema';
+import { messageButton, resetHint, threadFields, updateFailedValidator, usagePool, usageResets, views } from './schema';
 import { API_VERSION } from './version';
 import { endpointProblem } from './webPushEndpoint';
 import { clear, command, machines } from './machines';
@@ -667,11 +667,25 @@ function fitThread<T extends Record<string, any>>(t: T): T | undefined {
   if (docBytes(out) > CAP.threadDoc && Array.isArray(out.asks) && out.asks.some((a: any) => a?.optionNotes)) {
     out.asks = out.asks.map(({ optionNotes: _notes, ...a }: any) => a);
   }
+  // Keep nextPick/nextSuggested coherent with next (runner-key hygiene).
+  if (!Array.isArray(out.next) || out.next.length < 2 || out.nextPick !== 'one') {
+    delete out.nextPick;
+    delete out.nextSuggested;
+  } else if (
+    out.nextSuggested !== undefined &&
+    (typeof out.nextSuggested !== 'number' || !Number.isInteger(out.nextSuggested) || out.nextSuggested < 0 || out.nextSuggested >= out.next.length)
+  ) {
+    delete out.nextSuggested;
+  }
   // Another lab's review goes first, then the done card's loose ends: the
   // Mac has both, and the card still says Done without them.
   for (const f of ['review', 'looseEnds', 'asks', 'next', 'links', 'projects']) {
     if (docBytes(out) <= CAP.threadDoc) break;
     delete out[f];
+    if (f === 'next') {
+      delete out.nextPick;
+      delete out.nextSuggested;
+    }
   }
   // Still too big: option descriptions go, then the card says to answer on the Mac.
   if (card && docBytes(out) > CAP.threadDoc) out.pendingApproval = fitApproval(card, 0);
@@ -1464,6 +1478,7 @@ export const heartbeat = mutation({
       startedAt: v.string(),
       draining: v.boolean(),
       threadCount: v.number(),
+      usagePools: v.optional(v.array(usagePool)),
       icon: v.optional(v.string()),
       rpcUrl: v.optional(v.string()),
       pressure: v.optional(v.union(v.literal('memory'), v.literal('disk'))),
@@ -1499,6 +1514,7 @@ export const heartbeat = mutation({
   handler: async (ctx, { key, runner, held }) => {
     const caller = await runnerAuth(ctx, key, 'heartbeat', { housekeeping: held === true });
     runner = clean(runner);
+    if (runner.usagePools) runner.usagePools = runner.usagePools.slice(0, 50).map((p) => ({ id: cutBytes(p.id, 128), title: cutBytes(p.title, 200), accountIds: p.accountIds.slice(0, 50).map((id) => cutBytes(id, 128)) }));
     // A runner key heartbeats as its own runner only: the row has the
     // rpcUrl other Macs' apps dial.
     await actAs(ctx, caller, runner.runnerId);
@@ -2245,6 +2261,8 @@ const accountDoc = v.object({
   loginEndsAt: v.optional(v.string()),
   signedOut: v.optional(v.boolean()),
   yearToken: v.optional(v.object({ madeAt: v.optional(v.string()) })),
+  // API 104: a Codex login's resets and the hint to use one.
+  resetHint: v.optional(resetHint),
   usage: v.optional(
     v.object({
       windows: v.array(v.object({ kind: v.string(), title: v.string(), remainingPercent: v.number(), resetsAt: v.optional(v.string()), detail: v.optional(v.string()) })),
@@ -2253,6 +2271,7 @@ const accountDoc = v.object({
       stale: v.optional(v.boolean()),
       blocked: v.optional(v.boolean()),
       notice: v.optional(v.string()),
+      resets: v.optional(usageResets),
     }),
   ),
 });
@@ -2629,6 +2648,7 @@ const ownedScheduleDoc = v.object({
   check: v.optional(v.string()),
   checkTimeoutSecs: v.optional(v.number()),
   provider: v.optional(v.string()),
+  starThreads: v.optional(v.boolean()),
 });
 
 const lastRunDoc = v.object({ at: v.string(), outcome: v.string(), threadId: v.optional(v.string()), note: v.optional(v.string()) });
@@ -4149,6 +4169,7 @@ const indexDoc = v.object({
   title: v.string(),
   cwd: v.string(),
   accountId: v.string(),
+  poolId: v.optional(v.string()), // since API 101
   provider: v.string(),
   model: v.optional(v.string()),
   status: v.string(),
@@ -4162,6 +4183,7 @@ const indexDoc = v.object({
   starredAt: v.optional(v.string()),
   backlogged: v.optional(v.boolean()),
   backlog: v.optional(v.boolean()),
+  coordinatorProjectId: v.optional(v.string()),
   startedBy: v.optional(v.object({ kind: v.string(), label: v.string(), icon: v.optional(v.string()), threadTitle: v.optional(v.string()), why: v.optional(v.string()) })),
   asked: v.optional(v.string()), // since API 32
   request: v.optional(v.string()), // since API 96; only older runners send it now (the Feed, taken out 23 Nov 2026)
@@ -4279,7 +4301,9 @@ async function otherRunners(ctx: QueryCtx, runnerId: string) {
 async function boxSummary(ctx: QueryCtx, r: Doc<'runners'>): Promise<{ state: string; waiting?: boolean; service?: string; token?: 'none' | 'dead'; login?: string }> {
   const row = await boxOfRunner(ctx, r);
   const token = row ? await ctx.db.query('cloudTokens').withIndex('by_login', (q) => q.eq('login', row.login)).unique() : null;
-  const missing = !row ? undefined : !token ? ('none' as const) : token.tokenState.kind === 'dead' ? ('dead' as const) : undefined;
+  const grant = row ? await ctx.db.query('boxTokenGrants').withIndex('by_box', (q) => q.eq('boxId', row._id)).unique() : null;
+  const refused = grant?.keyHash === row?.boxKeyHash && grant?.grantState.kind === 'refused';
+  const missing = !row ? undefined : !token ? ('none' as const) : token.tokenState.kind === 'dead' || refused ? ('dead' as const) : undefined;
   return {
     state: row?.boxState.kind ?? 'expired',
     ...(row?.wantsWakeAt !== undefined || row?.waitsForHours !== undefined || row?.boxState.kind === 'waitingForRoom' ? { waiting: true } : {}),

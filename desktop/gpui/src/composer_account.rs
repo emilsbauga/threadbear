@@ -15,7 +15,9 @@ use gpui_kit::*;
 // The zoom-aware px (style.rs), in place of GPUI's.
 use crate::style::px;
 use crate::tips::Tip as _;
-use threadbear_core::login_picker::{login_lines, login_sections, LoginItem, LoginSection};
+use threadbear_core::login_picker::{
+    login_lines, login_sections, LoginItem, LoginSection, ResetOffer,
+};
 use threadbear_core::new_thread::ChipBadge;
 
 /// The picker's width (AccountPickerView.width).
@@ -56,6 +58,10 @@ pub(crate) fn picker(
         return div().into_any_element();
     };
     let (sections, footer) = entity.read(cx).login_picker(cx);
+    let (app, runner) = {
+        let c = entity.read(cx);
+        (c.app.clone(), c.chip_data(cx).runner)
+    };
     let popover = cx.entity();
     let tertiary = style::tertiary_label(cx);
     let mut list = v_flex().p(px(6.)).gap(px(1.));
@@ -84,7 +90,17 @@ pub(crate) fn picker(
         );
         for item in &section.items {
             let (composer, popover, id) = (composer.clone(), popover.clone(), item.id.clone());
-            list = list.child(login_row(item, window, cx, move |window, cx| {
+            let reset = item.reset.as_ref().map(|offer| {
+                reset_line(
+                    &format!("login-{}", item.id),
+                    offer,
+                    app.clone(),
+                    runner.clone(),
+                    item.id.clone(),
+                    cx,
+                )
+            });
+            list = list.child(login_row(item, reset, window, cx, move |window, cx| {
                 popover.update(cx, |s, cx| s.dismiss(window, cx));
                 if let Some(c) = composer.upgrade() {
                     c.update(cx, |c, cx| c.set_account(id.clone(), cx));
@@ -127,6 +143,7 @@ pub(crate) fn picker(
 /// tick when it's the one chosen.
 fn login_row(
     item: &LoginItem,
+    reset: Option<AnyElement>,
     _window: &mut Window,
     cx: &App,
     action: impl Fn(&mut Window, &mut App) + 'static,
@@ -179,7 +196,8 @@ fn login_row(
                             .text_color(subtitle_color)
                             .child(subtitle),
                     )
-                }),
+                })
+                .children(reset),
         )
         // SF's checkmark at 11 pt semibold; kept in its place while unticked,
         // so the rows' words line up.
@@ -216,4 +234,76 @@ pub(crate) fn menu_command(
         return Ok(json!("ok"));
     }
     Ok(json!(login_lines(&sections, footer.as_deref())))
+}
+
+/// "2 resets left" and Use a reset under a login's line in a login list
+/// (the login picker and the model menu's Login list), for a usage reset
+/// worth using now (reset_hint.rs; Mike, 26 Nov). The button spins and takes
+/// no clicks until the runner answers, and a click on it never picks the
+/// login. `runner` is the list's runner, None for this Mac's.
+pub(crate) fn reset_line(
+    key: &str,
+    offer: &ResetOffer,
+    app: WeakEntity<crate::app::Threadbear>,
+    runner: Option<String>,
+    account: String,
+    cx: &App,
+) -> AnyElement {
+    let busy = app
+        .upgrade()
+        .is_some_and(|a| a.read(cx).resetting_login(runner.as_deref(), &account));
+    let chip = crate::highlights::tipped(
+        div()
+            .id(SharedString::from(format!("{key}-use-reset")))
+            .flex_none()
+            .px(px(6.))
+            .py(px(1.))
+            .rounded(px(5.))
+            .text_size(px(11.))
+            .line_height(px(style::natural_line(11.)))
+            .text_color(style::label_text(cx))
+            .bg(style::chip_fill(cx)),
+        offer.tip.clone(),
+    );
+    let chip = if busy {
+        chip.opacity(0.7)
+            .child(
+                h_flex()
+                    .gap(px(4.))
+                    .items_center()
+                    .child(
+                        crate::spinner::Spinner::new()
+                            .with_size(px(9.))
+                            .color(style::secondary_label(cx)),
+                    )
+                    .child("Using a reset"),
+            )
+            .into_any_element()
+    } else {
+        chip.cursor_pointer()
+            .hover(|s| s.bg(style::chip_hover_fill(cx)))
+            .on_click(move |_, _, cx| {
+                // Only the button: the row under it picks the login.
+                cx.stop_propagation();
+                let (runner, account) = (runner.clone(), account.clone());
+                app.update(cx, |a, cx| a.use_reset_on(runner, account, cx))
+                    .ok();
+            })
+            .child("Use a reset")
+            .into_any_element()
+    };
+    h_flex()
+        .pt(px(2.))
+        .gap(px(6.))
+        .items_center()
+        .child(
+            div()
+                .text_size(px(11.))
+                .line_height(px(style::natural_line(11.)))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(style::needs_you(cx))
+                .child(offer.words.clone()),
+        )
+        .child(chip)
+        .into_any_element()
 }

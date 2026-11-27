@@ -4,6 +4,7 @@
 // Decoded as forgivingly as the other models, so a missing field takes its
 // default and an older runner's fields are ignored.
 use serde_json::Value;
+use std::collections::VecDeque;
 
 /// How often a fork's runner starts a thread to bring in Mike's releases:
 /// every so many days, only for ones he marks important, or never.
@@ -163,6 +164,47 @@ pub fn reviewer_dropped(list: &[LabReviewer], from: usize, to: usize) -> Option<
     Some(out)
 }
 
+/// The change `settings.update` takes for `models.providers`: `Some(list)`
+/// saves a custom provider order inside the chosen pool; `None` resets to
+/// automatic order (Claude, then Codex, then the pool's remaining small-job
+/// providers).
+pub fn small_job_providers_change(list: Option<&[String]>) -> Value {
+    match list {
+        Some(items) => serde_json::json!({ "models": { "providers": items } }),
+        None => serde_json::json!({ "models": { "providers": Value::Null } }),
+    }
+}
+
+/// The list with the provider at `from` dropped on the row at `to`. None when
+/// nothing moves.
+pub fn provider_dropped(list: &[String], from: usize, to: usize) -> Option<Vec<String>> {
+    if from == to || from >= list.len() || to >= list.len() {
+        return None;
+    }
+    let mut out = list.to_vec();
+    let moved = out.remove(from);
+    out.insert(to, moved);
+    Some(out)
+}
+
+/// The default small-job provider order inside a pool (`models.providers`
+/// unset/null): Claude first, then Codex, then any other small-job providers
+/// in pool order (matching `runner/src/models/index.ts`, `providersToAsk`).
+pub fn default_small_job_providers(pool_providers: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(pool_providers.len());
+    for preferred in ["claude", "codex"] {
+        if pool_providers.iter().any(|p| p == preferred) && !out.iter().any(|p| p == preferred) {
+            out.push(preferred.to_owned());
+        }
+    }
+    for p in pool_providers {
+        if !out.iter().any(|x| x == p) {
+            out.push(p.clone());
+        }
+    }
+    out
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunnerSettings {
     pub default_cwd: String,
@@ -192,11 +234,16 @@ pub struct RunnerSettings {
     pub spare_week: Option<bool>,
     pub bring_in: BringIn,
     pub bring_in_supported: bool,
-    /// The pool whose Claude logins answer small jobs (titles, the
-    /// librarian); None means none, so those are off.
+    /// The pool whose logins answer small jobs (titles, the librarian);
+    /// None means none, so those are off.
     pub pool: Option<String>,
     /// Whether the runner sends `models.pool` at all.
     pub pool_supported: bool,
+    /// Custom provider order for small jobs inside `pool`; None means default
+    /// order (Claude, then Codex, then the pool's remaining small-job providers).
+    pub providers: Option<Vec<String>>,
+    /// Whether the runner sends `models.providers` at all.
+    pub providers_supported: bool,
     /// Folders whose thread text is never sent, as written ("~/" kept).
     pub private_folders: Vec<String>,
     /// Every experiment there is, oldest first.
@@ -244,6 +291,12 @@ impl RunnerSettings {
                 .filter(|p| !p.is_empty())
                 .map(str::to_owned),
             pool_supported: models.get("pool").is_some(),
+            providers: models["providers"].as_array().map(|list| {
+                list.iter()
+                    .filter_map(|p| p.as_str().filter(|s| !s.is_empty()).map(str::to_owned))
+                    .collect()
+            }),
+            providers_supported: models.get("providers").is_some(),
             private_folders: models["privateFolders"]
                 .as_array()
                 .into_iter()
@@ -303,6 +356,385 @@ impl StandingInstructions {
             text: v["text"].as_str().unwrap_or("").to_owned(),
             outside: v["outside"].as_bool().unwrap_or(false),
         }
+    }
+}
+
+/// Why a `settings.update` RPC failed, so the queue knows whether the runner
+/// finished rejecting it or whether the write's fate is unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateErrorKind {
+    /// The runner rejected the update (e.g. validation error) and finished
+    /// handling it, so queued edits can safely continue.
+    Rejected,
+    /// The RPC timed out client-side while the runner may still be processing
+    /// it; stop the queue to avoid concurrent out-of-order writes and reload.
+    TimedOut,
+    /// The runner connection closed or is gone; stop the queue without sending
+    /// onto a dead socket.
+    Disconnected,
+}
+
+/// What `RunnerSettingsState::on_update_ok` / `on_update_err` asks the app to do next.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateOutcome {
+    /// Reply belonged to a superseded or disconnected RPC; do nothing.
+    Ignored,
+    /// State was updated. Send `next` if another edit was queued behind this
+    /// one, or ask `settings.get` when `should_reload` is true.
+    Applied {
+        next: Option<(u64, Value)>,
+        should_reload: bool,
+    },
+}
+
+const MAX_IN_FLIGHT_PUSHES: usize = 16;
+
+#[derive(Clone, Debug)]
+struct PendingSettingsUpdate {
+    edit_id: u64,
+    rpc_seq: u64,
+    change: Value,
+    /// `settings.updated` snapshots received while this edit was in flight,
+    /// so `on_update_ok` can tell whether a newer external push arrived after
+    /// this edit's own broadcast.
+    pushes_seen: Vec<Value>,
+    pushes_overflowed: bool,
+}
+
+/// Tracks the runner's settings (`settings.get`, `settings.update`, and
+/// `settings.updated`) so optimistic local edits are serialized one RPC at a
+/// time and never clobbered by stale replies or intermediate notifications.
+#[derive(Clone, Debug, Default)]
+pub struct RunnerSettingsState {
+    /// Latest authoritative settings received from the runner.
+    confirmed: Option<Value>,
+    /// True once `confirmed` came from the current runner connection rather
+    /// than being cached across a reconnect.
+    confirmed_this_connection: bool,
+    /// Displayed settings: `confirmed` with `in_flight` and `queued` overlaid.
+    displayed: Option<Value>,
+    /// The single `settings.update` RPC currently on the wire, if any.
+    in_flight: Option<PendingSettingsUpdate>,
+    /// Local edits waiting behind `in_flight`, in FIFO order.
+    queued: VecDeque<PendingSettingsUpdate>,
+    /// Monotonic id assigned to each local edit as the user submits it.
+    next_edit_id: u64,
+    /// Monotonic token for `settings.get`; bumped on each new get and whenever
+    /// newer authoritative settings arrive from the runner.
+    get_epoch: u64,
+    /// Monotonic id for `settings.update` RPCs so replies from before a
+    /// connection reset can be ignored.
+    rpc_seq: u64,
+    /// `next_edit_id` when the last error happened, so a pre-existing queued
+    /// edit succeeding immediately after does not erase the error before the
+    /// user makes a fresh edit.
+    error_at_edit: u64,
+    error: Option<String>,
+    unsupported: bool,
+}
+
+impl RunnerSettingsState {
+    pub fn displayed(&self) -> Option<&Value> {
+        self.displayed.as_ref()
+    }
+
+    pub fn confirmed(&self) -> Option<&Value> {
+        self.confirmed.as_ref()
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub fn unsupported(&self) -> bool {
+        self.unsupported
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.in_flight.is_some() || !self.queued.is_empty()
+    }
+
+    pub fn has_pending_experiment(&self, id: &str) -> bool {
+        self.in_flight.iter().chain(self.queued.iter()).any(|p| {
+            p.change
+                .get("experiments")
+                .and_then(|e| e.get(id))
+                .is_some()
+        })
+    }
+
+    pub fn experiment_on(&self, id: &str) -> Option<bool> {
+        experiment_in(self.displayed.as_ref()?, id)
+    }
+
+    /// Experiment state confirmed on the current runner connection (`None`
+    /// while only a cached pre-reconnect snapshot is held, so callers fall
+    /// back to the fresh `hello` until `settings.get` answers).
+    pub fn confirmed_experiment_on(&self, id: &str) -> Option<bool> {
+        if !self.confirmed_this_connection {
+            return None;
+        }
+        experiment_in(self.confirmed.as_ref()?, id)
+    }
+
+    /// Aborts any in-flight or queued edits when the runner connection drops
+    /// so queued edits are not sent onto a dead socket, and reports the loss
+    /// in `error`. Returns `true` if pending edits were aborted.
+    pub fn on_disconnected(&mut self, message: impl Into<String>) -> bool {
+        self.confirmed_this_connection = false;
+        if !self.has_pending() {
+            return false;
+        }
+        self.in_flight = None;
+        self.queued.clear();
+        self.rpc_seq += 1;
+        self.error = Some(message.into());
+        self.error_at_edit = self.next_edit_id;
+        self.recompute_displayed();
+        true
+    }
+
+    /// Prepares state for a new runner connection: marks cached settings as
+    /// unconfirmed for this session, aborts any leftover pending edits from
+    /// the previous connection (recording an error rather than silently
+    /// dropping them), and keeps cached confirmed settings visible until
+    /// `settings.get` answers.
+    pub fn on_connected(&mut self, disconnect_message: impl Into<String>) {
+        if self.has_pending() {
+            self.in_flight = None;
+            self.queued.clear();
+            self.error = Some(disconnect_message.into());
+            self.error_at_edit = self.next_edit_id;
+        }
+        self.confirmed_this_connection = false;
+        self.rpc_seq += 1;
+        self.get_epoch += 1;
+        self.recompute_displayed();
+    }
+
+    pub fn begin_get(&mut self) -> u64 {
+        self.get_epoch += 1;
+        self.get_epoch
+    }
+
+    pub fn on_get_ok(&mut self, token: u64, settings: Value) -> bool {
+        if token != self.get_epoch {
+            return false;
+        }
+        self.confirmed = Some(settings);
+        self.confirmed_this_connection = true;
+        self.unsupported = false;
+        self.recompute_displayed();
+        true
+    }
+
+    pub fn on_get_unsupported(&mut self, token: u64) -> bool {
+        if token != self.get_epoch {
+            return false;
+        }
+        self.unsupported = true;
+        self.confirmed = None;
+        self.confirmed_this_connection = false;
+        self.in_flight = None;
+        self.queued.clear();
+        self.displayed = None;
+        true
+    }
+
+    pub fn on_updated(&mut self, settings: Value) {
+        if let Some(in_flight) = self.in_flight.as_mut() {
+            if in_flight.pushes_seen.len() < MAX_IN_FLIGHT_PUSHES {
+                in_flight.pushes_seen.push(settings.clone());
+            } else {
+                in_flight.pushes_overflowed = true;
+            }
+        }
+        self.get_epoch += 1;
+        self.confirmed = Some(settings);
+        self.confirmed_this_connection = true;
+        self.unsupported = false;
+        self.recompute_displayed();
+    }
+
+    /// Applies `change` optimistically and returns `Some((seq, change))` if
+    /// the caller should send `settings.update` immediately, or `None` if it
+    /// was queued behind an already in-flight update.
+    pub fn queue_update(&mut self, change: Value) -> Option<(u64, Value)> {
+        self.next_edit_id += 1;
+        let edit_id = self.next_edit_id;
+        let to_send = if self.in_flight.is_none() {
+            self.rpc_seq += 1;
+            let seq = self.rpc_seq;
+            self.in_flight = Some(PendingSettingsUpdate {
+                edit_id,
+                rpc_seq: seq,
+                change: change.clone(),
+                pushes_seen: Vec::new(),
+                pushes_overflowed: false,
+            });
+            Some((seq, change))
+        } else {
+            self.queued.push_back(PendingSettingsUpdate {
+                edit_id,
+                rpc_seq: 0,
+                change,
+                pushes_seen: Vec::new(),
+                pushes_overflowed: false,
+            });
+            None
+        };
+        self.recompute_displayed();
+        to_send
+    }
+
+    pub fn on_update_ok(&mut self, seq: u64, settings: Value) -> UpdateOutcome {
+        if self.in_flight.as_ref().is_none_or(|p| p.rpc_seq != seq) {
+            return UpdateOutcome::Ignored;
+        }
+        let Some(finished) = self.in_flight.take() else {
+            return UpdateOutcome::Ignored;
+        };
+        self.get_epoch += 1;
+        // If `settings.updated` broadcasts arrived while this RPC was in
+        // flight and another push came AFTER this reply's own snapshot, keep
+        // the newer pushed state instead of overwriting it with an older reply.
+        let newer_push_exists = finished
+            .pushes_seen
+            .iter()
+            .rposition(|p| p == &settings)
+            .is_some_and(|idx| idx + 1 < finished.pushes_seen.len());
+        let mut should_reload = false;
+        if finished.pushes_overflowed {
+            should_reload = true;
+        } else if !newer_push_exists {
+            self.confirmed = Some(settings);
+        }
+        self.confirmed_this_connection = true;
+        self.unsupported = false;
+        if finished.edit_id > self.error_at_edit {
+            self.error = None;
+        }
+        let next = self.promote_next();
+        if next.is_some() {
+            should_reload = false;
+        }
+        self.recompute_displayed();
+        UpdateOutcome::Applied {
+            next,
+            should_reload,
+        }
+    }
+
+    pub fn on_update_err(
+        &mut self,
+        seq: u64,
+        message: String,
+        kind: UpdateErrorKind,
+    ) -> UpdateOutcome {
+        if self.in_flight.as_ref().is_none_or(|p| p.rpc_seq != seq) {
+            return UpdateOutcome::Ignored;
+        }
+        self.in_flight = None;
+        self.error = Some(message);
+        self.error_at_edit = self.next_edit_id;
+        match kind {
+            UpdateErrorKind::Disconnected => {
+                self.queued.clear();
+                self.rpc_seq += 1;
+                self.recompute_displayed();
+                UpdateOutcome::Applied {
+                    next: None,
+                    should_reload: false,
+                }
+            }
+            UpdateErrorKind::TimedOut => {
+                self.queued.clear();
+                self.rpc_seq += 1;
+                self.recompute_displayed();
+                UpdateOutcome::Applied {
+                    next: None,
+                    should_reload: true,
+                }
+            }
+            UpdateErrorKind::Rejected => {
+                let next = self.promote_next();
+                self.recompute_displayed();
+                UpdateOutcome::Applied {
+                    should_reload: next.is_none(),
+                    next,
+                }
+            }
+        }
+    }
+
+    fn promote_next(&mut self) -> Option<(u64, Value)> {
+        let mut next = self.queued.pop_front()?;
+        self.rpc_seq += 1;
+        next.rpc_seq = self.rpc_seq;
+        next.pushes_seen.clear();
+        next.pushes_overflowed = false;
+        let out = (next.rpc_seq, next.change.clone());
+        self.in_flight = Some(next);
+        Some(out)
+    }
+
+    fn recompute_displayed(&mut self) {
+        let Some(mut value) = self.confirmed.clone() else {
+            self.displayed = None;
+            return;
+        };
+        if let Some(in_flight) = &self.in_flight {
+            merge_json(&mut value, &in_flight.change);
+        }
+        for queued in &self.queued {
+            merge_json(&mut value, &queued.change);
+        }
+        self.displayed = Some(value);
+    }
+}
+
+fn experiment_in(settings: &Value, id: &str) -> Option<bool> {
+    settings["experiments"]
+        .as_array()?
+        .iter()
+        .find(|e| e["id"] == id)
+        .map(|e| e["on"].as_bool() == Some(true))
+}
+
+/// `change`'s fields written over `into`'s, objects within objects too, as a
+/// `settings.update` changes only what it names.
+pub fn merge_json(into: &mut Value, change: &Value) {
+    match (into, change) {
+        // `experiments` is a list of { id, on } but a change names them by
+        // id ({ "experiments": { id: on } }). Replacing the list with that
+        // emptied Experiments until the runner answered, so the page got
+        // shorter and the pane lost its place (21 Nov).
+        (Value::Array(list), Value::Object(change))
+            if list
+                .iter()
+                .all(|item| item.get("id").is_some_and(Value::is_string)) =>
+        {
+            for item in list.iter_mut() {
+                if let Some(on) = item["id"].as_str().and_then(|id| change.get(id)) {
+                    item["on"] = on.clone();
+                }
+            }
+        }
+        (Value::Object(into), Value::Object(change)) => {
+            for (key, value) in change {
+                match into.get_mut(key) {
+                    Some(existing)
+                        if (existing.is_object() || existing.is_array()) && value.is_object() =>
+                    {
+                        merge_json(existing, value)
+                    }
+                    _ => {
+                        into.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (into, change) => *into = change.clone(),
     }
 }
 
@@ -426,6 +858,65 @@ mod tests {
     }
 
     #[test]
+    fn small_job_providers_read_reorder_and_reset() {
+        let old = RunnerSettings::decode(&json!({ "models": { "pool": "claude" } }));
+        assert!(!old.providers_supported && old.providers.is_none());
+
+        let auto =
+            RunnerSettings::decode(&json!({ "models": { "pool": "main", "providers": null } }));
+        assert!(auto.providers_supported && auto.providers.is_none());
+
+        let custom = RunnerSettings::decode(
+            &json!({ "models": { "pool": "main", "providers": ["codex", "", "claude"] } }),
+        );
+        assert!(custom.providers_supported);
+        assert_eq!(
+            custom.providers,
+            Some(vec!["codex".into(), "claude".into()])
+        );
+
+        let three: Vec<String> = vec!["claude".into(), "codex".into(), "grok".into()];
+        assert_eq!(
+            provider_dropped(&three, 2, 0).unwrap(),
+            vec!["grok", "claude", "codex"]
+        );
+        assert_eq!(
+            provider_dropped(&three, 0, 2).unwrap(),
+            vec!["codex", "grok", "claude"]
+        );
+        assert!(provider_dropped(&three, 1, 1).is_none());
+
+        assert_eq!(
+            default_small_job_providers(&[
+                "grok".into(),
+                "codex".into(),
+                "claude".into(),
+                "opencode".into()
+            ]),
+            vec!["claude", "codex", "grok", "opencode"]
+        );
+        assert_eq!(
+            small_job_providers_change(Some(&three)),
+            json!({ "models": { "providers": ["claude", "codex", "grok"] } })
+        );
+        assert_eq!(
+            small_job_providers_change(None),
+            json!({ "models": { "providers": null } })
+        );
+
+        // Optimistic overlay via merge_json handles both setting and resetting.
+        let mut snap =
+            json!({ "models": { "pool": "main", "privateFolders": [], "providers": null } });
+        merge_json(&mut snap, &small_job_providers_change(Some(&three)));
+        assert_eq!(
+            snap["models"]["providers"],
+            json!(["claude", "codex", "grok"])
+        );
+        merge_json(&mut snap, &small_job_providers_change(None));
+        assert_eq!(snap["models"]["providers"], Value::Null);
+    }
+
+    #[test]
     fn the_panel_is_a_list_of_its_own() {
         // Mike's own: Codex on both lists, each with its own effort.
         let s = RunnerSettings::decode(&json!({
@@ -521,5 +1012,507 @@ mod tests {
         assert_eq!(lab_of_model("openai/gpt-6.1"), Some("GPT"));
         assert_eq!(lab_of_model("xai/grok-4.7"), Some("Grok"));
         assert_eq!(lab_of_model("zai/glm-5"), None);
+    }
+
+    fn sample_settings(coordinators: bool, keep_awake: bool, lab_review: bool) -> Value {
+        json!({
+            "defaultCwd": "/Users/alex/code",
+            "keepAwake": keep_awake,
+            "labReview": lab_review,
+            "models": { "pool": "claude", "privateFolders": [] },
+            "experiments": [
+                { "id": "coordinators", "name": "Project coordinators", "does": "Work.", "on": coordinators },
+                { "id": "inboxGuess", "name": "Inbox guess", "does": "Guess.", "on": false }
+            ]
+        })
+    }
+
+    #[test]
+    fn rapid_coordinator_toggle_off_then_on_is_serialized_and_never_clobbered() {
+        let mut state = RunnerSettingsState::default();
+        let tok = state.begin_get();
+        assert!(state.on_get_ok(tok, sample_settings(true, true, true)));
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+
+        // 1. User turns coordinators OFF: sends RPC 1 immediately.
+        let (seq1, c1) = state
+            .queue_update(json!({ "experiments": { "coordinators": false } }))
+            .expect("first update sends immediately");
+        assert_eq!(c1, json!({ "experiments": { "coordinators": false } }));
+        assert_eq!(state.experiment_on("coordinators"), Some(false));
+        assert!(state.has_pending_experiment("coordinators"));
+
+        // 2. While RPC 1 is still in flight, user turns coordinators back ON.
+        //    Must NOT send RPC 2 yet (so it cannot overtake RPC 1 on a slow runner),
+        //    and displayed state must immediately be ON.
+        assert_eq!(
+            state.queue_update(json!({ "experiments": { "coordinators": true } })),
+            None,
+            "second update queues behind in-flight first update"
+        );
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+        assert!(state.has_pending_experiment("coordinators"));
+
+        // 3. RPC 1's settings.updated push arrives (coordinators = false):
+        //    must NOT clobber the optimistic ON state!
+        state.on_updated(sample_settings(false, true, true));
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+        assert_eq!(state.confirmed_experiment_on("coordinators"), Some(false));
+        assert!(state.has_pending_experiment("coordinators"));
+
+        // 4. RPC 1 replies Ok (coordinators = false):
+        //    must keep displayed ON and now flush RPC 2 (coordinators = true).
+        let outcome1 = state.on_update_ok(seq1, sample_settings(false, true, true));
+        let (seq2, c2) = match outcome1 {
+            UpdateOutcome::Applied {
+                next: Some(next),
+                should_reload: false,
+            } => next,
+            other => panic!("expected queued update to flush, got {other:?}"),
+        };
+        assert_eq!(c2, json!({ "experiments": { "coordinators": true } }));
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+        assert_eq!(state.confirmed_experiment_on("coordinators"), Some(false));
+        assert!(state.has_pending_experiment("coordinators"));
+
+        // 5. RPC 2's settings.updated and Ok arrive (coordinators = true):
+        state.on_updated(sample_settings(true, true, true));
+        assert_eq!(
+            state.on_update_ok(seq2, sample_settings(true, true, true)),
+            UpdateOutcome::Applied {
+                next: None,
+                should_reload: false,
+            }
+        );
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+        assert_eq!(state.confirmed_experiment_on("coordinators"), Some(true));
+        assert!(!state.has_pending());
+        assert!(!state.has_pending_experiment("coordinators"));
+    }
+
+    #[test]
+    fn stale_settings_get_cannot_clobber_newer_updates_or_notifications() {
+        let mut state = RunnerSettingsState::default();
+        let tok_initial = state.begin_get();
+        assert!(state.on_get_ok(tok_initial, sample_settings(true, true, true)));
+
+        // Start a settings.get, then user toggles coordinators off before get finishes.
+        let tok_old = state.begin_get();
+        let (seq1, _) = state
+            .queue_update(json!({ "experiments": { "coordinators": false } }))
+            .expect("sends");
+        assert_eq!(state.experiment_on("coordinators"), Some(false));
+
+        // Even if tok_old arrives before seq1 completes, optimistic edit stays overlaid.
+        assert!(state.on_get_ok(tok_old, sample_settings(true, true, true)));
+        assert_eq!(state.experiment_on("coordinators"), Some(false));
+
+        // Start another get, let seq1 complete first, then the old get arrives late: ignored!
+        let tok_stale = state.begin_get();
+        state.on_update_ok(seq1, sample_settings(false, true, true));
+        assert!(
+            !state.on_get_ok(tok_stale, sample_settings(true, true, true)),
+            "settings.get started before update_ok must be ignored"
+        );
+        assert_eq!(state.experiment_on("coordinators"), Some(false));
+
+        // A settings.get started before settings.updated is also ignored.
+        let tok_before_push = state.begin_get();
+        state.on_updated(sample_settings(true, false, true));
+        assert!(
+            !state.on_get_ok(tok_before_push, sample_settings(false, true, true)),
+            "settings.get started before settings.updated must be ignored"
+        );
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+        assert_eq!(state.displayed().unwrap()["keepAwake"], json!(false));
+    }
+
+    #[test]
+    fn rapid_updates_to_different_keys_and_external_push_merge_cleanly() {
+        let mut state = RunnerSettingsState::default();
+        let tok = state.begin_get();
+        state.on_get_ok(tok, sample_settings(true, true, true));
+
+        // Toggle keepAwake=false, then labReview=false while first is in flight.
+        let (seq1, _) = state
+            .queue_update(json!({ "keepAwake": false }))
+            .expect("first sends");
+        assert_eq!(state.queue_update(json!({ "labReview": false })), None);
+        assert_eq!(state.displayed().unwrap()["keepAwake"], json!(false));
+        assert_eq!(state.displayed().unwrap()["labReview"], json!(false));
+
+        // Another window changes defaultCwd while our two edits are pending.
+        let mut external = sample_settings(true, true, true);
+        external["defaultCwd"] = json!("/Users/alex/other");
+        state.on_updated(external);
+        assert_eq!(
+            state.displayed().unwrap()["defaultCwd"],
+            json!("/Users/alex/other"),
+            "external change is kept"
+        );
+        assert_eq!(
+            state.displayed().unwrap()["keepAwake"],
+            json!(false),
+            "in-flight local change stays overlaid"
+        );
+        assert_eq!(
+            state.displayed().unwrap()["labReview"],
+            json!(false),
+            "queued local change stays overlaid"
+        );
+
+        // RPC 1 finishes: keepAwake=false confirmed, labReview=false still displayed & now sent.
+        let mut after1 = sample_settings(true, false, true);
+        after1["defaultCwd"] = json!("/Users/alex/other");
+        let (seq2, c2) = match state.on_update_ok(seq1, after1) {
+            UpdateOutcome::Applied {
+                next: Some(next),
+                should_reload: false,
+            } => next,
+            other => panic!("expected seq2, got {other:?}"),
+        };
+        assert_eq!(c2, json!({ "labReview": false }));
+        assert_eq!(state.displayed().unwrap()["labReview"], json!(false));
+
+        // RPC 2 finishes: everything confirmed.
+        let mut after2 = sample_settings(true, false, false);
+        after2["defaultCwd"] = json!("/Users/alex/other");
+        state.on_update_ok(seq2, after2);
+        assert!(!state.has_pending());
+        assert_eq!(state.displayed().unwrap()["keepAwake"], json!(false));
+        assert_eq!(state.displayed().unwrap()["labReview"], json!(false));
+        assert_eq!(
+            state.displayed().unwrap()["defaultCwd"],
+            json!("/Users/alex/other")
+        );
+    }
+
+    #[test]
+    fn error_rollback_rolls_back_only_failed_edit_and_keeps_error_visible_for_prequeued_edit() {
+        let mut state = RunnerSettingsState::default();
+        let tok = state.begin_get();
+        state.on_get_ok(tok, sample_settings(true, true, true));
+
+        // Single failing edit: rolls back to confirmed and requests reload.
+        let (seq0, _) = state
+            .queue_update(json!({ "defaultCwd": "/nope" }))
+            .expect("sends");
+        assert_eq!(state.displayed().unwrap()["defaultCwd"], json!("/nope"));
+        assert_eq!(
+            state.on_update_err(
+                seq0,
+                "Folder not found: /nope".into(),
+                UpdateErrorKind::Rejected
+            ),
+            UpdateOutcome::Applied {
+                next: None,
+                should_reload: true,
+            }
+        );
+        assert_eq!(
+            state.displayed().unwrap()["defaultCwd"],
+            json!("/Users/alex/code")
+        );
+        assert_eq!(state.error(), Some("Folder not found: /nope"));
+
+        // Edit 1 (bad cwd) fails while Edit 2 (valid keepAwake=false) is queued behind it.
+        let (seq1, _) = state
+            .queue_update(json!({ "defaultCwd": "/still-nope" }))
+            .expect("sends");
+        assert_eq!(state.queue_update(json!({ "keepAwake": false })), None);
+        assert_eq!(
+            state.displayed().unwrap()["defaultCwd"],
+            json!("/still-nope")
+        );
+        assert_eq!(state.displayed().unwrap()["keepAwake"], json!(false));
+
+        let (seq2, c2) = match state.on_update_err(
+            seq1,
+            "Folder not found: /still-nope".into(),
+            UpdateErrorKind::Rejected,
+        ) {
+            UpdateOutcome::Applied {
+                next: Some(next),
+                should_reload: false,
+            } => next,
+            other => panic!("expected queued valid edit to flush, got {other:?}"),
+        };
+        assert_eq!(c2, json!({ "keepAwake": false }));
+        assert_eq!(
+            state.displayed().unwrap()["defaultCwd"],
+            json!("/Users/alex/code"),
+            "failed edit rolled back"
+        );
+        assert_eq!(
+            state.displayed().unwrap()["keepAwake"],
+            json!(false),
+            "valid queued edit preserved"
+        );
+        assert_eq!(state.error(), Some("Folder not found: /still-nope"));
+
+        // Pre-queued Edit 2 succeeds: keepAwake=false takes effect, and Edit 1's error
+        // stays visible until a fresh edit succeeds.
+        state.on_update_ok(seq2, sample_settings(true, false, true));
+        assert_eq!(state.displayed().unwrap()["keepAwake"], json!(false));
+        assert_eq!(state.error(), Some("Folder not found: /still-nope"));
+
+        // A fresh edit after the error succeeds and clears the error.
+        let (seq3, _) = state
+            .queue_update(json!({ "labReview": false }))
+            .expect("sends");
+        state.on_update_ok(seq3, sample_settings(true, false, false));
+        assert_eq!(state.error(), None);
+    }
+
+    #[test]
+    fn reconnect_discards_stale_pending_updates_and_ignores_late_replies() {
+        let mut state = RunnerSettingsState::default();
+        let tok = state.begin_get();
+        state.on_get_ok(tok, sample_settings(true, true, true));
+
+        let (seq1, _) = state
+            .queue_update(json!({ "experiments": { "coordinators": false } }))
+            .expect("sends");
+        assert_eq!(state.queue_update(json!({ "keepAwake": false })), None);
+        assert!(state.has_pending());
+
+        // Connection drops and reconnects before seq1 replies.
+        state.on_connected("The runner disconnected before your change was saved.");
+        assert!(!state.has_pending());
+        assert_eq!(
+            state.experiment_on("coordinators"),
+            Some(true),
+            "cached confirmed state remains visible while fresh settings.get loads"
+        );
+        assert_eq!(
+            state.confirmed_experiment_on("coordinators"),
+            None,
+            "cached snapshot is not treated as confirmed on the new connection"
+        );
+        assert_eq!(
+            state.error(),
+            Some("The runner disconnected before your change was saved."),
+            "dropped pending edits are reported instead of silently disappearing"
+        );
+
+        // Late closed error or reply from old connection is ignored.
+        assert_eq!(
+            state.on_update_err(
+                seq1,
+                "Connection closed".into(),
+                UpdateErrorKind::Disconnected
+            ),
+            UpdateOutcome::Ignored
+        );
+        assert_eq!(
+            state.on_update_ok(seq1, sample_settings(false, true, true)),
+            UpdateOutcome::Ignored
+        );
+
+        // Fresh settings.get on new connection applies cleanly.
+        let tok2 = state.begin_get();
+        assert!(state.on_get_ok(tok2, sample_settings(true, false, true)));
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+        assert_eq!(state.displayed().unwrap()["keepAwake"], json!(false));
+    }
+
+    #[test]
+    fn late_settings_updated_for_first_edit_after_ok1_does_not_clobber_second_edit() {
+        let mut state = RunnerSettingsState::default();
+        let tok = state.begin_get();
+        state.on_get_ok(tok, sample_settings(true, true, true));
+
+        let (seq1, _) = state
+            .queue_update(json!({ "experiments": { "coordinators": false } }))
+            .expect("first sends");
+        assert_eq!(
+            state.queue_update(json!({ "experiments": { "coordinators": true } })),
+            None
+        );
+
+        // RPC 1 Ok arrives on the oneshot channel BEFORE its settings.updated
+        // notification is drained from the notification channel.
+        let (seq2, _) = match state.on_update_ok(seq1, sample_settings(false, true, true)) {
+            UpdateOutcome::Applied {
+                next: Some(next),
+                should_reload: false,
+            } => next,
+            other => panic!("expected seq2, got {other:?}"),
+        };
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+
+        // Now the delayed settings.updated(false) from RPC 1 arrives while seq2 is in flight.
+        state.on_updated(sample_settings(false, true, true));
+        assert_eq!(
+            state.experiment_on("coordinators"),
+            Some(true),
+            "in-flight second edit stays overlaid on delayed first push"
+        );
+
+        // RPC 2 finishes.
+        state.on_updated(sample_settings(true, true, true));
+        state.on_update_ok(seq2, sample_settings(true, true, true));
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
+        assert!(!state.has_pending());
+    }
+
+    #[test]
+    fn update_before_first_get_is_preserved_when_get_arrives_and_unsupported_ignores_stale() {
+        let mut state = RunnerSettingsState::default();
+        let tok_old = state.begin_get();
+        let (seq1, _) = state
+            .queue_update(json!({ "keepAwake": false }))
+            .expect("sends even before initial get");
+        assert!(state.displayed().is_none());
+
+        // Initial get arrives while seq1 is still in flight: seq1 overlays cleanly.
+        assert!(state.on_get_ok(tok_old, sample_settings(true, true, true)));
+        assert_eq!(state.displayed().unwrap()["keepAwake"], json!(false));
+
+        // Stale unsupported response after a newer get token is ignored.
+        let tok_new = state.begin_get();
+        assert!(!state.on_get_unsupported(tok_old));
+        assert!(!state.unsupported());
+
+        // Current unsupported token clears everything.
+        assert!(state.on_get_unsupported(tok_new));
+        assert!(state.unsupported());
+        assert!(state.displayed().is_none());
+        assert!(!state.has_pending());
+        assert_eq!(
+            state.on_update_ok(seq1, sample_settings(true, false, true)),
+            UpdateOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn older_update_ok_does_not_overwrite_newer_external_push() {
+        let mut state = RunnerSettingsState::default();
+        let tok = state.begin_get();
+        state.on_get_ok(tok, sample_settings(true, true, true));
+
+        let (seq1, _) = state
+            .queue_update(json!({ "keepAwake": false }))
+            .expect("sends");
+
+        // Local RPC 1 succeeds on the runner (push 1), then another window
+        // changes defaultCwd (push 2). Both notifications arrive before the
+        // local RPC 1 completion task runs.
+        let s1 = sample_settings(true, false, true);
+        let mut s2 = s1.clone();
+        s2["defaultCwd"] = json!("/Users/alex/other");
+        state.on_updated(s1.clone());
+        state.on_updated(s2.clone());
+
+        assert_eq!(
+            state.on_update_ok(seq1, s1),
+            UpdateOutcome::Applied {
+                next: None,
+                should_reload: false,
+            }
+        );
+        assert_eq!(
+            state.displayed().unwrap()["defaultCwd"],
+            json!("/Users/alex/other"),
+            "older RPC reply must not overwrite newer external settings.updated"
+        );
+        assert_eq!(state.displayed().unwrap()["keepAwake"], json!(false));
+    }
+
+    #[test]
+    fn disconnect_aborts_queued_edits_without_sending_onto_dead_socket_and_keeps_error_across_reconnect(
+    ) {
+        let mut state = RunnerSettingsState::default();
+        let tok = state.begin_get();
+        state.on_get_ok(tok, sample_settings(true, true, true));
+
+        let (seq1, _) = state
+            .queue_update(json!({ "experiments": { "coordinators": false } }))
+            .expect("sends");
+        assert_eq!(
+            state.queue_update(json!({ "experiments": { "coordinators": true } })),
+            None
+        );
+
+        // Case A: transport error arrives while disconnected before on_connected.
+        assert_eq!(
+            state.on_update_err(
+                seq1,
+                "Connection closed".into(),
+                UpdateErrorKind::Disconnected
+            ),
+            UpdateOutcome::Applied {
+                next: None,
+                should_reload: false,
+            },
+            "must not promote queued edits onto a disconnected client"
+        );
+        assert!(!state.has_pending());
+        assert_eq!(state.error(), Some("Connection closed"));
+
+        // Reconnect does not silently erase the disconnect error, and marks
+        // cached confirmation stale until fresh settings arrive.
+        state.on_connected("The runner disconnected before your change was saved.");
+        assert_eq!(state.error(), Some("Connection closed"));
+        assert_eq!(state.confirmed_experiment_on("coordinators"), None);
+
+        let tok2 = state.begin_get();
+        assert!(state.on_get_ok(tok2, sample_settings(false, true, true)));
+        assert_eq!(state.confirmed_experiment_on("coordinators"), Some(false));
+        assert_eq!(state.experiment_on("coordinators"), Some(false));
+
+        // Case B: on_disconnected fires while pending edits exist.
+        let (seq2, _) = state
+            .queue_update(json!({ "keepAwake": false }))
+            .expect("sends");
+        assert_eq!(state.queue_update(json!({ "labReview": false })), None);
+        assert!(state.on_disconnected("The runner disconnected before your change was saved."));
+        assert!(!state.has_pending());
+        assert_eq!(
+            state.on_update_err(
+                seq2,
+                "Connection closed".into(),
+                UpdateErrorKind::Disconnected
+            ),
+            UpdateOutcome::Ignored
+        );
+        assert_eq!(
+            state.error(),
+            Some("The runner disconnected before your change was saved.")
+        );
+    }
+
+    #[test]
+    fn timeout_aborts_queued_edits_and_reloads_instead_of_sending_concurrent_write() {
+        let mut state = RunnerSettingsState::default();
+        let tok = state.begin_get();
+        state.on_get_ok(tok, sample_settings(true, true, true));
+
+        let (seq1, _) = state
+            .queue_update(json!({ "experiments": { "coordinators": false } }))
+            .expect("sends");
+        assert_eq!(
+            state.queue_update(json!({ "experiments": { "coordinators": true } })),
+            None
+        );
+
+        assert_eq!(
+            state.on_update_err(
+                seq1,
+                "The runner didn't answer settings.update".into(),
+                UpdateErrorKind::TimedOut
+            ),
+            UpdateOutcome::Applied {
+                next: None,
+                should_reload: true,
+            },
+            "timeout must not promote queued edit while runner may still be processing seq1"
+        );
+        assert!(!state.has_pending());
+        assert_eq!(
+            state.error(),
+            Some("The runner didn't answer settings.update")
+        );
+        assert_eq!(state.experiment_on("coordinators"), Some(true));
     }
 }

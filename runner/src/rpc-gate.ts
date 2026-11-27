@@ -9,7 +9,7 @@
 // names the tool that can ask. Refusing by default is the point: a method
 // that's added later is closed until someone decides it's safe here.
 import type { PermissionMode } from './protocol.ts';
-import { ErrorCode, RpcError, sentByAgent } from './protocol.ts';
+import { AGENT_MESSAGE_PREFIX, ErrorCode, RpcError, sentByAgent } from './protocol.ts';
 import { above, MODE_NAMES, raises, scheduleModes, type Authority } from './threadbear-mcp.ts';
 import { ceilingMode } from './runner/ceiling.ts';
 
@@ -44,6 +44,8 @@ export const GATED_READS: ReadonlySet<string> = new Set([
   'remoteThreads.list',
   'projects.list',
   'projects.get',
+  'coordinators.list',
+  'coordinators.get',
   'instructions.get',
   'librarian.status',
   'settings.get',
@@ -62,6 +64,7 @@ export type CallerGateDeps = {
     has(threadId: string): boolean;
     get(threadId: string): ThreadLike;
     accessOf(threadId: string): PermissionMode;
+    coordinators?: { rpcRefusal(threadId: string, method: string, p: Params): string | undefined; projectForThread?(threadId: string): string | undefined };
   };
   // Threads a draining runner still has (rpc.ts's RemoteThreads).
   remote?: { owns(threadId: string): boolean; summaries(include: ('inbox' | 'snoozed' | 'archived')[]): (ThreadLike & { id: string })[] };
@@ -80,6 +83,12 @@ const ALL = ['inbox', 'snoozed', 'archived'] as const;
 function str(p: Params, k: string): string | undefined {
   return typeof p[k] === 'string' ? (p[k] as string) : undefined;
 }
+
+const USER_COORDINATOR_ACTIONS = new Set([
+  'coordinators.pause', 'coordinators.answer', 'coordinators.closeLoop', 'coordinators.reopenLoop', 'coordinators.replyLoop',
+  'coordinators.addWorkItem', 'coordinators.updateWorkItem', 'coordinators.removeWorkItem', 'coordinators.answerDecision',
+  'coordinators.postponeTask', 'coordinators.markTaskDone', 'coordinators.closeTask', 'coordinators.reopenTask', 'coordinators.addToCoordinator',
+]);
 
 export class CallerGate {
   private deps: CallerGateDeps;
@@ -130,10 +139,22 @@ export class CallerGate {
   // Throws a refusal, or returns the params to run with (the caller's own
   // mode filled in, what only a client with the token may say taken out).
   check(threadId: string, method: string, p: Params): Params {
+    // Pausing a coordinator and answering its helpers' questions are the
+    // user's, from the project home. Starting one and handing it a charter
+    // and to-dos is open to an ordinary thread on Full access (below it,
+    // update_project's coordinator option asks on a card), never to a
+    // coordinator or its helpers (rpcRefusal, next).
+    if (USER_COORDINATOR_ACTIONS.has(method)) throw new RpcError(ErrorCode.notAllowed, "This coordinator action is the user's to do from the project home.");
+    const coordinatorRefusal = this.deps.runner.coordinators?.rpcRefusal(threadId, method, p);
+    if (coordinatorRefusal) throw new RpcError(ErrorCode.notAllowed, coordinatorRefusal);
+    // Whoever hands it work is named to the coordinator as this thread, never what the call says.
+    if (method === 'coordinators.start' || method === 'coordinators.addTask' || method === 'coordinators.update') p = { ...p, fromThread: threadId };
     const known = this.authority(threadId);
     // Any agent's move, Full's too: it never starts a turn by itself
     // (Runner.update's carry-on after a limit is Mike's pick from the menu).
-    if (method === 'threads.update' && (p.cwd !== undefined || p.accountId !== undefined || p.poolId !== undefined)) p = { ...p, byAgent: true };
+    // A snooze too (`tb snooze` from a thread): its waking then follows the
+    // agent's rules, not Mike's (HibernationPart.wake, quietWake).
+    if (method === 'threads.update' && (p.cwd !== undefined || p.accountId !== undefined || p.poolId !== undefined || (p.snoozedUntil !== undefined && p.snoozedUntil !== null))) p = { ...p, byAgent: true };
     // A CLI started ahead of a new thread is for the app's new-thread page
     // (runner/warm-start.ts): a thread neither starts one nor takes the app's.
     if (method === 'threads.warm') throw new RpcError(ErrorCode.notAllowed, "Starting a CLI ahead of a new thread is the app's to do.");
@@ -149,6 +170,9 @@ export class CallerGate {
     // account of its own choosing. Only the user's click in the app, Full
     // access or not (Codex's review, 19 Nov).
     if (method === 'accounts.yearToken') throw new RpcError(ErrorCode.notAllowed, "Making a year-long token is the user's to do: Year-long token… in the app's Usage or Runners panel.");
+    // Sharing this Mac's logins puts its tokens on another machine: only the
+    // user's switch in the Runners panel, Full access or not.
+    if (method === 'runners.shareLogins') throw new RpcError(ErrorCode.notAllowed, "Sharing this Mac's logins with another runner is the user's to do: Use this Mac's Claude logins in the app's Runners panel.");
     // A login's cloud token, and threads on a virtual runner (a box billed by
     // the hour, holding a year-long token), are the user's own, from the app.
     if (method.startsWith('cloudTokens.')) throw new RpcError(ErrorCode.notAllowed, "A login's cloud token is the user's to set, from the card in the app.");
@@ -169,7 +193,15 @@ export class CallerGate {
       const { origin: _o, wakeReason: _w, ...rest } = p;
       p = rest;
     }
-    if (known?.mode === 'full') return p;
+    const coordinatorInput = (input: Params): Params => {
+      const target = str(input, 'threadId');
+      if (!target || !this.deps.runner.coordinators?.projectForThread?.(target)) return input;
+      const { answers: _answers, ...rest } = input;
+      if (typeof input.text !== 'string' || !input.text) return rest;
+      const title = this.deps.runner.has(threadId) ? this.deps.runner.get(threadId).title.replace(/\s+/g, ' ').trim() : 'Agent';
+      return { ...rest, text: `${AGENT_MESSAGE_PREFIX}"${title}" (${threadId.slice(0, 8)})]\n\n${input.text}` };
+    };
+    if (known?.mode === 'full') return method === 'threads.send' ? coordinatorInput(p) : p;
     if (GATED_READS.has(method)) return p;
     if (!known) throw new RpcError(ErrorCode.notAllowed, "This thread isn't one the runner knows now, so it can only read. Ask the user to do it in the app.");
     const caller = known;
@@ -215,9 +247,9 @@ export class CallerGate {
         // Raised above what this thread could reach while it waits in the
         // queue, it's held as it leaves (runner/ceiling.ts).
         // To itself: its own words, as far as it reaches now.
-        if (!id || id === threadId) return takeImages({ ...rest, ceiling: ceilingMode(caller.mode) });
+        if (!id || id === threadId) return takeImages(coordinatorInput({ ...rest, ceiling: ceilingMode(caller.mode) }));
         const to = this.targetAccess(id).mode;
-        return takeImages({ ...rest, ceiling: ceilingMode(raises(to, caller.mode) ? to : caller.mode) });
+        return takeImages(coordinatorInput({ ...rest, ceiling: ceilingMode(raises(to, caller.mode) ? to : caller.mode) }));
       }
       case 'threads.interrupt': {
         const id = str(p, 'threadId');
@@ -243,6 +275,10 @@ export class CallerGate {
         return this.scheduleRun(caller, p, needs);
       case 'schedules.delete':
         return this.scheduleDelete(caller, p, needs);
+      case 'coordinators.start':
+      case 'coordinators.addTask':
+      case 'coordinators.update':
+        throw needs("starting or changing a project's coordinator", 'update_project');
       default:
         throw needs(`calling ${method}`);
     }

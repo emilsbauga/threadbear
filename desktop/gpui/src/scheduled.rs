@@ -1040,6 +1040,23 @@ pub(crate) fn editor_automation(
             e.pick_model_titled(title, cmd["under"].as_str(), cx)
         });
     }
+    // The open editor's "Star each new thread", and its Save.
+    if cmd.get("starThreads").is_some() || cmd["save"].as_bool() == Some(true) {
+        let editor = app
+            .read(cx)
+            .schedule_editor
+            .clone()
+            .ok_or("no schedule editor")?;
+        editor.update(cx, |e, cx| {
+            if let Some(on) = cmd["starThreads"].as_bool() {
+                e.set_star_threads(on, cx);
+            }
+            if cmd["save"].as_bool() == Some(true) {
+                e.save_now(window, cx);
+            }
+        });
+        return Ok(json!("ok"));
+    }
     match cmd["id"].as_str() {
         Some(id) => {
             if app.read(cx).schedule(id).is_none() {

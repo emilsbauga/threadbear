@@ -723,7 +723,7 @@ From `failed`:
 
 ## cloudToken
 
-A Claude login's token for the boxes of virtual runners: set by Mike, dead once a box's turn on it is refused, and set again to bring the threads waiting on it back.
+A Claude login's token for the boxes of virtual runners: set by the owner, with box-specific refusal handled by each box token grant.
 
 ```mermaid
 stateDiagram-v2
@@ -737,15 +737,13 @@ it.
   state "dead" as dead
   dead : at
   note right of dead
-Claude refused it. New threads on the
-login wait for a new token, and the card
-in their thread asks Mike for one.
+An older backend marked the login token
+dead. An owner SET restores it; box
+reports can no longer enter this state.
   end note
   [*] --> valid : SET (owner) / set
   valid --> valid : SET (owner) / set
-  valid --> dead : REFUSED(setAt) (boxRunner) [sameToken] / refused
   dead --> valid : SET (owner) / set
-  dead --> dead : REFUSED(setAt) (boxRunner)
 ```
 
 How a row is born:
@@ -755,12 +753,10 @@ How a row is born:
 From `valid`:
 
 - `SET (owner)` stays put. Mike sets a new token for the login: boxes starting from now get it, and any waiting on the login start.
-- `REFUSED(setAt) (boxRunner)` [sameToken] → `dead`. A box says Claude refused this token (revoked, or past its year): threads on the login show the token card until a new one is set.
 
 From `dead`:
 
 - `SET (owner)` → `valid`. Mike sets a new token: the boxes waiting on the login start, and boxes waiting after a refusal fetch it and carry on.
-- `REFUSED(setAt) (boxRunner)` stays put. Another box says the same: it stays dead.
 
 ## relayInstall
 
@@ -820,3 +816,50 @@ From `registered`:
 From `unregistered`:
 
 - `REGISTER(attempt) (backend)` → `registering`. A send registers again.
+
+## boxTokenGrant
+
+The token version a box may receive: issued at boot, quarantined on its own refusal, and released only by an owner-set replacement.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  state "issued" as issued
+  issued : setAt
+  note right of issued
+This box may fetch only this token
+version.
+  end note
+  state "refused" as refused
+  refused : setAt, afterSetAt, reportedAt
+  note right of refused
+The reporting box cannot fetch a
+replacement until the owner approves
+one.
+  end note
+  [*] --> issued : ISSUE(setAt) (backend) / issue
+  [*] --> refused : QUARANTINE(setAt, afterSetAt) (backend) / refuse
+  issued --> issued : ISSUE(setAt) (backend) / issue
+  issued --> refused : QUARANTINE(setAt, afterSetAt) (backend) / refuse
+  issued --> refused : REFUSED(setAt, afterSetAt) (grantHolder) [sameToken] / refuse
+  refused --> refused : REFUSED(setAt, afterSetAt) (grantHolder)
+  refused --> refused : QUARANTINE(setAt, afterSetAt) (backend) / refuse
+  refused --> issued : ISSUE(setAt) (backend) / issue
+```
+
+How a row is born:
+
+- `ISSUE(setAt) (backend)` → `issued`. The boot exchange issues its token version to this box key.
+- `QUARANTINE(setAt, afterSetAt) (backend)` → `refused`. A legacy box has no recorded grant: its report waits for an owner-set replacement.
+
+From `issued`:
+
+- `ISSUE(setAt) (backend)` stays put. A new boot key receives its own token version.
+- `QUARANTINE(setAt, afterSetAt) (backend)` → `refused`. A legacy key replaces an older grant and waits for owner approval.
+- `REFUSED(setAt, afterSetAt) (grantHolder)` [sameToken] → `refused`. The box reports refusal: only this grant is quarantined.
+
+From `refused`:
+
+- `REFUSED(setAt, afterSetAt) (grantHolder)` stays put. A repeated report changes no grant or login state.
+- `QUARANTINE(setAt, afterSetAt) (backend)` stays put. A legacy key replaces an older quarantined grant.
+- `ISSUE(setAt) (backend)` → `issued`. The owner sets a new token after this report, or a new boot exchange issues one.

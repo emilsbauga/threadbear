@@ -91,7 +91,9 @@ test('strings shown or sent in a fork only name Mike where he is meant', () => {
   const files = [...sourceFiles(path.join(REPO, 'runner/src'), ['.ts']), ...sourceFiles(path.join(REPO, 'app/Sources'), ['.swift'])].filter((f) => !/\/Automation[^/]*\.swift$/.test(f.replace(/\\/g, '/')));
   const found: string[] = [];
   for (const file of files) {
-    fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+    // By line, whatever a Windows checkout ends them with: a stray \r stops
+    // `.*$` reaching a comment's end, so it counted as code (25 Nov 2026).
+    fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, i) => {
       // Drop a comment: a whole-line one, or one after code (" // ").
       const code = /^\s*(\/\/|\*|\/\*)/.test(line) ? '' : line.replace(/\s\/\/\s.*$/, '');
       // Only text inside quotes or backticks.
@@ -128,7 +130,7 @@ test("text that runs in a fork names none of Mike's machines or addresses", () =
   ].filter((f) => !/\/Automation[^/]*\.swift$/.test(f) && !/\.test\.tsx?$/.test(f));
   const found: string[] = [];
   for (const file of files) {
-    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
     const end = file.endsWith('.rs') ? lines.findIndex((l) => /^\s*#\[cfg\(test\)\]/.test(l)) : -1;
     lines.slice(0, end < 0 ? undefined : end).forEach((line, i) => {
       // A comment says why, for whoever reads the code; Markdown has none.

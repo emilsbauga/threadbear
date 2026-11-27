@@ -663,6 +663,9 @@ export function ledgerCard(ledger: LabLedger): LabReviewLedger {
 
 // One line per finding, for the agent's wake message and the next round's
 // brief.
+// The Mac app reads these lines, and the wake messages around them
+// (hibernation.ts deliverReview, panelWake), back into a checklist:
+// desktop/core/src/reducer/review_note.rs. Change the wording there too.
 export function findingLine(f: ReviewFinding): string {
   return `#${f.id} [${f.severity}]${f.by ? ` (${f.by})` : ''}${f.where ? ` ${f.where}:` : ''} ${f.claim}${f.case ? ` Case: ${f.case}` : ''}`;
 }

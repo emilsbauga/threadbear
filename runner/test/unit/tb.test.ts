@@ -124,15 +124,18 @@ test('tb unarchive --wrong-hide brings a thread back and writes the miss down, f
     h.adapter.last.init();
     h.adapter.last.result();
     h.runner.update({ threadId: thread.id, archived: true, archivedBy: 'threadbear' });
-    const t = tb(h, url, ['unarchive', thread.id.slice(0, 8), '--wrong-hide']);
+    // Run by the review thread's agent (25 Nov 2026: the line said "by you").
+    const t = tb(h, url, ['unarchive', thread.id.slice(0, 8), '--wrong-hide'], { THREADBEAR_THREAD_ID: 'review-thread' });
     assert.equal(await t.exited, 0, t.out());
     assert.equal(h.runner.get(thread.id).archivedAt, undefined);
-    assert.ok(h.events(thread.id).some((e) => e.type === 'system.note' && e.text === 'Brought back by you: you should have been shown this.'));
-    // A plain unarchive says nothing of the sort.
+    const said = (id: string) => h.events(id).flatMap((e) => (e.type === 'system.note' && e.text.startsWith('Brought back') ? [e.text] : []));
+    assert.deepEqual(said(thread.id).length, 1, said(thread.id).join('\n'));
+    assert.match(said(thread.id)[0], /^Brought back from the archive by an agent on .+: you said Quiet inbox shouldn't have hidden it\.$/);
+    // A plain unarchive by Mike says nothing of the sort.
     const { thread: other } = h.runner.create({ text: 'other', accountId: 'claude-3' });
     h.runner.update({ threadId: other.id, archived: true });
-    assert.equal(await tb(h, url, ['unarchive', other.id]).exited, 0);
-    assert.ok(!h.events(other.id).some((e) => e.type === 'system.note' && /should have been shown/.test(e.text)));
+    assert.equal(await tb(h, url, ['unarchive', other.id], { THREADBEAR_THREAD_ID: '' }).exited, 0);
+    assert.deepEqual(said(other.id).map((n) => n.replace(/ on .+\./, ' on <when>.')), ['Brought back from the archive by you on <when>.']);
   } finally {
     await server.close();
   }

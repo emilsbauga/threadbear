@@ -2,7 +2,9 @@
 
 Mike's setup only. `scripts/parity/nightly.sh` runs only when his schedule
 calls it (`nightly.sh --check` at 2:00 and 4:00 from the M5), on a parity
-host it finds in `THREADBEAR_PARITY_HOST` or `checkHosts` (Tinker Desk). It
+host it finds in `THREADBEAR_PARITY_HOST` or `checkHosts` (Tinker Desk).
+It skips unreachable hosts, Linux hosts and Macs without Desk Runner before
+copying anything. An explicit `THREADBEAR_PARITY_HOST` must pass the same check. It
 needs things a fork doesn't have: Xcode, Chrome and Desk Runner on that
 host, an Android SDK and emulator in `/Volumes/TinkerSSD/android-parity`,
 and a Claude small-model pool on the Mac that calls it. Nothing in

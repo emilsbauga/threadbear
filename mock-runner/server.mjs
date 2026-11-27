@@ -27,6 +27,28 @@ import { SAMPLE_THREADS } from '../runner/src/samples.ts';
 import { fileURLToPath } from 'node:url';
 import { reviewDraft, reviewReply, sameDraft } from '../runner/src/reviews.ts';
 import { authProof, isNonce, newNonce } from '../runner/src/rpc-auth.ts';
+import { wellFormedJson } from '../runner/src/well-formed-json.ts';
+import { coordinatorDemo } from './coordinators.mjs';
+
+// Outgoing JSON must have no lone UTF-16 surrogates (serde_json drops the
+// whole WebSocket message), and text cuts / streaming deltas shouldn't split
+// a surrogate pair either (runner/src/well-formed-json.ts, safe-cut.ts).
+function wsJson(obj) {
+  return wellFormedJson(JSON.stringify(obj));
+}
+
+function splitsPair(text, at) {
+  if (at <= 0 || at >= text.length) return false;
+  const before = text.charCodeAt(at - 1);
+  const after = text.charCodeAt(at);
+  return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+}
+
+function safeSlice(text, start, end = text.length) {
+  const from = splitsPair(text, start) ? start + 1 : start;
+  const to = splitsPair(text, end) ? end - 1 : end;
+  return to <= from ? '' : text.slice(from, to);
+}
 
 // What a waiting (untrusted) demo patch gives once it's trusted, by file.
 const waitingPatchGives = new Map();
@@ -361,6 +383,9 @@ const settings = {
     privateFolders: ['~/dev/clients/acme'],
   },
 };
+if (process.env.TB_MOCK_COORDINATORS) {
+  settings.experiments = [{ id: 'coordinators', name: 'Project coordinators', does: 'Keep a project moving with a coordinator and helpers.', on: true }];
+}
 if (process.env.TB_MOCK_REVIEWERS) {
   settings.labReviewers = [{ provider: 'codex', effort: 'high' }, { provider: 'grok', model: 'grok-4.7', effort: 'high' }, { provider: 'claude', effort: 'high' }];
   settings.labPanel = [{ provider: 'codex', effort: 'high' }, { provider: 'opencode', model: 'google/gemini-4-neon', effort: 'high' }];
@@ -429,6 +454,11 @@ const MORE_RUNNERS = process.env.MOCK_MORE_RUNNERS ? [
 let runnerOrder = ['runner_mock', BRUCE, ...MORE_RUNNERS.map((r) => r.id)];
 // accounts.yearToken's one flow, for mac-mini's claude-main.
 let yearTokenFlow;
+// Use this Mac's Claude logins (runners.sharedLogins, runners.shareLogins):
+// mac-mini's switch, and its send held by mock.holdShares until
+// mock.releaseShares, so the spinner can be looked at.
+let loginShare;
+let shareHold;
 // Files on mac-mini's Mac that its threads name (docs/protocol/runners.md, "Other
 // runners' threads"): the picture is a real PNG, the rest text. None of
 // these paths exist on this Mac.
@@ -487,6 +517,15 @@ let connectors = {
   ],
 };
 addDemoProjects();
+const coordinatorRequest = process.env.TB_MOCK_COORDINATORS ? coordinatorDemo({
+  threads, projects, broadcast, projectChanged: broadcastProjects, threadChanged: broadcastSummary, error: rpcError,
+  accountFor(p) {
+    const pool = p.poolId ? poolOf(p.poolId) : undefined;
+    const id = p.accountId ?? (pool ? pickInPool(pool, providerOfModel(p.model)) : defaults.accountId);
+    if (providerOf(id) !== 'claude') throw rpcError(-32602, 'Coordinators currently support Claude. Choose a Claude pool and model.');
+    return id;
+  },
+}) : undefined;
 if (process.env.TB_MOCK_LIVE_PAGES) addLivePageDemo(process.env.TB_MOCK_LIVE_PAGES);
 // The experiments the mock's hello says are on: nested threads with
 // TB_MOCK_NESTED, and the done card's Archive menu with TB_MOCK_INBOX_GUESS.
@@ -499,11 +538,7 @@ function mockExperiments() {
     ...(process.env.TB_MOCK_LIVE_PAGES ? ['livePages'] : []),
     // The Recipes view, with TB_MOCK_RECIPES (addRecipesDemo).
     ...(process.env.TB_MOCK_RECIPES ? ['recipes'] : []),
-    // Reviews as a board you drag and zoom, with TB_MOCK_REVIEW_CANVAS (addCanvasMarks).
-    ...(process.env.TB_MOCK_REVIEW_CANVAS ? ['reviewCanvas'] : []),
-    // The Canvas page, with TB_MOCK_THREAD_CANVAS (with TB_MOCK_NESTED's threads
-    // for a tree with arrows).
-    ...(process.env.TB_MOCK_THREAD_CANVAS ? ['threadCanvas'] : []),
+    ...(process.env.TB_MOCK_COORDINATORS ? ['coordinators'] : []),
     // Agent Archive in the sidebar's search, with TB_MOCK_ARCHIVE (ARCHIVE_SESSIONS).
     ...(process.env.TB_MOCK_ARCHIVE ? ['archive'] : []),
   ];
@@ -575,7 +610,7 @@ function archiveSnippet(session, words) {
   const text = item[2].replace(/\s+/g, ' ');
   const lower = text.toLowerCase();
   const at = Math.max(0, Math.min(...words.map((w) => lower.indexOf(w)).filter((i) => i >= 0), text.length) - 60);
-  const cut = text.slice(at, at + 240);
+  const cut = safeSlice(text, at, at + 240);
   return `${at > 0 ? '…' : ''}${cut}${at + 240 < text.length ? '…' : ''}`;
 }
 
@@ -888,7 +923,7 @@ function onConnection(ws, request) {
   const challenge = client.authed ? null : newNonce();
   // Bound to its own listening port, as the real runner's are.
   const channel = { server: 'primary', port: request.socket.localPort };
-  if (challenge) ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'auth.challenge', params: { version: 1, nonce: challenge, port: channel.port } }));
+  if (challenge) ws.send(wsJson({ jsonrpc: '2.0', method: 'auth.challenge', params: { version: 1, nonce: challenge, port: channel.port } }));
   ws.on('message', (raw) => {
     let message;
     try {
@@ -958,6 +993,10 @@ async function handle(client, { id, method, params = {} }) {
 }
 
 async function dispatch(client, method, p) {
+  if (coordinatorRequest && (method.startsWith('coordinators.') || ['mock.coordinatorFinish', 'mock.coordinatorVerify', 'mock.coordinatorNotesChanged', 'mock.coordinatorAsk', 'mock.coordinatorTaskBoard'].includes(method))) {
+    if (method.startsWith('coordinators.') && !settings.experiments.find((e) => e.id === 'coordinators')?.on) throw rpcError(-32602, 'The coordinator experiment is off.');
+    return coordinatorRequest(method, p);
+  }
   switch (method) {
     case 'hello':
       // The Mac mini has two logins of its own and no pools, as the real one does,
@@ -1177,9 +1216,9 @@ async function dispatch(client, method, p) {
         const login = accounts.find((a) => a.id === accountId)?.email ?? accountId;
         const now = iso();
         const summary = {
-          id: threadId, title: p.text.split('\n')[0].slice(0, 60), cwd: p.cwd ?? defaults.cwd, accountId, provider: 'claude',
+          id: threadId, title: safeSlice(p.text.split('\n')[0], 0, 60), cwd: p.cwd ?? defaults.cwd, accountId, provider: 'claude',
           model: p.model ?? defaults.models.claude, permissionMode: p.permissionMode ?? 'full', status: 'starting', live: false, needsYou: false,
-          createdAt: now, updatedAt: now, lastActivityAt: now, preview: p.text.slice(0, 140), lastSeq: 1, lastSeenSeq: 1,
+          createdAt: now, updatedAt: now, lastActivityAt: now, preview: safeSlice(p.text, 0, 140), lastSeq: 1, lastSeenSeq: 1,
         };
         threads.set(threadId, { summary, events: [{ seq: 1, ts: now, threadId, turnId: 'box_t0', type: 'user.message', text: p.text, images: [] }], inProgress: new Map(), timers: [], runnerId });
         const token = cloudTokens.get(login);
@@ -1201,7 +1240,7 @@ async function dispatch(client, method, p) {
       const provider = providerOf(accountId);
       const summary = {
         ...(pool ? { poolId: pool.id } : {}),
-        id: threadId, title: (p.title ?? p.text.split('\n')[0]).slice(0, 60), cwd: p.cwd ?? defaults.cwd,
+        id: threadId, title: safeSlice(p.title ?? p.text.split('\n')[0], 0, 60), cwd: p.cwd ?? defaults.cwd,
         accountId, provider, model: p.model ?? defaults.models[provider], effort: p.effort ?? defaults.efforts[provider],
         permissionMode: p.permissionMode ?? 'full', status: 'starting', live: true, needsYou: false,
         createdAt: now, updatedAt: now, lastActivityAt: now, preview: '', lastSeq: 0, lastSeenSeq: 0,
@@ -1264,7 +1303,7 @@ async function dispatch(client, method, p) {
       let threadId = c.threadId;
       if (method === 'swiftChanges.dismiss') sc.changes = sc.changes.filter((x) => x !== c);
       else if (!threadId) {
-        const made = await dispatch(client, 'threads.create', { text: `Rebuild ${c.commit} in the new app`, title: `Rebuild "${c.subject.slice(0, 60)}" in the new app`, cwd: sc.checkout });
+        const made = await dispatch(client, 'threads.create', { text: `Rebuild ${c.commit} in the new app`, title: `Rebuild "${safeSlice(c.subject, 0, 60)}" in the new app`, cwd: sc.checkout });
         threadId = c.threadId = made.thread.id;
       }
       updates.swiftChanges = sc;
@@ -1381,6 +1420,7 @@ async function dispatch(client, method, p) {
       if (p.archived === false && p.verdict === 'shouldHaveShown') {
         if (refuseWrongHide) throw rpcError(-32000, "Couldn't bring it back just now. Try again in a moment.");
         lastWrongHide = { threadId: s.id };
+        persist(s.id, { type: 'system.note', text: `Brought back from the archive by ${p.byAgent ? 'an agent' : 'you'} on Wed 25 Nov, 9:40 am: ${p.byAgent ? 'you said ' : ''}Quiet inbox shouldn't have hidden it.` });
       }
       if (p.archived !== undefined) {
         s.archivedAt = p.archived ? iso() : undefined;
@@ -1512,7 +1552,7 @@ async function dispatch(client, method, p) {
         }
         delete next.failed;
       } catch (e) {
-        const failed = { ...button, failed: { at: iso(), error: String(e.message ?? e).slice(0, 300) } };
+        const failed = { ...button, failed: { at: iso(), error: safeSlice(String(e.message ?? e), 0, 300) } };
         t.buttons.set(failed.id, failed);
         persist(t.summary.id, { type: 'button.updated', button: failed });
         throw e;
@@ -1759,7 +1799,7 @@ async function dispatch(client, method, p) {
       // A canned answer after a moment, like the small model's few seconds.
       need(p.threadId);
       await new Promise((r) => setTimeout(r, 600));
-      const sel = String(p.selection ?? '').slice(0, 60);
+      const sel = safeSlice(String(p.selection ?? ''), 0, 60);
       if (p.question) return { answer: `About "${sel}": ${p.question} That's the mock runner's answer to a follow-up.`, model: 'mock' };
       return { answer: `**${sel}** is what the agent called this step. It means the smallest piece to move first, so the rest can follow.\n\n- It's in \`runner/src/explain.ts\`\n- Nothing here goes into the thread`, model: 'mock' };
     }
@@ -1954,6 +1994,29 @@ async function dispatch(client, method, p) {
       if (p.runnerId !== BRUCE) throw rpcError(-32000, `No logins known for ${p.runnerId}`);
       return { accounts: publicAccounts().filter((a) => a.id === 'claude-main' || a.id === 'codex-main'), pools: [], defaults: { ...defaults, poolId: undefined, accountId: 'claude-main', cwd: '/Users/alex/code/misc' } };
     }
+    // Use a reset (protocol `accounts.useReset`): a moment's wait so the
+    // spinner shows, then the login with its room back, one reset fewer and
+    // no hint, as the runner's reading after it has it. Nothing left is
+    // Codex's noCredit.
+    case 'accounts.useReset': {
+      const a = accounts.find((x) => x.id === p.accountId);
+      if (!a) throw rpcError(-32010, `No login ${p.accountId} on this runner.`);
+      if (a.provider !== 'codex') throw rpcError(-32602, 'Only Codex logins have usage resets.');
+      await new Promise((r) => setTimeout(r, 600));
+      const left = a.usage?.resets?.available ?? 0;
+      if (left < 1) return { outcome: 'noCredit' };
+      a.usage = {
+        ...a.usage,
+        readAt: new Date().toISOString(),
+        blocked: false,
+        windows: (a.usage.windows ?? []).map((w) => (w.kind === 'five_hour' || w.kind === 'weekly' ? { ...w, remainingPercent: 100 } : w)),
+        resets: { ...a.usage.resets, available: left - 1, readAt: new Date().toISOString() },
+      };
+      delete a.usage.blocked;
+      delete a.resetHint;
+      broadcast('accounts.updated', { accounts: publicAccounts() });
+      return { outcome: 'reset', account: publicAccounts().find((x) => x.id === a.id) };
+    }
     case 'accounts.yearToken': {
       // Year-long token… for mac-mini's login (docs/protocol.md): starting,
       // then its page at the next look; a code with the page's state is
@@ -1977,6 +2040,21 @@ async function dispatch(client, method, p) {
       }
       if (t.state !== 'waiting') yearTokenFlow = { state: 'starting' };
       return { state: yearTokenFlow.state, ...(yearTokenFlow.state === 'waiting' ? { url: page } : {}) };
+    }
+    case 'runners.sharedLogins':
+      if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
+      return { runners: loginShare ? [loginShare] : [] };
+    case 'runners.shareLogins': {
+      // No tokens anywhere: what the main Mac's runner would answer once
+      // mac-mini had set them up (docs/protocol/settings.md, "This Mac's
+      // logins on another runner").
+      if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
+      if (p.runnerId !== BRUCE) throw rpcError(-32602, "That isn't another of your runners.");
+      if (shareHold) await shareHold.promise;
+      loginShare = p.on
+        ? { runnerId: BRUCE, on: true, state: 'ok', at: iso(), logins: [{ email: 'me@example.com', state: 'added', accountId: 'claude-1' }, { email: 'alex@example.com', state: 'here', accountId: 'claude-main' }] }
+        : undefined;
+      return loginShare ?? { runnerId: BRUCE, on: false, state: 'off' };
     }
     case 'runners.setOrder': {
       if (oldRunner) throw rpcError(-32601, `Unknown method ${method}`);
@@ -2027,9 +2105,9 @@ async function dispatch(client, method, p) {
         ? { ...(p.cwd?.trim() ? { cwd: p.cwd.trim() } : {}), accountId: p.accountId, model: p.model, effort: p.effort, permissionMode: p.permissionMode }
         : { cwd: p.cwd ?? defaults.cwd, ...(p.poolId ? { poolId: p.poolId, ...(p.provider ? { provider: p.provider } : {}) } : { accountId: p.accountId ?? defaults.accountId }), model: p.model, effort: p.effort, permissionMode: p.permissionMode ?? 'full' };
       const schedule = {
-        id: 'sc_' + crypto.randomBytes(5).toString('hex'), title: p.title || p.text.split('\n')[0].slice(0, 60), text: p.text,
+        id: 'sc_' + crypto.randomBytes(5).toString('hex'), title: p.title || safeSlice(p.text.split('\n')[0], 0, 60), text: p.text,
         ...(p.at ? { at: new Date(p.at).toISOString() } : { cron: p.cron }), whenText: when.whenText,
-        ...(p.threadId ? { threadId: p.threadId } : settings),
+        ...(p.threadId ? { threadId: p.threadId } : { ...settings, ...(p.starThreads ? { starThreads: true } : {}) }),
         paused: Boolean(p.paused), createdAt: now, updatedAt: now, ...(p.createdBy ? { createdBy: p.createdBy } : {}), runs: 0,
         runnerId: runner.id, runnerName: runner.name, runnerIcon: runner.icon,
       };
@@ -2044,6 +2122,7 @@ async function dispatch(client, method, p) {
       // Another runner's folder, emptied, is its default again.
       if (schedule.runnerId !== SELF_RUNNER.id && !schedule.cwd?.trim()) delete schedule.cwd;
       for (const key of ['model', 'effort', 'timezone', 'provider']) if (p[key] !== undefined) schedule[key] = p[key] ?? undefined;
+      if (p.starThreads !== undefined && !schedule.threadId) schedule.starThreads = p.starThreads || undefined;
       if (p.at || p.cron) {
         const when = readWhen(p);
         if (p.at) { schedule.at = new Date(p.at).toISOString(); delete schedule.cron; delete schedule.finishedAt; }
@@ -2136,6 +2215,11 @@ async function dispatch(client, method, p) {
     case 'settings.get':
       return { settings };
     case 'settings.update': {
+      for (const [id, on] of Object.entries(p.experiments ?? {})) {
+        const experiment = settings.experiments?.find((e) => e.id === id);
+        if (!experiment || typeof on !== 'boolean') throw rpcError(-32602, 'Choose an existing experiment and an on or off value.');
+        experiment.on = on;
+      }
       if (p.defaultCwd !== undefined) {
         if (typeof p.defaultCwd !== 'string' || !p.defaultCwd.trim()) throw rpcError(-32602, 'defaultCwd must be a folder');
         settings.defaultCwd = p.defaultCwd;
@@ -2390,7 +2474,10 @@ async function dispatch(client, method, p) {
         const entry = [...threads.values()].find((t) => t.summary.title === title);
         if (!entry) throw rpcError(-32602, `No thread called "${title}"`);
         const at = new Date(Date.now() - (i + 1) * 60_000).toISOString();
-        Object.assign(entry.summary, { archivedAt: at, archivedBy: 'threadbear', quietlyArchived: { at, why: p.why ?? 'It only confirmed what was asked.' }, live: false });
+        const why = p.why ?? 'It only confirmed what was asked.';
+        Object.assign(entry.summary, { archivedAt: at, archivedBy: 'threadbear', quietlyArchived: { at, why }, live: false });
+        // The runner's line in the thread (place-notes.ts, quietArchivedNote).
+        persist(entry.summary.id, { type: 'system.note', text: `Archived by Quiet inbox on Tue 24 Nov, 8:10 pm: it finished with nothing for you, and Opus judged you didn't need to see it. ${why}` });
         broadcastSummary(entry.summary.id);
       });
       return { ok: true };
@@ -2403,6 +2490,16 @@ async function dispatch(client, method, p) {
       moveHold = { promise, release };
       return { ok: true };
     }
+    case 'mock.holdShares': {
+      let release;
+      const promise = new Promise((r) => { release = r; });
+      shareHold = { promise, release };
+      return { ok: true };
+    }
+    case 'mock.releaseShares':
+      shareHold?.release();
+      shareHold = undefined;
+      return { ok: true };
     case 'mock.holdTokens': {
       let release;
       const promise = new Promise((r) => { release = r; });
@@ -2556,6 +2653,13 @@ async function dispatch(client, method, p) {
       return { ok: true };
     case 'mock.restart':
       return restartNow(p);
+    case 'mock.coordinatorExperiment': {
+      const experiment = settings.experiments?.find((e) => e.id === 'coordinators');
+      if (!experiment) throw rpcError(-32601, 'The coordinator fixture is off.');
+      experiment.on = Boolean(p.on);
+      if (p.notify !== false) broadcastSettings();
+      return {};
+    }
     // The runner going away with no notice first (it crashed, or was
     // stopped): the apps say they can't reach it, rather than "restarting".
     case 'mock.goAway':
@@ -2837,11 +2941,14 @@ async function fakeTurn(threadId, text, images, turnId = 'turn_' + crypto.random
   await sleep(300);
   persist(threadId, { type: 'tool.result', itemId: toolId, ok: true, text: 'notes.md\nscratch.swift\ntodo.txt', truncated: false, images: [] }, turnId);
 
-  const reply = `You said: "${text.slice(0, 80)}"${images.length ? ` with ${images.length} image${images.length > 1 ? 's' : ''}` : ''}.\n\nThis is the **mock runner**, so here is a canned answer:\n\n1. It streams in small pieces.\n2. Code blocks render in a monospaced box:\n\n\`\`\`swift\nlet greeting = "Hello"\nprint(greeting)\n\`\`\`\n\nThat's all.`;
+  const reply = `You said: "${safeSlice(text, 0, 80)}"${images.length ? ` with ${images.length} image${images.length > 1 ? 's' : ''}` : ''}.\n\nThis is the **mock runner**, so here is a canned answer:\n\n1. It streams in small pieces.\n2. Code blocks render in a monospaced box:\n\n\`\`\`swift\nlet greeting = "Hello"\nprint(greeting)\n\`\`\`\n\nThat's all.`;
   const itemId = 'm_' + crypto.randomBytes(4).toString('hex');
   t.inProgress.set(itemId, { type: 'assistant.text', text: '' });
-  for (let i = 0; i < reply.length && !interrupted; i += 6) {
-    const chunk = reply.slice(i, i + 6);
+  for (let i = 0; i < reply.length && !interrupted; ) {
+    let end = Math.min(reply.length, i + 6);
+    if (splitsPair(reply, end)) end += 1;
+    const chunk = reply.slice(i, end);
+    i = end;
     t.inProgress.get(itemId).text += chunk;
     transient(threadId, { type: 'assistant.text.delta', itemId, text: chunk }, turnId);
     await sleep(33);
@@ -2949,8 +3056,11 @@ async function playScripted(threadId, turnId, started, turn, interrupted) {
   const itemId = 'm_' + crypto.randomBytes(4).toString('hex');
   t.inProgress.set(itemId, { type: 'assistant.text', text: '' });
   const size = turn.chunk ?? 5;
-  for (let i = 0; i < turn.reply.length && !interrupted(); i += size) {
-    const chunk = turn.reply.slice(i, i + size);
+  for (let i = 0; i < turn.reply.length && !interrupted(); ) {
+    let end = Math.min(turn.reply.length, i + size);
+    if (splitsPair(turn.reply, end)) end += 1;
+    const chunk = turn.reply.slice(i, end);
+    i = end;
     t.inProgress.get(itemId).text += chunk;
     transient(threadId, { type: 'assistant.text.delta', itemId, text: chunk }, turnId);
     await sleep(turn.chunkMs ?? 30);
@@ -3163,10 +3273,13 @@ function startStream(threadId, p) {
     // From the text twice over, so a chunk that runs past the end wraps
     // to the start instead of coming up short (which dropped letters and
     // started paragraphs mid-word: "re is how...").
-    const at = offset % source.length;
-    let chunk = given ? given.slice(offset, offset + size) : (source + source).slice(at, at + size);
+    const src = given ?? source + source;
+    const start = given ? offset : offset % source.length;
+    let step = size;
+    if (splitsPair(src, start + step)) step += 1;
+    let chunk = src.slice(start, start + step);
     if (!chunk) chunk = ' ';
-    offset += size;
+    offset += step;
     ticks += 1;
     t.inProgress.get(itemId).text += chunk;
     transient(threadId, { type: 'assistant.text.delta', itemId, text: chunk }, turnId);
@@ -3287,7 +3400,7 @@ function restartNow(p) {
 
 function notice(client, level, message) {
   if (client.authed && client.ws.readyState === 1) {
-    client.ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'runner.notice', params: { level, message } }));
+    client.ws.send(wsJson({ jsonrpc: '2.0', method: 'runner.notice', params: { level, message } }));
   }
 }
 
@@ -3296,7 +3409,7 @@ function broadcastNotice(level, message) {
 }
 
 function broadcast(method, params) {
-  const text = JSON.stringify({ jsonrpc: '2.0', method, params });
+  const text = wsJson({ jsonrpc: '2.0', method, params });
   for (const c of clients) if (c.authed) c.ws.send(text);
 }
 
@@ -3346,7 +3459,7 @@ function wentBack() {
   return { clis };
 }
 
-// The review canvas (TB_MOCK_REVIEW_CANVAS, the reviewCanvas experiment): the
+// Sample notes for the review board (TB_MOCK_REVIEW_NOTES): the
 // agent's notes on the demo review's first picture, as show_options keeps
 // them, on the option's one shot.
 function addCanvasMarks(review) {
@@ -3392,7 +3505,7 @@ function persist(threadId, fields, turnId) {
   // lastActivityAt as when its turn started.
   if (['user.message', 'turn.started', 'turn.completed'].includes(fields.type)) s.lastActivityAt = event.ts;
   s.updatedAt = event.ts;
-  if (fields.type === 'assistant.text') s.preview = fields.text.replace(/\s+/g, ' ').slice(0, 140);
+  if (fields.type === 'assistant.text') s.preview = safeSlice(fields.text.replace(/\s+/g, ' '), 0, 140);
   s.asked = askedLine(fields) ?? s.asked;
   // Like the real runner's Needs you: a new turn closes the open card, and
   // a completed one that says it needs Mike opens the next.
@@ -3413,7 +3526,7 @@ function transient(threadId, fields, turnId) {
 }
 
 function sendEvent(threadId, event) {
-  const text = JSON.stringify({ jsonrpc: '2.0', method: 'thread.event', params: { threadId, event } });
+  const text = wsJson({ jsonrpc: '2.0', method: 'thread.event', params: { threadId, event } });
   for (const client of clients) if (client.authed && client.subs.has(threadId)) client.ws.send(text);
 }
 
@@ -3429,14 +3542,14 @@ function broadcastSummary(threadId) {
   const t = threads.get(threadId);
   if (t.summary.pendingReviews) t.summary.needsYou = true;
   const owner = t.runnerId ?? null;
-  const text = JSON.stringify({ jsonrpc: '2.0', method: 'thread.updated', params: { thread: threads.get(threadId).summary } });
+  const text = wsJson({ jsonrpc: '2.0', method: 'thread.updated', params: { thread: threads.get(threadId).summary } });
   for (const client of clients) if (client.authed && client.as === owner) client.ws.send(text);
   // This runner's clients hear about mac-mini's threads from the backend.
   if (owner) for (const client of clients) if (client.authed && client.as === null) send(client, 'remoteThreads.updated', remoteThreads(client));
 }
 
 function send(client, method, params) {
-  if (client.ws.readyState === 1) client.ws.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
+  if (client.ws.readyState === 1) client.ws.send(wsJson({ jsonrpc: '2.0', method, params }));
 }
 
 function ownerOf(threadId) {
@@ -3638,7 +3751,7 @@ function addRemoteDemo() {
       if (turn.answer) {
         push({ type: 'assistant.text', itemId: `${id}_m${i}`, text: turn.answer }, turnId);
         push({ type: 'turn.completed', outcome: 'completed', durationMs: 42_000, ...(turn.needs ? { needs: turn.needs } : {}) }, turnId);
-        summary.preview = turn.answer.replace(/\s+/g, ' ').slice(0, 140);
+        summary.preview = safeSlice(turn.answer.replace(/\s+/g, ' '), 0, 140);
       }
     });
     summary.lastSeq = events.length;
@@ -3809,12 +3922,12 @@ function sortedSchedules() {
 }
 
 function broadcastSettings() {
-  const text = JSON.stringify({ jsonrpc: '2.0', method: 'settings.updated', params: { settings } });
+  const text = wsJson({ jsonrpc: '2.0', method: 'settings.updated', params: { settings } });
   for (const client of clients) if (client.authed) client.ws.send(text);
 }
 
 function broadcastSchedules() {
-  const text = JSON.stringify({ jsonrpc: '2.0', method: 'schedules.updated', params: { schedules: sortedSchedules() } });
+  const text = wsJson({ jsonrpc: '2.0', method: 'schedules.updated', params: { schedules: sortedSchedules() } });
   for (const client of clients) if (client.authed) client.ws.send(text);
 }
 
@@ -3850,7 +3963,7 @@ function runSchedule(schedule) {
       id: threadId, title: schedule.title, cwd: schedule.cwd ?? defaults.cwd, accountId: schedule.accountId ?? defaults.accountId,
       provider: 'claude', model: schedule.model, effort: schedule.effort, permissionMode: schedule.permissionMode ?? 'full',
       status: 'starting', live: true, needsYou: false, createdAt: now, updatedAt: now, lastActivityAt: now, preview: '', lastSeq: 0, lastSeenSeq: 0,
-      schedule: { id: schedule.id, title: schedule.title },
+      schedule: { id: schedule.id, title: schedule.title }, ...(schedule.starThreads ? { starredAt: now } : {}),
     }, events: [], inProgress: new Map(), timers: [] });
     broadcastSummary(threadId);
   }
@@ -3955,6 +4068,9 @@ function projectRequest(method, p) {
     }
     case 'projects.update': {
       const project = needProject(p.projectId);
+      for (const [key, value] of Object.entries(p.ifUnchanged ?? {})) {
+        if (project[key] !== value) throw rpcError(-32602, 'The project changed while you were editing. Your text has not been saved.');
+      }
       for (const key of ['title', 'folders', 'goals', 'notes', 'links']) if (p[key] !== undefined) project[key] = p[key];
       if (p.notion !== undefined) {
         project.notion = p.notion || undefined;
@@ -4176,7 +4292,7 @@ function addDemoNested() {
     const summary = {
       id, title, cwd, accountId: 'claude-main', provider: 'claude', model: 'claude-opus-5-5', permissionMode: 'full',
       status, live: status !== 'idle', needsYou: needs === 'you', createdAt: ago(minutes + 60), updatedAt: ago(minutes), lastActivityAt: ago(minutes),
-      preview: answer ? answer.replace(/\s+/g, ' ').slice(0, 140) : '', lastSeq: 0, lastSeenSeq: 0,
+      preview: answer ? safeSlice(answer.replace(/\s+/g, ' '), 0, 140) : '', lastSeq: 0, lastSeenSeq: 0,
       ...(needs ? { needs } : {}), ...(startedBy ? { startedBy } : {}), ...(archived ? { archivedAt: ago(archived), archivedBy: 'agent' } : {}),
       ...(detached ? { detached: true } : {}),
     };
@@ -4826,7 +4942,7 @@ header p{color:var(--muted);margin:0 0 18px;max-width:30em}
 // Mike's own messages only (a review's reply goes in whole here).
 function askedLine(e) {
   if (e.type !== 'user.message' || (e.origin && e.origin !== 'phone') || e.text.startsWith('[Sent by the agent')) return undefined;
-  return e.text.replace(/\s+/g, ' ').trim().slice(0, 140) || undefined;
+  return safeSlice(e.text.replace(/\s+/g, ' ').trim(), 0, 140) || undefined;
 }
 
 function loadFixtures() {
@@ -4848,7 +4964,7 @@ function loadFixtures() {
         event.threadId = summary.id;
         if (event.images) event.images = fixPaths(event.images);
         if (event.type === 'review.updated') event.review.options = event.review.options.map((option) => ({ ...option, image: fixPaths([option.image])[0] }));
-        if (event.type === 'review.updated' && process.env.TB_MOCK_REVIEW_CANVAS) addCanvasMarks(event.review);
+        if (event.type === 'review.updated' && process.env.TB_MOCK_REVIEW_NOTES) addCanvasMarks(event.review);
         return event;
       });
       summary.lastSeq = events.at(-1)?.seq ?? 0;
@@ -4931,7 +5047,7 @@ function newestFirst(list) {
 
 function reply(client, id, result, error) {
   if (client.ws.readyState !== 1) return;
-  client.ws.send(JSON.stringify(error ? { jsonrpc: '2.0', id, error } : { jsonrpc: '2.0', id, result }));
+  client.ws.send(wsJson(error ? { jsonrpc: '2.0', id, error } : { jsonrpc: '2.0', id, result }));
 }
 
 function rpcError(code, message) {

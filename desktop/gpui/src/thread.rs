@@ -1788,6 +1788,20 @@ impl ThreadPane {
         cx.notify();
     }
 
+    /// A part of a row that opens and closes by itself (a review finding's
+    /// case, say): its key in `open_rows`, and the row remeasured.
+    pub(crate) fn toggle_part(&mut self, key: &str, row_id: &str, cx: &mut Context<Self>) {
+        if !self.open_rows.remove(key) {
+            self.open_rows.insert(key.to_owned());
+        }
+        if let Some(i) = self.feed.model().index_of(row_id) {
+            self.scroller.update(cx, |s, cx| {
+                s.remeasure_items(i..i + 1, cx);
+            });
+        }
+        cx.notify();
+    }
+
     /// A file's line in the changes card: its diff opens and closes in the model.
     pub(crate) fn toggle_changed_file(&mut self, key: &str, cx: &mut Context<Self>) {
         let open = !self.feed.model().is_expanded(key);
@@ -2147,6 +2161,29 @@ impl ThreadPane {
             });
         });
         self.light_row(row_id.to_owned(), cx);
+    }
+
+    /// Scrolls to and highlights the transcript row at or just before `target_seq`
+    /// (used by coordinator open-loop Jump links). Falls back to focusing the composer.
+    pub(crate) fn reveal_seq(
+        &mut self,
+        target_seq: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let row_id = self
+            .feed
+            .model()
+            .rows()
+            .iter()
+            .rev()
+            .find(|r| r.seq <= target_seq)
+            .map(|r| r.id.clone());
+        if let Some(id) = row_id {
+            self.reveal_row(&id, window, cx);
+        } else {
+            self.focus_composer(window, cx);
+        }
     }
 
     /// Lights a row up for a moment so the eye lands on the step (`light`).

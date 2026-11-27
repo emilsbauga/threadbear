@@ -956,7 +956,8 @@ impl Composer {
 
     fn note_images_len(&self, cx: &App) -> usize {
         self.open_card(cx).filter(|c| !c.is_done()).map_or(0, |c| {
-            composer::note_images(&c.asks, &self.card.picks, &self.card.notes).len()
+            composer::note_images(&c.asks, &c.active_picks(&self.card.picks), &self.card.notes)
+                .len()
         })
     }
 

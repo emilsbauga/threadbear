@@ -94,6 +94,13 @@ enum ScrollAnchorMode {
     Proportional,
 }
 
+/// How close to the end of `content` a scroll position counts as at it: far
+/// enough for an `f32` offset's rounding at that length, never as far as half
+/// a pixel, so a 1 px step up from the end still leaves it.
+fn end_rounding(content: Pixels) -> Pixels {
+    px((content.as_f32().abs() * 4. * f32::EPSILON).clamp(0.05, 0.5))
+}
+
 /// Controls whether the list automatically follows new content at the end.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum FollowMode {
@@ -1243,7 +1250,7 @@ impl StateInner {
             let padding = self.last_padding.unwrap_or_default();
             let total_height = self.items.summary().height + padding.top + padding.bottom;
             let scroll_offset = self.scroll_top(&scroll_top);
-            if scroll_offset + available_height >= total_height - px(1.0) {
+            if scroll_offset + available_height >= total_height - end_rounding(total_height) {
                 self.follow_state.start_following();
             }
         }
@@ -1416,8 +1423,18 @@ impl StateInner {
 
         // If content grew during the drag, the frozen bottom is below the
         // live bottom. Treat dragging to the frozen end as resuming tail follow.
+        // A thumb drag gets a pixel's grace to reach the end. Anything else
+        // that scrolls by offset (gpui-base's ScrollBounce takes every wheel
+        // and trackpad packet this way) only by rounding: with a pixel, a
+        // packet of 1 px or less up from the bottom was taken straight back
+        // and a slow wheel never left it (Threadbear, 25 Nov 2026).
+        let grace = if self.scrollbar_drag_start_height.is_some() {
+            px(1.0)
+        } else {
+            end_rounding(scroll_max + height)
+        };
         let dragged_to_end =
-            scroll_max > px(0.) && new_scroll_top >= (scroll_max - px(1.0)).max(px(0.));
+            scroll_max > px(0.) && new_scroll_top >= (scroll_max - grace).max(px(0.));
         if dragged_to_end && matches!(self.follow_state, FollowState::Tail { .. }) {
             self.follow_state = FollowState::Tail { is_following: true };
             let item_count = self.items.summary().count;
@@ -1885,8 +1902,10 @@ mod test {
         assert_eq!(state.max_offset_for_scrollbar().y, px(100.));
         assert_eq!(state.scroll_px_offset_for_scrollbar().y, px(-100.));
 
-        // Half a pixel from the end counts as the end: following resumes and
-        // the anchor goes past the last item until the next layout.
+        // Dragging the thumb to half a pixel from the end counts as the end:
+        // following resumes and the anchor goes past the last item until the
+        // next layout.
+        state.scrollbar_drag_started();
         state.set_offset_from_scrollbar(point(px(0.), px(-99.5)));
         assert!(state.is_following_tail());
         assert_eq!(

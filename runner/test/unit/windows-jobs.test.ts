@@ -114,15 +114,40 @@ test('a job the helper refuses (a name someone else made first) is never ended, 
   const calls: string[] = [];
   const reg = new ProcessRegistry(tmpDir(), nullLogger);
   reg.jobs = { assign: async () => { throw new Error('a job by that name already exists'); }, end: async (n) => void calls.push(`end ${n}`), forget: async () => {} };
+  reg.killUnjobbed = (pid) => void calls.push(`kill ${pid}`);
   const cli = sleeper();
   try {
-    reg.add(cli.pid!, 'claude', 'th1');
+    // Not a thread's (a job's label): left running, as before.
+    reg.add(cli.pid!, 'claude');
     await tick();
     assert.deepEqual(reg.pids(), [cli.pid]);
     reg.remove(cli.pid!);
     await tick();
     assert.deepEqual(calls, []);
   } finally {
+    cli.kill();
+  }
+});
+
+// Daybreak finding 177: on Windows the RPC places a thread's processes by
+// its CLI's job, so a thread's CLI that couldn't be put in one is stopped
+// rather than left running where its processes can't be placed.
+test("a thread's CLI the helper couldn't put in a job is stopped", async () => {
+  const calls: string[] = [];
+  const reg = new ProcessRegistry(tmpDir(), nullLogger);
+  let asked = 0;
+  reg.jobs = { assign: async () => { asked++; throw new Error('the helper didn\'t answer jobAssign in time'); }, end: async (n) => void calls.push(`end ${n}`), forget: async () => {} };
+  reg.killUnjobbed = (pid) => void calls.push(`kill ${pid}`);
+  const cli = sleeper();
+  try {
+    reg.add(cli.pid!, 'claude', 'th1');
+    await tick();
+    await tick();
+    // Tried twice (the second under a new name), then stopped.
+    assert.deepEqual(calls, [`kill ${cli.pid}`]);
+    assert.equal(asked, 2);
+  } finally {
+    reg.remove(cli.pid!);
     cli.kill();
   }
 });
@@ -475,6 +500,28 @@ test("at shutdown a CLI whose job can't be found any more is stopped by its pid,
     assert.equal(pidExists(cli.pid!), false);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'children.json'), 'utf8')), []);
   } finally {
+    cli.kill();
+  }
+});
+
+test("a thread's CLI whose first try at a job fails gets one on the second, and isn't stopped", async () => {
+  const calls: string[] = [];
+  const reg = new ProcessRegistry(tmpDir(), nullLogger);
+  let asked = 0;
+  const cli = sleeper();
+  const names: string[] = [];
+  reg.jobs = { assign: async (_pid, n) => { names.push(n); if (++asked === 1) throw new Error('the helper was stopped'); return '0'; }, end: async (n) => void calls.push(`end ${n}`), forget: async () => void calls.push('forget') };
+  reg.killUnjobbed = (pid) => void calls.push(`kill ${pid}`);
+  try {
+    reg.add(cli.pid!, 'claude', 'th1');
+    await tick();
+    await tick();
+    assert.equal(asked, 2);
+    assert.ok(!calls.some((c) => c.startsWith('kill')), 'not stopped');
+    // The first try may have taken the CLI before it failed: its job is still the thread's.
+    assert.equal(reg.threadOfJob(names[0]!), 'th1');
+  } finally {
+    reg.remove(cli.pid!);
     cli.kill();
   }
 });

@@ -81,6 +81,26 @@ Feature: Reading a thread
     Then the working line shows
     And the streaming reply grows
 
+  # The nightly random walk (21 and 24 Nov 2026) saw a reply drawn twice: the
+  # mock runner's streams all say turn_stream, so a second one opened a turn
+  # that had finished, and its first reply showed in the finished stretch and
+  # again under it.
+  @transcript.reply
+  Scenario: A second reply in the same turn leaves the first drawn once
+    When I open the thread "Export last quarter's invoices as CSV"
+    And a reply saying "First of two." streams in and finishes
+    And a reply starts streaming in
+    Then no row is drawn twice while it streams
+
+  # And a question with no tool of its own (a background agent's), drawn in
+  # its turn's place, was drawn at the end too once another turn started.
+  @transcript.reply
+  Scenario: A question still open when I send something is drawn once
+    When I open the thread "Pick a colour for the new Share button"
+    And a background agent asks to run "npm test"
+    And I send "yes"
+    Then no row is drawn twice while it streams
+
   # A real thread's wait lines (a92fcf9a) wrapped onto several lines in the
   # GPUI app and were drawn over the replies either side.
   @transcript.gap

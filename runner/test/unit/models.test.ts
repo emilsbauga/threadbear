@@ -153,7 +153,7 @@ function settingsSetup() {
 
 test('settings: get shows the pool and private folders, and nothing of a key or spend', () => {
   const s = settingsSetup();
-  assert.deepEqual(s.svc.get().models, { pool: 'claude', privateFolders: [] });
+  assert.deepEqual(s.svc.get().models, { pool: 'claude', privateFolders: [], providers: null });
   assert.equal(s.methods['settings.setKey'], undefined, 'there is no key to set');
 });
 
@@ -270,7 +270,7 @@ test('models.run: refuses bad params and says why a call was not sent', async ()
   await assert.rejects(async () => s.methods['models.run']({ job: 'dance', text: 'x' }), (e: RpcError) => e.code === ErrorCode.badParams);
   const r = await s.methods['models.run']({ job: 'generate', text: 'x' });
   assert.deepEqual((r as any).reason, 'no-pool');
-  assert.equal(s.models.unavailable(), 'Needs a Claude pool to run on');
+  assert.equal(s.models.unavailable(), 'Needs a pool to run on');
 });
 
 // --------------------------------------------------------------- titles

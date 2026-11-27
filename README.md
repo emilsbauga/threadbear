@@ -113,7 +113,8 @@ You'll need:
   but these steps are written for a Mac for now)
 - Xcode's command line tools (`xcode-select --install`), and Node 24 or newer
 - Claude Code or Codex, installed and logged in. Grok, Cursor, OpenCode
-  and Gemini can run threads too, but titles and the librarian need a Claude login
+  and Gemini can run threads too (titles and the librarian run on Claude,
+  Codex, Grok or OpenCode)
 - A free [Convex](https://convex.dev) account
 - The GitHub CLI (`gh`), to make your fork
 

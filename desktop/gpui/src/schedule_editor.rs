@@ -9,6 +9,7 @@ use crate::app::Threadbear;
 use crate::{call, icons, now_ms, style};
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -78,6 +79,8 @@ pub(crate) struct EditorState {
     pub(crate) effort: Option<String>,
     /// The box's mode as it was: the editor has no control for it.
     pub(crate) permission_mode: String,
+    /// Each new thread starts starred (only for a new thread each time).
+    pub(crate) star_threads: bool,
     /// Another runner it runs on (`runners.list`); None is this one. Only for
     /// a new thread each time, and then the folder is a path on that Mac,
     /// typed as is, and the login and model are left to it.
@@ -281,6 +284,7 @@ impl Threadbear {
                 .permission_mode
                 .clone()
                 .unwrap_or_else(|| "full".into()),
+            star_threads: schedule.star_threads,
             ..EditorState::default()
         };
         match away {
@@ -727,6 +731,7 @@ impl ScheduleEditor {
                 if let Some(cwd) = s.update_cwd(&away_folder) {
                     params["cwd"] = json!(cwd);
                 }
+                params["starThreads"] = json!(s.star_threads);
                 // This Mac's model and effort (None goes back to the default);
                 // another Mac's logins aren't this one's.
                 if !s.is_away() {
@@ -744,6 +749,9 @@ impl ScheduleEditor {
             }
             params["permissionMode"] = json!(s.permission_mode);
             params["runnerId"] = json!(s.runner_id);
+            if s.star_threads {
+                params["starThreads"] = json!(true);
+            }
             "schedules.create"
         } else {
             match &s.thread_id {
@@ -768,6 +776,9 @@ impl ScheduleEditor {
                         params["effort"] = json!(effort);
                     }
                     params["permissionMode"] = json!(s.permission_mode);
+                    if s.star_threads {
+                        params["starThreads"] = json!(true);
+                    }
                 }
             }
             "schedules.create"
@@ -1085,6 +1096,32 @@ fn form_row(label: &'static str, control: impl IntoElement, cx: &App) -> Div {
         .child(div().flex_1().min_w_0().child(control))
 }
 
+impl ScheduleEditor {
+    pub(crate) fn set_star_threads(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.state.star_threads = on;
+        cx.notify();
+    }
+
+    /// "Star each new thread", under Sends to for one that starts a new
+    /// thread each time: its threads land in Starred, above the Inbox.
+    fn star_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let me = cx.entity().downgrade();
+        div()
+            .id("schedule-star-threads")
+            .tip("Each thread it starts goes in Starred, above the Inbox")
+            .child(
+                Checkbox::new("schedule-star")
+                    .label("Star each new thread")
+                    .checked(self.state.star_threads)
+                    .small()
+                    .on_click(move |on: &bool, _, cx| {
+                        let on = *on;
+                        me.update(cx, |e, cx| e.set_star_threads(on, cx)).ok();
+                    }),
+            )
+    }
+}
+
 impl Render for ScheduleEditor {
     #[expect(
         clippy::too_many_lines,
@@ -1264,6 +1301,9 @@ impl Render for ScheduleEditor {
                 )
                 .into_any_element(),
             );
+        }
+        if state.thread_id.is_none() {
+            rows.push(form_row("", self.star_toggle(cx), cx).into_any_element());
         }
         if state.thread_id.is_none() {
             // What's needed from the app, read before the menus are built
@@ -1717,6 +1757,11 @@ impl ScheduleEditor {
         cx.notify();
     }
 
+    /// Saves as the Save button does (automation).
+    pub(crate) fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save(window, cx);
+    }
+
     pub(crate) fn dump(&self, cx: &App) -> Value {
         json!({
             "isNew": self.state.is_new(),
@@ -1730,6 +1775,7 @@ impl ScheduleEditor {
             "models": self.model_lines(cx),
             "provider": self.state.provider,
             "sendsToThread": self.state.thread_id.is_some(),
+            "starThreads": self.state.star_threads,
             "poolId": self.state.pool_id,
             "accountId": self.state.account_id,
         })

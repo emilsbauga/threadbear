@@ -68,6 +68,13 @@ struct ThreadbearApp: App {
                 // it wants, and passing it on would show a "not a pairing link" error.
                 .onOpenURL { url in
                     if url.host() == "open" { return }
+                    // threadbear://new?text= (Earshot's Ask Claude): the new thread
+                    // sheet with the words in it. It only fills the box; nothing
+                    // starts until Mike taps Start, so any app may send one.
+                    if let text = NewThreadLink.text(from: url) {
+                        if model.isPaired { model.composeText = text }
+                        return
+                    }
                     switch QuickAskSetup.parse(url.absoluteString) {
                     // A Quick Ask link, or a setup code somehow opened as one: both
                     // are read by Settings › Ask's own scanner instead.
@@ -194,5 +201,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
         let threadId = response.notification.request.content.userInfo["threadId"] as? String
         pushTaps.tapped(threadId: threadId, done: completionHandler)
+    }
+}
+
+/// `threadbear://new?text=…` from another app: the words for a new thread's
+/// box. `project` and `folder` are the Mac's (the phone starts threads in the
+/// runner's default folder), so they're left for the words to mention.
+enum NewThreadLink {
+    static let maxText = 20_000
+
+    static func text(from url: URL) -> String? {
+        guard url.scheme?.lowercased() == "threadbear", url.host()?.lowercased() == "new",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        let text = items.first { $0.name == "text" }?.value ?? ""
+        return String(text.prefix(maxText))
     }
 }

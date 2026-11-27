@@ -4,8 +4,8 @@ import { DEFAULT_LAB_REVIEWERS, labReviewerProblem, parseLabReviewers, ticked, t
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Config } from './config.ts';
-import { expandHome, peekRunnerJson, readRunnerJson, writeRunnerJson } from './config.ts';
-import { ErrorCode, RpcError } from './protocol.ts';
+import { expandHome, parseSmallJobProviders, peekRunnerJson, readRunnerJson, smallJobProviderProblem, writeRunnerJson } from './config.ts';
+import { ErrorCode, RpcError, type Provider } from './protocol.ts';
 import type { Notification } from './runner.ts';
 import type { Models } from './models/index.ts';
 import type { BringInSetting } from './bring-in.ts';
@@ -52,6 +52,7 @@ export type Settings = {
   models: {
     pool: string | null;
     privateFolders: string[];
+    providers: Provider[] | null;
   };
   // Every experiment there is, oldest first, and whether it's on here.
   experiments: ExperimentSetting[];
@@ -71,7 +72,7 @@ export type SettingsUpdate = {
   bringIn?: BringInSetting;
   spareWeek?: boolean;
   fullSync?: boolean;
-  models?: { pool?: string | null; privateFolders?: string[] };
+  models?: { pool?: string | null; privateFolders?: string[]; providers?: Provider[] | null };
   // Experiment id to on or off, saved under runner.json `experiments`.
   experiments?: Record<string, boolean>;
 };
@@ -110,6 +111,7 @@ export class SettingsService {
       models: {
         pool: this.cfg.models.pool,
         privateFolders: [...this.cfg.models.privateFolders],
+        providers: this.cfg.models.providers ? [...this.cfg.models.providers] : null,
       },
       experiments: this.experimentList.map((x) => ({ id: x.id, name: x.name, does: x.does, on: experimentOn(this.cfg.home, x.id, this.experimentList) })),
     };
@@ -132,6 +134,16 @@ export class SettingsService {
     if (pool === '') throw bad('pool must be a pool id or null');
     const pools = pool ? this.poolIds?.() : undefined;
     if (pool && pools && !pools.includes(pool)) throw bad(`No pool called ${pool}. Pools: ${pools.join(', ') || 'none'}`);
+    let providers: Provider[] | null | undefined;
+    if (u.models?.providers !== undefined) {
+      if (u.models.providers === null) {
+        providers = null;
+      } else {
+        const problem = u.models.providers.map(smallJobProviderProblem).find(Boolean);
+        if (problem) throw bad(problem);
+        providers = parseSmallJobProviders(u.models.providers) ?? [];
+      }
+    }
     const known = this.experimentList.map((x) => x.id);
     for (const id of Object.keys(u.experiments ?? {})) {
       if (!known.includes(id)) throw bad(`No experiment called ${id}. Experiments: ${known.join(', ') || 'none'}`);
@@ -174,10 +186,17 @@ export class SettingsService {
       const { fullAsked: _a, fullAskedThread: _t, fullAskedQuestion: _q, ...sync } = json.sync ?? {};
       json.sync = { ...sync, full: u.fullSync };
     }
-    if (folders !== undefined || pool !== undefined) {
+    if (folders !== undefined || pool !== undefined || providers !== undefined) {
       json.models = { ...json.models };
       if (pool !== undefined) json.models.pool = this.cfg.models.pool = pool;
       if (folders !== undefined) json.models.privateFolders = this.cfg.models.privateFolders = [...new Set(folders)];
+      if (providers === null) {
+        delete this.cfg.models.providers;
+        delete json.models.providers;
+      } else if (providers !== undefined) {
+        this.cfg.models.providers = [...providers];
+        json.models.providers = [...providers];
+      }
     }
     // Read at each use (experimentOn), so this takes effect at once.
     if (u.experiments && Object.keys(u.experiments).length) json.experiments = { ...json.experiments, ...u.experiments };
@@ -264,6 +283,16 @@ export function settingsMethods(s: SettingsService): Record<string, (p: Record<s
             throw bad('models.privateFolders must be an array of strings');
           }
           u.models.privateFolders = mm.privateFolders as string[];
+        }
+        if (mm.providers !== undefined) {
+          if (mm.providers === null) {
+            u.models.providers = null;
+          } else {
+            if (!Array.isArray(mm.providers)) throw bad('models.providers must be a list of providers or null');
+            const problem = mm.providers.map(smallJobProviderProblem).find(Boolean);
+            if (problem) throw bad(problem);
+            u.models.providers = parseSmallJobProviders(mm.providers) ?? [];
+          }
         }
       }
       if (p.experiments !== undefined) {

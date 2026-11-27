@@ -16,7 +16,7 @@ import { ConvexError, v, type Infer } from 'convex/values';
 import { action, internalAction, internalMutation, internalQuery, mutation, query, type ActionCtx, type MutationCtx, type QueryCtx } from './_generated/server';
 import type { Doc, Id } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import { box as boxMachine, cloudToken as tokenMachine, command as commandMachine, machines, queued } from './machines';
+import { box as boxMachine, boxTokenGrant as grantMachine, cloudToken as tokenMachine, command as commandMachine, machines, queued } from './machines';
 import { BOOT_MS } from './boxStates';
 import { checkRunnerId, forbidden, MACHINE_ID, runnerAuth, sha256, withoutCredentials } from './lib';
 import { commandArgs } from './relay';
@@ -142,7 +142,7 @@ export const storeCloudToken = internalMutation({
     const row = await ctx.db.query('cloudTokens').withIndex('by_login', (q) => q.eq('login', login)).unique();
     const now = Math.max(Date.now(), (row?.setAt ?? 0) + 1);
     const r = row
-      ? (await ctx.db.patch(row._id, { sealed, madeAt, setAt: now }), await tokenMachine.send(ctx, row._id, { type: 'SET' }))
+      ? (await ctx.db.patch("cloudTokens", row._id, { sealed, madeAt, setAt: now }), await tokenMachine.send(ctx, row._id, { type: 'SET' }))
       : await tokenMachine.create(ctx, { login, sealed, madeAt, setAt: now } as never, { type: 'SET' });
     if (r.status !== 'done') throw conflict(`The token couldn't be set: ${r.reasons.join(' ')}`);
     return null;
@@ -157,16 +157,38 @@ export const storeCloudToken = internalMutation({
 // virtual runner): a token never passes a thread already waiting.
 const RELEASE_PAGE = 50;
 export const releaseForToken = machines.internalMutation({
-  args: { login: v.string() },
+  args: { login: v.string(), legacyCursor: v.optional(v.string()), scanLegacy: v.optional(v.boolean()) },
   returns: v.null(),
-  handler: async (ctx, { login }) => {
+  handler: async (ctx, { login, legacyCursor, scanLegacy }) => {
     const token = await ctx.db.query('cloudTokens').withIndex('by_login', (q) => q.eq('login', login)).unique();
     if (!token || token.tokenState.kind !== 'valid') return null;
+    // This SET is owner authority to release reports recorded before it.
+    // A later report keeps waiting for a later SET, including one from a
+    // compromised box trying to collect every replacement.
+    const grants = await ctx.db.query('boxTokenGrants').withIndex('by_login_state', (q) => q.eq('login', login).eq('grantState.kind', 'refused').lt('grantState.afterSetAt', token.setAt)).take(RELEASE_PAGE);
+    for (const grant of grants) {
+      const box = await ctx.db.get("boxes", grant.boxId);
+      if (!box || box.boxKeyHash !== grant.keyHash || BOX_KEY_DEAD.includes(box.boxState.kind)) await grantMachine.purge(ctx, grant._id);
+      else {
+        await ctx.db.patch('boxTokenGrants', grant._id, { sealedToken: token.sealed });
+        await grantMachine.send(ctx, grant._id, { type: 'ISSUE', setAt: token.setAt });
+      }
+    }
+    // An older runner may already have reported=true and never send its
+    // report again. This owner SET also grants legacy keys once, from the
+    // backend's own box rows, rather than trusting anything a box claims.
+    const legacy = scanLegacy === false ? null : await ctx.db.query('boxes').withIndex('by_login_state', (q) => q.eq('login', login)).paginate({ numItems: RELEASE_PAGE, cursor: legacyCursor ?? null });
+    for (const row of legacy?.page ?? []) {
+      if (!row.boxKeyHash || BOX_KEY_DEAD.includes(row.boxState.kind)) continue;
+      const grant = await ctx.db.query('boxTokenGrants').withIndex('by_box', (q) => q.eq('boxId', row._id)).unique();
+      if (!grant) await grantMachine.create(ctx, { boxId: row._id, login, keyHash: row.boxKeyHash, sealedToken: token.sealed } as never, { type: 'ISSUE', setAt: token.setAt });
+    }
     const waiting = await ctx.db.query('boxes').withIndex('by_login_state', (q) => q.eq('login', login).eq('boxState.kind', 'needsToken')).take(RELEASE_PAGE);
     const services = new Set<Id<'runnerServices'>>();
     for (const row of waiting) if ((await boxMachine.send(ctx, row._id, { type: 'TOKEN_SET' })).status === 'done') services.add(row.serviceId);
     for (const serviceId of services) await ctx.scheduler.runAfter(0, internal.boxes.wakeWaiting, { serviceId });
-    if (waiting.length === RELEASE_PAGE) await ctx.scheduler.runAfter(0, internal.boxes.releaseForToken, { login });
+    if (legacy && !legacy.isDone) await ctx.scheduler.runAfter(0, internal.boxes.releaseForToken, { login, legacyCursor: legacy.continueCursor });
+    else if (waiting.length === RELEASE_PAGE || grants.length === RELEASE_PAGE) await ctx.scheduler.runAfter(0, internal.boxes.releaseForToken, { login, scanLegacy: false });
     return null;
   },
 });
@@ -183,8 +205,8 @@ export const cloudTokens = query({
 });
 
 /**
- * A box's turn was refused with the cloud token it was given (a 401): the
- * token is dead (REFUSED), and the thread's card asks Mike for a new one.
+ * A box's turn was refused with the cloud token it was given (a 401):
+ * only its grant is quarantined, and its thread asks for a replacement.
  * `setAt` is the token the box has (the exchange's tokenSetAt, or the last
  * boxCloudToken's): a refusal of an older one changes nothing. A box's key only.
  */
@@ -196,7 +218,16 @@ export const tokenRefused = mutation({
     if (caller.owner || !caller.box) throw forbidden("say a box's token was refused: only the box's own key can");
     const row = (await ctx.db.query('boxes').withIndex('by_threadId', (q) => q.eq('threadId', caller.box!.threadId)).unique())!;
     const token = await ctx.db.query('cloudTokens').withIndex('by_login', (q) => q.eq('login', row.login)).unique();
-    if (token) await tokenMachine.send(ctx, token._id, { type: 'REFUSED', setAt });
+    if (!Number.isSafeInteger(setAt) || setAt < 0) throw bad('setAt must be a nonnegative whole number');
+    const grant = await tokenGrant(ctx, row, token);
+    const afterSetAt = token?.setAt ?? 0;
+    if (grant && grant.keyHash === row.boxKeyHash) await grantMachine.send(ctx, grant._id, { type: 'REFUSED', setAt, afterSetAt });
+    else {
+      if (grant) {
+        await ctx.db.patch("boxTokenGrants", grant._id, { keyHash: row.boxKeyHash! });
+        await grantMachine.send(ctx, grant._id, { type: 'QUARANTINE', setAt, afterSetAt });
+      } else await grantMachine.create(ctx, { boxId: row._id, login: row.login, keyHash: row.boxKeyHash!, sealedToken: '' } as never, { type: 'QUARANTINE', setAt, afterSetAt });
+    }
     return null;
   },
 });
@@ -211,7 +242,7 @@ export const boxCloudToken = action({
   returns: v.union(v.null(), v.object({ token: v.string(), setAt: v.number() })),
   handler: async (ctx, { key }): Promise<{ token: string; setAt: number } | null> => {
     await actionAuth(ctx, key, 'boxCloudToken', { housekeeping: true });
-    const found: { login: string; sealed: string; setAt: number } | null = await ctx.runQuery(internal.boxes.boxTokenFor, { key });
+    const found: { login: string; sealed: string; setAt: number } | null = await ctx.runMutation(internal.boxes.boxTokenFor, { key });
     if (!found) return null;
     let token: string;
     try {
@@ -223,7 +254,7 @@ export const boxCloudToken = action({
   },
 });
 
-export const boxTokenFor = internalQuery({
+export const boxTokenFor = internalMutation({
   args: { key: v.string() },
   returns: v.union(v.null(), v.object({ login: v.string(), sealed: v.string(), setAt: v.number() })),
   handler: async (ctx, { key }) => {
@@ -233,9 +264,22 @@ export const boxTokenFor = internalQuery({
     if (!row) return null;
     const token = await ctx.db.query('cloudTokens').withIndex('by_login', (q) => q.eq('login', row.login)).unique();
     if (!token || token.tokenState.kind !== 'valid') return null;
-    return { login: token.login, sealed: token.sealed, setAt: token.setAt };
+    const grant = await tokenGrant(ctx, row, token);
+    if (!grant || grant.keyHash !== row.boxKeyHash || grant.grantState.kind !== 'issued' || !grant.sealedToken) return null;
+    return { login: row.login, sealed: grant.sealedToken, setAt: grant.grantState.setAt };
   },
 });
+
+// A legacy live key was issued by the owner's boot exchange before grants
+// existed. Adopt its current owner-set token once, from the canonical box
+// row, before reporting or fetching. Subsequent versions need a recorded
+// refusal and owner SET; caller-supplied versions never establish a grant.
+async function tokenGrant(ctx: MutationCtx, row: Doc<'boxes'>, token: Doc<'cloudTokens'> | null): Promise<Doc<'boxTokenGrants'> | null> {
+  const grant = await ctx.db.query('boxTokenGrants').withIndex('by_box', (q) => q.eq('boxId', row._id)).unique();
+  if (grant || !row.boxKeyHash || !token || token.tokenState.kind !== 'valid') return grant;
+  const made = await grantMachine.create(ctx, { boxId: row._id, login: row.login, keyHash: row.boxKeyHash, sealedToken: token.sealed } as never, { type: 'ISSUE', setAt: token.setAt });
+  return made.status === 'done' ? ctx.db.get('boxTokenGrants', made.id as Id<'boxTokenGrants'>) : null;
+}
 
 // ------------------------------------------------------------ a thread's box row
 
@@ -269,7 +313,7 @@ async function addBox(ctx: MutationCtx, a: NewBox): Promise<Id<'boxes'>> {
   if (!isThreadId(a.threadId)) throw bad("that isn't a thread id");
   if (!LOGIN.test(a.login)) throw bad('login must be 1 to 200 characters with no spaces or control characters');
   for (const f of ['origin', 'subfolder', 'baseBranch'] as const) if (a.repo[f].length > REPO_CHARS || /[\u0000-\u001f]/.test(a.repo[f])) throw bad(`repo.${f} is too long or has control characters`);
-  const service = await ctx.db.get(a.serviceId);
+  const service = await ctx.db.get("runnerServices", a.serviceId);
   if (!service) throw new ConvexError({ kind: 'notFound', message: 'no such virtual runner' });
   if (await ctx.db.query('boxes').withIndex('by_threadId', (q) => q.eq('threadId', a.threadId)).first()) throw conflict('That thread has a box already.');
   // A box's runner id is its own, for life (decision 3): never a machine's
@@ -386,7 +430,7 @@ export const setRunnerService = mutation({
     // a box smaller than this could take a save its replacement can't read.
     if (a.box.memoryMb < MIN_BOX_MB) throw bad(`box.memoryMb must be ${MIN_BOX_MB} or more: a smaller box may not have the memory to restore its thread's save.`);
     if (a.region !== undefined && !REGION.test(a.region)) throw bad('region must be a provider region code, like syd');
-    const old = serviceId ? await ctx.db.get(serviceId) : null;
+    const old = serviceId ? await ctx.db.get("runnerServices", serviceId) : null;
     if (serviceId && !old) throw new ConvexError({ kind: 'notFound', message: 'no such virtual runner' });
     if (old && old.provider !== a.provider) throw bad("A virtual runner's provider can't change: make a new one.");
     const limits: Limits = { ...(old?.limits ?? BOX_LIMITS) };
@@ -399,7 +443,7 @@ export const setRunnerService = mutation({
     const fields = { name: a.name.trim(), provider: a.provider, image: a.image ?? old?.image ?? defaultBoxImage(a.provider), box: { cpus: a.box.cpus, memoryMb: a.box.memoryMb }, limits };
     if (old) {
       // A region left out goes: the provider picks one.
-      await ctx.db.patch(old._id, { ...fields, region: a.region });
+      await ctx.db.patch("runnerServices", old._id, { ...fields, region: a.region });
       return old._id;
     }
     return await ctx.db.insert('runnerServices', { ...fields, ...(a.region !== undefined ? { region: a.region } : {}), createdAt: Date.now() });
@@ -447,7 +491,7 @@ export const beginThread = internalMutation({
   args: { ...startArgs, runnerId: v.string(), sealedThreadKey: v.string() },
   returns: v.object({ runnerId: v.string(), commandId: v.id('commands') }),
   handler: async (ctx, a) => {
-    const service = await ctx.db.get(a.serviceId);
+    const service = await ctx.db.get("runnerServices", a.serviceId);
     if (!service) throw new ConvexError({ kind: 'notFound', message: 'no such virtual runner' });
     // As relay.ts queueCommand checks a create's, before anything is written.
     const create = commandArgs('create', { text: a.text, model: a.model, effort: a.effort, permissionMode: a.permissionMode, plan: a.plan });
@@ -560,10 +604,10 @@ export async function newAttempt(ctx: MutationCtx, row: Doc<'boxes'>, bootHash: 
   if (!mayMintAttempt(row)) throw conflict(`A box of this thread (attempt ${row.workAttempts!.join(', ')}) may hold work newer than its save: it's resumed or waited on, not replaced.`);
   // The fence: the older box's key is revoked in this same step, so it can
   // make no work behind the new attempt (it had none since its save).
-  if (row.boxKeyHash !== undefined) await ctx.db.patch(row._id, { boxKeyHash: undefined, keyAttempt: undefined, keyMachineId: undefined, unsure: undefined });
+  if (row.boxKeyHash !== undefined) await ctx.db.patch("boxes", row._id, { boxKeyHash: undefined, keyAttempt: undefined, keyMachineId: undefined, unsure: undefined });
   const expiresAt = Date.now() + BOOT_MS;
   const attempt = (row.boxAttempt ?? 0) + 1;
-  await ctx.db.patch(row._id, { bootTokenHash: bootHash, bootExpiresAt: expiresAt, bootAttempt: attempt, boxAttempt: attempt });
+  await ctx.db.patch("boxes", row._id, { bootTokenHash: bootHash, bootExpiresAt: expiresAt, bootAttempt: attempt, boxAttempt: attempt });
   return { expiresAt, attempt };
 }
 
@@ -625,7 +669,7 @@ export const exchange = action({
     const peeked: Peeked | null = await ctx.runQuery(internal.boxes.peekBoot, { bootHash });
     if (!peeked) {
       // Used already: only by this very machine and key, asking again.
-      const again: Replayed | null = boxKeyHash !== undefined && machineId !== undefined ? await ctx.runQuery(internal.boxes.peekReplay, { bootHash, boxKeyHash, machineId }) : null;
+      const again: Replayed | null = boxKeyHash !== undefined && machineId !== undefined ? await ctx.runMutation(internal.boxes.peekReplay, { bootHash, boxKeyHash, machineId }) : null;
       if (!again) throw refusedBoot();
       let claudeToken: string;
       let threadKey: string;
@@ -671,7 +715,7 @@ async function cloudToken(ctx: QueryCtx, login: string): Promise<Doc<'cloudToken
  * made, while that key is still the thread's (not replaced, revoked or
  * dead) and the token would still have been good. Null for anything else.
  */
-export const peekReplay = internalQuery({
+export const peekReplay = internalMutation({
   args: { bootHash: v.string(), boxKeyHash: v.string(), machineId: v.string() },
   returns: v.union(
     v.null(),
@@ -681,9 +725,11 @@ export const peekReplay = internalQuery({
     const row = await ctx.db.query('boxes').withIndex('by_box_key', (q) => q.eq('boxKeyHash', boxKeyHash)).first();
     if (!row || row.boxKeyHash !== boxKeyHash || BOX_KEY_DEAD.includes(row.boxState.kind)) return null;
     if (!row.exchanged || row.exchanged.bootHash !== bootHash || row.exchanged.until <= Date.now() || row.keyMachineId !== machineId) return null;
-    const token = await cloudToken(ctx, row.login);
+    const token = await ctx.db.query('cloudTokens').withIndex('by_login', (q) => q.eq('login', row.login)).unique();
+    const grant = await tokenGrant(ctx, row, token);
+    if (!grant || grant.keyHash !== boxKeyHash || grant.grantState.kind !== 'issued' || !grant.sealedToken) return null;
     const url = row.save ? await ctx.storage.getUrl(row.save.storageId) : null;
-    return { login: row.login, threadId: row.threadId, sealedToken: token.sealed, sealedThreadKey: row.sealedThreadKey, tokenSetAt: token.setAt, runnerId: row.runnerId, repo: row.repo, save: row.save && url ? { url, at: row.save.at, bytes: row.save.bytes } : null };
+    return { login: row.login, threadId: row.threadId, sealedToken: grant.sealedToken, sealedThreadKey: row.sealedThreadKey, tokenSetAt: grant.grantState.setAt, runnerId: row.runnerId, repo: row.repo, save: row.save && url ? { url, at: row.save.at, bytes: row.save.bytes } : null };
   },
 });
 
@@ -728,7 +774,12 @@ export const claimBoot = internalMutation({
     const until = row.bootExpiresAt ?? Date.now();
     const r = await boxMachine.send(ctx, row._id, { type: 'READY' });
     if (r.status !== 'done') return null;
-    await ctx.db.patch(row._id, { boxKeyHash, keyMachineId: machineId, unsure: undefined, exchanged: { bootHash, until } });
+    await ctx.db.patch("boxes", row._id, { boxKeyHash, keyMachineId: machineId, unsure: undefined, exchanged: { bootHash, until } });
+    const grant = await ctx.db.query('boxTokenGrants').withIndex('by_box', (q) => q.eq('boxId', row._id)).unique();
+    if (grant) {
+      await ctx.db.patch("boxTokenGrants", grant._id, { keyHash: boxKeyHash, sealedToken: token.sealed });
+      await grantMachine.send(ctx, grant._id, { type: 'ISSUE', setAt: token.setAt });
+    } else await grantMachine.create(ctx, { boxId: row._id, login: row.login, keyHash: boxKeyHash, sealedToken: token.sealed } as never, { type: 'ISSUE', setAt: token.setAt });
     const url = row.save ? await ctx.storage.getUrl(row.save.storageId) : null;
     return {
       runnerId: row.runnerId,
@@ -753,7 +804,7 @@ export const boxSaved = mutation({
     const caller = await runnerAuth(ctx, key, 'boxSaved');
     if (caller.owner || !caller.box) throw forbidden("save a box's thread: only the box's own key can");
     if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_RUNNER_UPLOAD_BYTES) throw bad(`bytes must be a whole number from 1 to ${MAX_RUNNER_UPLOAD_BYTES}`);
-    const row = (await ctx.db.get(caller.box.id as Id<'boxes'>))!;
+    const row = (await ctx.db.get("boxes", caller.box.id as Id<'boxes'>))!;
     if (row.save?.storageId === storageId) return null;
     const owner = await ctx.db.query('storageOwners').withIndex('by_storageId', (q) => q.eq('storageId', storageId)).first();
     // Its own upload, and nothing yet: a file already on a picture isn't a save.
@@ -761,7 +812,7 @@ export const boxSaved = mutation({
     const old = row.save;
     const r = await boxMachine.send(ctx, row._id, { type: 'SAVED', storageId, bytes });
     if (r.status !== 'done') throw conflict(`The box is ${row.boxState.kind}, so it can't save now.`);
-    await ctx.db.patch(owner._id, { attachedAt: Date.now() });
+    await ctx.db.patch("storageOwners", owner._id, { attachedAt: Date.now() });
     if (old) await deleteIfUnused(ctx, old.storageId);
     return null;
   },
@@ -868,11 +919,11 @@ export const wakeFor = machines.internalMutation({
     const why = await wakeBlocked(ctx, row);
     // Past its hours it waits for tomorrow's, apart from those waiting for room (wakeWaiting).
     if (why === 'hours') {
-      if (row.waitsForHours === undefined) await ctx.db.patch(row._id, { waitsForHours: day(Date.now()) });
+      if (row.waitsForHours === undefined) await ctx.db.patch("boxes", row._id, { waitsForHours: day(Date.now()) });
       return false;
     }
     if (why === 'room') {
-      if (row.wantsWakeAt === undefined) await ctx.db.patch(row._id, { wantsWakeAt: Date.now() });
+      if (row.wantsWakeAt === undefined) await ctx.db.patch("boxes", row._id, { wantsWakeAt: Date.now() });
       return false;
     }
     return (await boxMachine.send(machineCtx, row._id, { type: 'WAKE' })).status === 'done';
@@ -887,7 +938,7 @@ export const wakeFor = machines.internalMutation({
  * of its day's hours left (or its thread moving), and room under maxBoxes.
  */
 async function wakeBlocked(ctx: QueryCtx, row: Doc<'boxes'>): Promise<'hours' | 'room' | null> {
-  const limits = (await ctx.db.get(row.serviceId))?.limits ?? BOX_LIMITS;
+  const limits = (await ctx.db.get("runnerServices", row.serviceId))?.limits ?? BOX_LIMITS;
   const s = row.boxState;
   if (s.kind === 'saving' && s.capped) return overHours(row, limits.maxAwakeHoursPerDay) ? 'hours' : null;
   if (s.kind === 'saving' || s.kind === 'archiving') return null;
@@ -942,7 +993,7 @@ export const wakePastHours = mutation({
   handler: async (ctx, { key, threadId }) => {
     await runnerAuth(ctx, key, 'wakePastHours');
     const row = await boxOf(ctx, threadId);
-    await ctx.db.patch(row._id, { hoursWaivedOn: day(Date.now()), waitsForHours: undefined });
+    await ctx.db.patch("boxes", row._id, { hoursWaivedOn: day(Date.now()), waitsForHours: undefined });
     await ctx.scheduler.runAfter(0, internal.boxes.wakeFor, { runnerId: row.runnerId });
     return null;
   },
@@ -963,24 +1014,24 @@ export const wakeWaiting = machines.internalMutation({
     const ctx = machineCtx as unknown as MutationCtx;
     const now = Date.now();
     for (const row of await ctx.db.query('boxes').withIndex('by_service_hours', (q) => q.eq('serviceId', serviceId).gt('waitsForHours', '').lt('waitsForHours', day(now))).take(WAKE_BATCH)) {
-      await ctx.db.patch(row._id, { waitsForHours: undefined, ...(row.wantsWakeAt === undefined ? { wantsWakeAt: now } : {}) });
+      await ctx.db.patch("boxes", row._id, { waitsForHours: undefined, ...(row.wantsWakeAt === undefined ? { wantsWakeAt: now } : {}) });
     }
     let woken = 0;
     for (const row of await ctx.db.query('boxes').withIndex('by_service_wants', (q) => q.eq('serviceId', serviceId).gt('wantsWakeAt', 0)).take(WAKE_BATCH)) {
       if (!WAKES_FROM.includes(row.boxState.kind) || row.boxState.kind === 'expired') {
-        await ctx.db.patch(row._id, { wantsWakeAt: undefined });
+        await ctx.db.patch("boxes", row._id, { wantsWakeAt: undefined });
         continue;
       }
       const why = await wakeBlocked(ctx, row);
       if (why === 'room') break;
       if (why === 'hours') {
         // Back past its hours (its waiver ran out): to the other queue.
-        await ctx.db.patch(row._id, { wantsWakeAt: undefined, waitsForHours: day(now) });
+        await ctx.db.patch("boxes", row._id, { wantsWakeAt: undefined, waitsForHours: day(now) });
         continue;
       }
       // wake clears wantsWakeAt.
       if ((await boxMachine.send(machineCtx, row._id, { type: 'WAKE' })).status === 'done') woken++;
-      else await ctx.db.patch(row._id, { wantsWakeAt: undefined });
+      else await ctx.db.patch("boxes", row._id, { wantsWakeAt: undefined });
     }
     // Then threads that have never run, waiting for room to start, oldest first.
     const max = (await ctx.db.get('runnerServices', serviceId))?.limits.maxBoxes ?? BOX_LIMITS.maxBoxes;
@@ -1027,12 +1078,12 @@ export const failExpired = internalMutation({
 });
 
 async function failExpiredRun(ctx: MutationCtx, runnerId: string, commandId?: Id<'commands'>): Promise<void> {
-  const first = commandId ? await ctx.db.get(commandId) : null;
+  const first = commandId ? await ctx.db.get("commands", commandId) : null;
   const batch = await ctx.db.query('commands').withIndex('by_runner_state', (q) => q.eq('runnerId', runnerId).eq('state', 'pending')).take(FAIL_BATCH + 1);
   const todo = [...(first && first.runnerId === runnerId && first.state === 'pending' ? [first] : []), ...batch.filter((c) => c._id !== commandId)].slice(0, FAIL_BATCH);
   for (const c of todo) {
     await commandMachine.send(ctx, c._id, { type: 'THREAD_ELSEWHERE' });
-    await ctx.db.patch(c._id, { args: finishedArgs(c.args), note: EXPIRED_NOTE });
+    await ctx.db.patch("commands", c._id, { args: finishedArgs(c.args), note: EXPIRED_NOTE });
     await endCommandFiles(ctx, c._id);
   }
   if (batch.length > todo.length || batch.length > FAIL_BATCH) await ctx.scheduler.runAfter(0, internal.boxes.failExpired, { runnerId });

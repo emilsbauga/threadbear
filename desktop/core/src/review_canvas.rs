@@ -1,4 +1,4 @@
-//! The review as a canvas (the `reviewCanvas` experiment): where everything
+//! The review as a canvas: where everything
 //! sits on the board, the tour's stops, the camera, and the hand-drawn shapes
 //! of the agent's notes and Mike's own marks.
 //!

@@ -63,6 +63,7 @@ pub struct Threadbear {
     /// Agent Archive in the sidebar's search, and a session open in the
     /// thread's place (archive_search.rs).
     pub(crate) archive: crate::archive_search::ArchiveSearch,
+    pub(crate) coordinators: crate::coordinators::CoordinatorsState,
 
     // The window shell (shell.rs, rails.rs, header.rs).
     /// Holds the keyboard when nothing in the window has it (no thread open,
@@ -194,15 +195,14 @@ pub struct Threadbear {
     pub(crate) librarian: crate::librarian::LibrarianState,
     /// The Recipes view (recipes.rs), with the `recipes` experiment on.
     pub(crate) recipes: crate::recipes::RecipesState,
-    /// The Canvas page (thread_canvas.rs).
-    pub(crate) thread_canvas: crate::thread_canvas::CanvasPage,
     /// What the Librarian page's picture says when it's poked.
     pub(crate) librarian_pokes: crate::home_page::Pokes,
     /// The Usage panel's numbers and the honey pot (usage.rs).
     pub(crate) usage: crate::usage::UsageState,
-    /// The runner's settings (`settings.get`, then `settings.updated`), as
-    /// they came: the Librarian page's Runs on reads them, Settings will.
-    pub(crate) runner_settings: Option<Value>,
+    /// The runner's settings (`settings.get`, `settings.update`, and
+    /// `settings.updated`), with optimistic local edits serialized behind one
+    /// in-flight update at a time.
+    pub(crate) runner_settings_state: threadbear_core::runner_settings::RunnerSettingsState,
     /// The providers whose logins can run small jobs (titles, the
     /// librarian), from hello's `providers` (`ProviderInfo.smallJobs`).
     pub(crate) small_jobs: Vec<String>,
@@ -245,10 +245,7 @@ pub struct Threadbear {
     pub(crate) runner_checkout: Option<String>,
     /// The release's checkout on a fork (`updates.upstream.checkout`).
     pub(crate) upstream_checkout: Option<String>,
-    /// The last settings change the runner turned down (`settingsError`).
-    pub(crate) settings_error: Option<String>,
-    /// A runner from before `settings.get`.
-    pub(crate) settings_unsupported: bool,
+
     /// Standing instructions (`instructions.get`), None from a runner without them.
     pub(crate) standing_instructions:
         Option<threadbear_core::runner_settings::StandingInstructions>,
@@ -408,7 +405,7 @@ impl Threadbear {
         crate::terminal::install(&cx.entity(), cx);
         // A key with ⌘ held puts the keys shown beside the buttons away.
         crate::key_hints::install(cx.entity().downgrade(), cx);
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search threads"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search threads (⌘P)"));
         // The filter is worked out at render, so a change only needs a redraw.
         let searching = cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
@@ -522,6 +519,7 @@ impl Threadbear {
 
         let mut sidebar = crate::sidebar::SidebarState::new(cx);
         sidebar.order = settings.inbox_order();
+        sidebar.section_order = settings.section_order();
         let scheduled = crate::scheduled::ScheduledState::new(
             settings.saved.collapsed_schedule_sections.as_deref(),
         );
@@ -530,18 +528,11 @@ impl Threadbear {
             settings.saved.usage_show_model_weeks,
         );
         let folded: HashSet<&'static str> = match &settings.saved.collapsed_sections {
-            // The section keys are the Swift enum's raw values.
-            Some(saved) => [
-                "starred",
-                "backlog",
-                "inbox",
-                "running",
-                "hibernating",
-                "archived",
-            ]
-            .into_iter()
-            .filter(|k| saved.iter().any(|s| s == k))
-            .collect(),
+            // The section keys are the Swift enum's raw values (plus coordinators).
+            Some(saved) => threadbear_core::section_drag::DEFAULT_SECTION_ORDER
+                .into_iter()
+                .filter(|k| saved.iter().any(|s| s == k))
+                .collect(),
             None => HashSet::from(["hibernating", "archived"]),
         };
         let mut this = Threadbear {
@@ -559,6 +550,7 @@ impl Threadbear {
             kept: Default::default(),
             search,
             archive: Default::default(),
+            coordinators: Default::default(),
             folded,
             composers: HashMap::new(),
             drafts: crate::drafts::Drafts::load(
@@ -631,10 +623,9 @@ impl Threadbear {
             restoring_place: false,
             librarian: crate::librarian::LibrarianState::new(),
             recipes: crate::recipes::RecipesState::new(),
-            thread_canvas: Default::default(),
             librarian_pokes: crate::home_page::Pokes::new(crate::home_page::Art::Librarian),
             usage,
-            runner_settings: None,
+            runner_settings_state: Default::default(),
             small_jobs: vec!["claude".into()],
             settings_window: None,
             main_window: window.window_handle(),
@@ -651,8 +642,7 @@ impl Threadbear {
             pins_fetched: HashMap::new(),
             runner_checkout: None,
             upstream_checkout: None,
-            settings_error: None,
-            settings_unsupported: false,
+
             standing_instructions: None,
             runner_version: String::new(),
             upstream_on: false,
@@ -830,9 +820,10 @@ impl Threadbear {
         // ⌘-Tab away lets ⌘ go in the other app, so this one never hears it.
         if !active {
             self.hints_reset(cx);
-            // A swipe's lift goes to the app in front now (swipe_nav.rs, row_swipe.rs).
+            // A swipe's lift goes to the app in front now (swipe_nav.rs, row_swipe.rs, section_drag.rs).
             self.cancel_page_swipe(cx);
             self.cancel_row_swipe(cx);
+            self.cancel_section_drag(cx);
         }
         crate::activity::window_active(window, active, cx);
         if let (true, Some(pane)) = (crate::thread::is_looking(), self.pane.clone()) {
@@ -1060,10 +1051,22 @@ impl Threadbear {
                 self.advance_connection(event, cx);
                 // Each time it's connected, the whole list again, and the
                 // open thread read again: thread.updated only says what changed.
+                if !connected
+                    && self
+                        .runner_settings_state
+                        .on_disconnected("The runner disconnected before your change was saved.")
+                {
+                    self.load_coordinators(cx);
+                }
                 if connected {
                     self.load_list(cx);
                     self.refresh_restart(cx);
                     self.load_projects(cx);
+                    self.runner_settings_state
+                        .on_connected("The runner disconnected before your change was saved.");
+                    self.coordinators.generation += 1;
+                    self.coordinators.loading = false;
+                    self.load_coordinators(cx);
                     self.load_runner_settings(cx);
                     self.load_schedules(cx);
                     self.load_remote(cx);
@@ -1200,7 +1203,11 @@ impl Threadbear {
                     ))
                 }
                 "recipes.updated" => self.load_recipes(cx),
-                "settings.updated" => self.runner_settings = Some(params["settings"].clone()),
+                "settings.updated" => {
+                    self.runner_settings_state
+                        .on_updated(params["settings"].clone());
+                    self.load_coordinators(cx);
+                }
                 // A login appearing or going, its models once asked, its
                 // usage; and the pools after a save: both replace `hello`'s.
                 "accounts.updated" => {
@@ -1239,6 +1246,11 @@ impl Threadbear {
                             &params["instructions"],
                         ),
                     )
+                }
+                "coordinators.updated" => {
+                    if self.coordinators_on() {
+                        self.receive_coordinators(&params["coordinators"]);
+                    }
                 }
                 "projects.updated" => {
                     self.librarian.projects_made =
@@ -1414,8 +1426,6 @@ impl Threadbear {
                         }
                         let before = (*this.threads).clone();
                         let cleanup = list.apply(&mut *this.threads);
-                        // The Canvas page reads the board only from a whole list.
-                        this.thread_canvas.listed = true;
                         // A move just picked stays shown over the new list.
                         let now = crate::now_ms();
                         for id in this.starting_moves.threads() {
@@ -1513,64 +1523,102 @@ impl Threadbear {
         .detach();
     }
 
+    pub(crate) fn runner_settings(&self) -> Option<&Value> {
+        self.runner_settings_state.displayed()
+    }
+
+    pub(crate) fn settings_error(&self) -> Option<&str> {
+        self.runner_settings_state.error()
+    }
+
+    pub(crate) fn settings_unsupported(&self) -> bool {
+        self.runner_settings_state.unsupported()
+    }
+
     /// The runner's settings (`settings.get`), for the pages that show some
     /// of them (the Librarian's Runs on), and Settings once it's here.
     pub(crate) fn load_runner_settings(&mut self, cx: &mut Context<Self>) {
+        let token = self.runner_settings_state.begin_get();
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
             let res = call(client, "settings.get", json!({})).await;
             this.update(cx, |this, cx| {
-                match res {
-                    Ok(v) => {
-                        this.runner_settings = Some(v["settings"].clone());
-                        this.settings_unsupported = false;
-                    }
+                let applied = match res {
+                    Ok(v) => this
+                        .runner_settings_state
+                        .on_get_ok(token, v["settings"].clone()),
                     // A runner from before settings.
                     Err(e) if e.code == -32601 => {
-                        this.settings_unsupported = true;
-                        this.runner_settings = None;
+                        this.runner_settings_state.on_get_unsupported(token)
                     }
-                    Err(_) => {}
+                    Err(_) => false,
+                };
+                if applied {
+                    this.load_coordinators(cx);
+                    cx.notify();
                 }
-                cx.notify();
             })
             .ok();
         })
         .detach();
     }
 
-    /// `updateSettings`: shown at once; the runner's answer (or its error,
-    /// which puts it back) has the last word. `change` is what
-    /// `settings.update` takes.
+    /// `updateSettings`: shown at once; queued behind any in-flight update so
+    /// the runner applies edits in order and an earlier reply cannot overwrite
+    /// a newer local change. `change` is what `settings.update` takes.
     pub(crate) fn update_runner_settings(&mut self, change: Value, cx: &mut Context<Self>) {
-        let before = self.runner_settings.clone();
-        if let Some(settings) = self.runner_settings.as_mut() {
-            merge_json(settings, &change);
+        let next = self.runner_settings_state.queue_update(change);
+        if !self.coordinators_on() {
+            self.load_coordinators(cx);
         }
-        let guess = self.runner_settings.clone();
         cx.notify();
+        if let Some((seq, change)) = next {
+            self.send_runner_settings_update(seq, change, cx);
+        }
+    }
+
+    fn send_runner_settings_update(&mut self, seq: u64, change: Value, cx: &mut Context<Self>) {
+        use threadbear_core::runner_settings::{UpdateErrorKind, UpdateOutcome};
+
         let client = self.client.clone();
         cx.spawn(async move |this, cx| {
             let res = call(client, "settings.update", change).await;
             this.update(cx, |this, cx| {
-                match res {
-                    Ok(v) => {
-                        this.runner_settings = Some(v["settings"].clone());
-                        this.settings_error = None;
-                    }
+                let outcome = match res {
+                    Ok(v) => this
+                        .runner_settings_state
+                        .on_update_ok(seq, v["settings"].clone()),
                     Err(e) => {
-                        // Put back only if nothing newer has come since
-                        // (`settings.updated` from another window), and ask
-                        // again either way: the runner has the last word.
-                        if this.runner_settings == guess {
-                            this.runner_settings = before;
-                        }
-                        this.load_runner_settings(cx);
-                        // Under the form in Settings (`SettingsErrorRow`).
-                        this.settings_error = Some(e.message);
+                        let kind = if !this.connected()
+                            || matches!(
+                                e.code,
+                                threadbear_client::runner::NOT_CONNECTED
+                                    | threadbear_client::runner::CLOSED
+                            ) {
+                            UpdateErrorKind::Disconnected
+                        } else if e.code == threadbear_client::runner::TIMED_OUT {
+                            UpdateErrorKind::TimedOut
+                        } else {
+                            UpdateErrorKind::Rejected
+                        };
+                        this.runner_settings_state
+                            .on_update_err(seq, e.message, kind)
                     }
+                };
+                if let UpdateOutcome::Applied {
+                    next,
+                    should_reload,
+                } = outcome
+                {
+                    if let Some((next_seq, next_change)) = next {
+                        this.send_runner_settings_update(next_seq, next_change, cx);
+                    }
+                    if should_reload {
+                        this.load_runner_settings(cx);
+                    }
+                    this.load_coordinators(cx);
+                    cx.notify();
                 }
-                cx.notify();
             })
             .ok();
         })
@@ -1675,7 +1723,13 @@ impl Threadbear {
     }
 
     pub(crate) fn open(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let project = self.coordinator_project_for_thread(&id);
         self.open_with(id, None, window, cx);
+        if let Some(project) = project {
+            self.projects.open = Some(project);
+            self.show_pane(crate::shell::HIGHLIGHTS, cx);
+            cx.notify();
+        }
     }
 
     /// `open`, with the pane of a thread brought back from a panel of its own
@@ -1695,10 +1749,6 @@ impl Threadbear {
         } else {
             self.opening.take()
         };
-        // A thread opened from anywhere but the Canvas page takes the page down.
-        if !self.thread_canvas.opening {
-            self.hide_thread_canvas();
-        }
         // A thread (its own row, say) in place of one of its sub-agents.
         self.close_subagent(cx);
         // A thread in place of an archived session (archive_search.rs).
@@ -2110,6 +2160,7 @@ impl Threadbear {
             // A project's page in place of the thread, and the Projects page's
             // cards while it's showing (projects.rs, projects_page.rs).
             "project": self.project_page_dump(),
+            "coordinator": self.coordinator_dump(cx),
             "projectCards": self.project_cards_dump(),
             "banner": self.banner_dump(),
             "limit": self.limit_dump(cx),
@@ -2227,7 +2278,6 @@ impl Threadbear {
             .is_some_and(|(_, _, moving)| moving)
             || self.flight.in_flight()
             || crate::open_motion::moving()
-            || self.thread_canvas.in_motion()
     }
 
     /// The composer's part of the dump (AppDump.composer).
@@ -2312,6 +2362,10 @@ impl Threadbear {
         out
     }
 
+    pub(crate) fn invalidate_coordinator_sections(&self) {
+        self.sections_cache.borrow_mut().take();
+    }
+
     /// The sections with the search applied, as they're drawn.
     /// The sidebar's sections as they stand. Worked out again only when the
     /// threads, the search, the order or the schedules changed, or a snooze
@@ -2332,13 +2386,16 @@ impl Threadbear {
         // Nested threads (nested.rs) only with the experiment on, and not
         // while searching: a search lists what it found, each on its own row.
         let nested = query.is_empty() && self.nested_threads_on();
+        let coordinators_on = self.coordinators_on();
         if let Some(c) = self.sections_cache.borrow().as_ref() {
             if c.changes == changes
                 && c.outbox == outbox
                 && c.query == query
                 && c.order == self.sidebar.order
+                && c.section_order == self.sidebar.section_order
                 && c.wakes == wakes
                 && c.nested == nested
+                && c.coordinators == coordinators_on
                 && c.from <= now
                 && now < c.until
             {
@@ -2365,10 +2422,20 @@ impl Threadbear {
         let nesting =
             nested.then(|| Rc::new(threadbear_core::nested::Nesting::build(all(), now, &wakes)));
         let shown = all().filter(|t| query.is_empty() || inbox::matches(t, &query));
-        let sections = Rc::new(match &nesting {
+        let sections = match &nesting {
             Some(n) => inbox::sections_nested(shown, now, self.sidebar.order, &wakes, n),
             None => inbox::sections_ordered(shown, now, self.sidebar.order, &wakes),
-        });
+        };
+        let coordinators = if coordinators_on {
+            self.coordinators.list.as_slice()
+        } else {
+            &[]
+        };
+        let sections = threadbear_core::coordinators::sections(sections, coordinators);
+        let sections = Rc::new(threadbear_core::section_drag::reorder_sections(
+            sections,
+            &self.sidebar.section_order,
+        ));
         // Until the next snooze runs out, when a thread moves out of
         // Hibernating; nothing else in the sorting goes by the clock.
         let until = self
@@ -2384,8 +2451,10 @@ impl Threadbear {
             outbox,
             query,
             order: self.sidebar.order,
+            section_order: self.sidebar.section_order.clone(),
             wakes,
             nested,
+            coordinators: coordinators_on,
             from: now,
             until,
             sections: sections.clone(),
@@ -2533,43 +2602,6 @@ impl Threadbear {
     }
 }
 
-/// `change`'s fields written over `into`'s, objects within objects too, as a
-/// `settings.update` changes only what it names.
-fn merge_json(into: &mut Value, change: &Value) {
-    match (into, change) {
-        // `experiments` is a list of { id, on } but a change names them by
-        // id ({ "experiments": { id: on } }). Replacing the list with that
-        // emptied Experiments until the runner answered, so the page got
-        // shorter and the pane lost its place (21 Nov).
-        (Value::Array(list), Value::Object(change))
-            if list
-                .iter()
-                .all(|item| item.get("id").is_some_and(Value::is_string)) =>
-        {
-            for item in list.iter_mut() {
-                if let Some(on) = item["id"].as_str().and_then(|id| change.get(id)) {
-                    item["on"] = on.clone();
-                }
-            }
-        }
-        (Value::Object(into), Value::Object(change)) => {
-            for (key, value) in change {
-                match into.get_mut(key) {
-                    Some(existing)
-                        if (existing.is_object() || existing.is_array()) && value.is_object() =>
-                    {
-                        merge_json(existing, value)
-                    }
-                    _ => {
-                        into.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-        }
-        (into, change) => *into = change.clone(),
-    }
-}
-
 pub(crate) fn project_list(projects: &Value) -> Vec<(String, String, bool)> {
     projects.as_array().map_or_else(Vec::new, |list| {
         list.iter()
@@ -2640,6 +2672,7 @@ struct SectionsCache {
     outbox: u64,
     query: String,
     order: inbox::InboxOrder,
+    section_order: Vec<&'static str>,
     wakes: HashMap<String, inbox::Wake>,
     /// The clock it was worked out at, and when it next needs to be again.
     from: i64,
@@ -2647,13 +2680,14 @@ struct SectionsCache {
     sections: Rc<Vec<inbox::Section<Arc<ThreadSummary>>>>,
     /// Worked out with nested threads, and which nest under which.
     nested: bool,
+    coordinators: bool,
     nesting: Option<Rc<threadbear_core::nested::Nesting>>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::merge_json;
     use serde_json::json;
+    use threadbear_core::runner_settings::merge_json;
 
     #[test]
     fn an_experiment_switch_keeps_the_list() {

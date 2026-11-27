@@ -98,3 +98,14 @@ Feature: Scheduled messages
     When I click "Scheduled" in the activity bar
     And I open the schedule "Weekly dependency check" in the editor
     Then the schedule editor is open on "Look for outdated npm and Swift packages in ~/code and list the ones worth updating." repeating on "0 10 * * 1"
+
+  # Mike's daily brief (25 Nov): each morning's thread should land in
+  # Starred, above the Inbox, without starring it by hand.
+  @schedule.editor @swift-pending
+  Scenario: A schedule that starts a new thread each time can star each one
+    When I click "Scheduled" in the activity bar
+    And I open the schedule "Weekly dependency check" in the editor
+    Then the schedule editor doesn't star each new thread
+    When I tick "Star each new thread" in the schedule editor and save it
+    And I open the schedule "Weekly dependency check" in the editor
+    Then the schedule editor stars each new thread

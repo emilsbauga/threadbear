@@ -616,7 +616,7 @@ test('a thread whose login has no cloud token waits for one: no box, its create 
   assert.deepEqual(pending.map((c: { kind: string }) => c.kind), ['create', 'send']);
 });
 
-test("a login whose cloud token was refused starts its next thread waiting; a new token releases it, and an old refusal can't kill the new one", async () => {
+test("a box refusal leaves unrelated starts alone and an old refusal cannot quarantine its replacement", async () => {
   const s = await setup();
   await s.start('T2');
   await s.run();
@@ -624,12 +624,11 @@ test("a login whose cloud token was refused starts its next thread waiting; a ne
   const firstSetAt = got.tokenSetAt;
   assert.equal(typeof firstSetAt, 'number');
   await call(s.ctx, boxes.tokenRefused, { key: got.boxKey, setAt: firstSetAt });
-  assert.equal(s.rows('cloudTokens').find((t) => t.login === LOGIN)!.tokenState.kind, 'dead');
+  assert.equal(s.rows('cloudTokens').find((t) => t.login === LOGIN)!.tokenState.kind, 'valid');
   await startAs(s, 'T3', LOGIN);
-  assert.equal(s.stateOf('T3'), 'needsToken');
-  assert.deepEqual(await s.run(), []);
+  await s.run();
   await setFor(s, LOGIN);
-  assert.deepEqual(await s.run(), ['releaseForToken', 'createBox']);
+  await s.run();
   assert.equal(s.stateOf('T3'), 'starting');
   // T2's box still holds the old token: its refusal again leaves the new one valid.
   await call(s.ctx, boxes.tokenRefused, { key: got.boxKey, setAt: firstSetAt });
@@ -650,9 +649,10 @@ test('a box fetches its login\'s new token only while it\'s valid, on its own ke
   assert.equal(now.setAt, got.tokenSetAt);
   assert.equal(now.token, got.claudeToken);
   await call(s.ctx, boxes.tokenRefused, { key: got.boxKey, setAt: got.tokenSetAt });
-  assert.equal(await fetch(got.boxKey), null, 'dead: nothing to fetch');
+  assert.equal(await fetch(got.boxKey), null, 'quarantined: nothing to fetch');
   const fresh = `sk-ant-oat01-${'N'.repeat(60)}`;
   await setFor(s, LOGIN, fresh);
+  await s.run();
   // A box that has saved holds no work; reading its token doesn't change that.
   s.rowOf('T2').workAttempts = [];
   const after = await fetch(got.boxKey);
@@ -772,7 +772,7 @@ test('setting a token starts only as many waiting threads as there is room for; 
 });
 
 // Codex's second look at slice 5, 1: a thread waiting for room started on a token refused meanwhile.
-test("a thread waiting for room whose login's token was refused meanwhile goes back to waiting for a token, using no room", async () => {
+test("a thread waiting for room still starts when another box reports a refusal", async () => {
   const s = await setup();
   await setLimits(s, { maxBoxes: 2 });
   for (const id of ['T2', 'T3']) await startAs(s, id, OTHER_LOGIN);
@@ -781,14 +781,14 @@ test("a thread waiting for room whose login's token was refused meanwhile goes b
   assert.deepEqual(['T2', 'T3'].map(s.stateOf), ['starting', 'waitingForRoom']);
   const got = await s.boot('T2', s.fly.live()[0]!.id);
   await call(s.ctx, boxes.tokenRefused, { key: got.boxKey, setAt: got.tokenSetAt });
-  // Room for T3 now, but its token is dead.
+  // A report from T2 does not stop T3 using the login’s token.
   await setLimits(s, { maxBoxes: 3 });
   await call(s.ctx, boxes.wakeWaiting, { serviceId: s.serviceId });
   const ran = await s.run();
-  assert.equal(s.stateOf('T3'), 'needsToken');
-  assert.equal(ran.filter((n) => n === 'createBox').length, 0, 'no machine for a dead token');
+  assert.equal(s.stateOf('T3'), 'starting');
+  assert.equal(ran.filter((n) => n === 'createBox').length, 1);
   const list = (await call(s.ctx, sync.otherRunnersList, { key: OWNER, runnerId: 'mainmac00001' })) as { runnerId: string; box?: Record<string, unknown> }[];
-  assert.equal(list.find((r) => r.runnerId === s.rowOf('T3').runnerId)!.box!.token, 'dead');
+  assert.equal(list.find((r) => r.runnerId === s.rowOf('T3').runnerId)!.box!.token, undefined);
   // A new token starts it.
   await setFor(s, OTHER_LOGIN, `sk-ant-oat01-${'Q'.repeat(60)}`);
   await s.run();

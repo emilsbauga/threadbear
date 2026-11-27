@@ -1,0 +1,139 @@
+{
+  "release": "2026-11-25",
+  "highlights": [
+    {
+      "kind": "added",
+      "title": "Find in a thread",
+      "text": "Press ⌘F (Edit > Find in Thread) to search the open thread's words. Matches are marked in yellow, and Return steps through them.",
+      "media": {
+        "type": "clip",
+        "src": "find-in-thread.mp4",
+        "poster": "find-in-thread.webp",
+        "width": 1080,
+        "height": 1300,
+        "alt": "A thread with a reply holding a TypeScript code block. ⌘F opens a find bar above the thread, attempt is typed in, and each match turns yellow while Return steps from 1 of 4 to 4 of 4, the picked one brighter."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Type # to link a thread",
+      "text": "Type # in the message box, pick another thread from the list, and it goes in as a chip the agent can read.",
+      "credit": "Tyler Lusk",
+      "media": {
+        "type": "clip",
+        "src": "link-thread.mp4",
+        "poster": "link-thread.webp",
+        "width": 1080,
+        "height": 740,
+        "alt": "Typing Use the same retry as # in the message box brings up a list of threads over it. Typing upl narrows it to Make uploads resume after a crash, and Return puts that thread in the message as a chip."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Coloured code blocks",
+      "text": "Code in replies is coloured by its language, with a bar on top naming it and a Copy button. On the Mac, iPhone and Android.",
+      "media": {
+        "type": "image",
+        "src": "code-blocks.webp",
+        "width": 1010,
+        "height": 780,
+        "alt": "A reply's TypeScript code block with keywords, types and numbers in different colours, a bar on top saying TypeScript with a copy button, and a pull request link under it."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Sounds play in the side pane",
+      "text": "Open a WAV, MP3, M4A or other sound file and it plays right in the pane. Agents can put sounds in a design review too, to compare music or effects.",
+      "media": {
+        "type": "clip",
+        "src": "sound-pane.mp4",
+        "poster": "sound-pane.webp",
+        "width": 1720,
+        "height": 1640,
+        "alt": "A thread opens standup-note.wav in the pane beside it, which shows a rounded player bar with play, a position slider and the time, and it plays."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Send it later from Send",
+      "text": "The arrow beside Send offers tonight at 9 pm, tomorrow at 9 am, or when your tokens reset, each opening the schedule with that time filled in.",
+      "credit": "Ian Macartney",
+      "media": {
+        "type": "clip",
+        "src": "send-later.mp4",
+        "poster": "send-later.webp",
+        "width": 1240,
+        "height": 1520,
+        "alt": "A message is typed, then the arrow beside Send opens a menu with Send tonight at 9 pm, Send tomorrow at 9 am, Send when tokens reset and Schedule. Picking tomorrow opens Schedule a message with the message and 26 Nov at 9:00 am filled in."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Pull requests open beside the thread",
+      "text": "Click a GitHub pull request link and it opens in a tab beside the thread, with its checks, changed files and Review and Merge buttons. Needs the gh command line tool.",
+      "media": {
+        "type": "clip",
+        "src": "pr-tab.mp4",
+        "poster": "pr-tab.webp",
+        "width": 1720,
+        "height": 1640,
+        "alt": "Clicking a pull request link in a reply opens it as a tab beside the thread, with Overview, Diff and Checks, Review and Merge buttons, its branch, status, checks with Windows failed, its description and a comment box."
+      }
+    },
+    {
+      "kind": "added",
+      "title": "Hide the sidebar panels with ⇧⌘B",
+      "text": "⇧⌘B tucks away Runners, Connectors, Updates, Usage and Setup under the threads list, and brings the same ones back. ⇧⌘A attaches a picture.",
+      "credit": "Wayne Sutton",
+      "media": {
+        "type": "clip",
+        "src": "sidebar-panels.mp4",
+        "poster": "sidebar-panels.webp",
+        "width": 760,
+        "height": 1640,
+        "alt": "The threads list with the Usage and Updates panels docked under it. ⇧⌘B tucks them away so the list runs the full height, and pressing it again brings both back."
+      }
+    }
+  ],
+  "added": [
+    "New keys: ⌘` opens the Terminal, ⌘B shows the threads, ⇧⌘P opens Open Anything and ⌘L jumps to the message box.",
+    "Threads say who hibernated, woke, archived or brought them back, and when, in a grey line.",
+    "Gemini's plan usage shows in the Usage panel, like Claude's and Codex's.",
+    {
+      "text": "Share a thread by link from its menu on iPhone and Android.",
+      "credit": "Ville Lahdenvuo-Malta"
+    },
+    "A new Claude thread's agent starts while you write the first message, so the first reply comes a little sooner."
+  ],
+  "changed": [
+    {
+      "text": "An archived thread from another Mac has Delete greyed out, and its tip says which Mac to delete it on, instead of failing after you confirm.",
+      "credit": "Pat Dubois"
+    },
+    "The iPhone, Android and the website put each thread under the same heading the Mac does, as the runner now decides it for all of them.",
+    "Extra Codex logins get your usual instructions, hooks, skills and settings from your main Codex login.",
+    "Messages you send while a thread is compacting go in as soon as it's done, not after the whole turn.",
+    {
+      "text": "Early in a week, Usage's forecast goes by last week's pace instead of guessing from a busy first hour.",
+      "credit": "Ville Lahdenvuo-Malta"
+    },
+    {
+      "text": "A new install sets up its own Codex straight away, without a warning while it does.",
+      "credit": "József Mandula"
+    },
+    "A Grok login that's out of credit says so and is marked out, instead of failing turns."
+  ],
+  "fixed": [
+    {
+      "text": "An agent's snooze until words with a number in, like a ticket name, no longer snoozes to a year like 3843.",
+      "credit": "David Clark"
+    },
+    "Your phone no longer gets a notification for a thread you've archived or hibernated.",
+    "A patch panel's button opens its panel straight away on a busy runner.",
+    {
+      "text": "Building the app yourself skips a revoked Apple Development certificate.",
+      "credit": "Scott Shillcock"
+    },
+    "Security: a limited thread can no longer take over another runner on the same Mac, run a planted program through a check, or get owner rights when a process lookup fails; a thread's picture can't run the app out of memory; and the app's installer, box images and self-hosted backend images are checked against pinned versions."
+  ]
+}

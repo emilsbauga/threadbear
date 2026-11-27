@@ -28,6 +28,7 @@ public extension InboxSections {
 
     private var placements: [String: PhoneSection] {
         var all: [String: PhoneSection] = [:]
+        for thread in coordinators { all[thread.threadId] = .coordinators }
         for thread in starred { all[thread.threadId] = .starred }
         for thread in inbox { all[thread.threadId] = .inbox }
         for thread in running { all[thread.threadId] = .running }

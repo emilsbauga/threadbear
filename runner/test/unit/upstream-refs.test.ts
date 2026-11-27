@@ -110,7 +110,10 @@ test('a flood of tags upstream costs a check a few reads, once', async () => {
   reads = 0;
   s = await up.check();
   assert.equal(s.release?.commit, real);
-  assert.ok(reads <= 8, `read ${reads} tags`);
+  // The release, the fakes before it, and every other tag it fetched, each
+  // once: revocations are read from all of them (keyChanges, 25 Nov 2026),
+  // bounded by what one check stages.
+  assert.ok(reads <= 29, `read ${reads} tags`);
   reads = 0;
   await up.check();
   assert.equal(reads, 0, 'nothing read again');
