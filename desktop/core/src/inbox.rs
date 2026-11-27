@@ -984,7 +984,7 @@ fn sections_with<'a, T: Borrow<ThreadSummary> + Clone + 'a>(
     });
     let at = sections
         .iter()
-        .position(|s| s.key != "starred")
+        .position(|s| !matches!(s.key, "starred" | "coordinators"))
         .unwrap_or(sections.len());
     sections.insert(
         at,
@@ -1489,7 +1489,7 @@ mod tests {
         let sections = sections(rows.iter(), now());
         assert_eq!(
             sections.iter().map(|s| s.key).collect::<Vec<_>>(),
-            ["starred", "coordinators", "inbox", "archived"]
+            ["starred", "coordinators", "backlog", "inbox", "archived"]
         );
         assert_eq!(ids(&sections, "starred"), ["t4"]);
         assert_eq!(ids(&sections, "coordinators"), ["t1", "t2"]);
