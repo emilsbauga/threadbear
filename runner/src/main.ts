@@ -489,7 +489,7 @@ async function main(): Promise<void> {
   });
   const pi = new PiAdapter({ registry, log,
     profileFor: id => cfg.piProfiles?.find(profile => piAccountId(profile.id) === id),
-    toolsFor: threadId => buildThreadbearTools(router(), threadId, Date.now, scheduleControl(), projectControl(), appRestarts, { provider: 'pi', bulletReplies: () => cfg.bulletReplies, oneReply: () => cfg.oneReply, pocket: pocketControl, gateway: () => cfg.connectorsUrl, gatewayHealth, remote: remoteControl }),
+    toolsFor: threadId => buildThreadbearTools(router(), threadId, Date.now, scheduleControl(), projectControl(), appRestarts, { provider: 'pi', coordinators: () => runner.coordinators, bulletReplies: () => cfg.bulletReplies, oneReply: () => cfg.oneReply, pocket: pocketControl, gateway: () => cfg.connectorsUrl, gatewayHealth, remote: remoteControl }),
     instructionsFor: threadId => serverInstructions(threadId, { one: cfg.oneReply, bulletReplies: cfg.bulletReplies, pocket: Boolean(pocketControl()), projects: true }),
   });
   // One process per live thread on an installed ACP agent.

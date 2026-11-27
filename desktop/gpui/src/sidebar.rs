@@ -2220,7 +2220,10 @@ impl Threadbear {
                     });
                     body = place(t.id.clone(), far.row(&t.id, row, gap.unwrap_or(0.)), body);
                     // Its sub-agents' rows (a few, and rare) are always built.
-                    if !matches!(section.key, "backlog" | "hibernating" | "archived" | "coordinators") {
+                    if !matches!(
+                        section.key,
+                        "backlog" | "hibernating" | "archived" | "coordinators"
+                    ) {
                         for (i, sub) in self
                             .render_subagents(t, section.key, now, &p, cx)
                             .into_iter()

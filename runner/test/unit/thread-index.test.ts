@@ -472,7 +472,7 @@ test('deferred conversation index marker is distinct from an unsent prompt and g
   const deferred = { ...draft, backlog: undefined, backlogged: true };
   assert.equal(toIndexRow(deferred).backlogged, true);
   assert.equal(toIndexRow(deferred).backlog, undefined);
-  assert.equal(toIndexRow(deferred, true, true, true, true, true, true, false).backlogged, undefined);
+  assert.equal(toIndexRow(deferred, true, true, true, true, true, true, true, true, true, false).backlogged, undefined);
 });
 
 // Daybreak 87 and 102 (11 Nov 2026): a compromised extra Mac's row under an

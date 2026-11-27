@@ -7,10 +7,11 @@
 use crate::inbox::Section;
 
 /// Default sidebar section order: Starred stays at the very top, above
-/// Coordinators, then Inbox, Running, Hibernating and Archived.
-pub const DEFAULT_SECTION_ORDER: [&str; 6] = [
+/// Coordinators, Backlog, then Inbox, Running, Hibernating and Archived.
+pub const DEFAULT_SECTION_ORDER: [&str; 7] = [
     "starred",
     "coordinators",
+    "backlog",
     "inbox",
     "running",
     "hibernating",
@@ -208,6 +209,7 @@ mod tests {
             [
                 "starred",
                 "coordinators",
+                "backlog",
                 "inbox",
                 "running",
                 "hibernating",
@@ -228,6 +230,7 @@ mod tests {
                 "inbox",
                 "starred",
                 "coordinators",
+                "backlog",
                 "hibernating",
                 "archived",
             ]
@@ -250,6 +253,7 @@ mod tests {
             vec![
                 "starred",
                 "coordinators",
+                "backlog",
                 "running",
                 "inbox",
                 "hibernating",
@@ -262,6 +266,7 @@ mod tests {
             move_section(&full, "starred", &visible, 2),
             vec![
                 "coordinators",
+                "backlog",
                 "inbox",
                 "running",
                 "starred",

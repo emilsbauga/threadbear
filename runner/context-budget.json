@@ -1,24 +1,24 @@
 {
   "claude": {
     "instructions": 3112,
-    "tools": 40866,
-    "total": 43978
+    "tools": 42718,
+    "total": 45830
   },
   "codex": {
     "instructions": 2286,
-    "tools": 40965,
-    "total": 43251
+    "tools": 42817,
+    "total": 45103
   },
   "pi": {
     "full": {
       "instructions": 3112,
-      "tools": 41413,
-      "total": 44525
+      "tools": 43265,
+      "total": 46377
     },
     "compact": {
       "instructions": 3309,
-      "tools": 1710,
-      "total": 5019
+      "tools": 1850,
+      "total": 5159
     }
   },
   "worktreeInstructions": 591,
@@ -42,7 +42,7 @@
     "pocket": 1420,
     "read_project": 379,
     "read_thread": 520,
-    "schedule_message": 3417,
+    "schedule_message": 3400,
     "send_message": 562,
     "show_options": 3589,
     "show_panel": 1400,

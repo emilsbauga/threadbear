@@ -311,7 +311,7 @@ test('existing deferred conversations share Backlog without becoming unsent prom
 });
 
 test('coordinators stay before normal sections across waits and keep questions visible', () => {
-  assert.deepEqual(SECTIONS.slice(0, 3), ['starred', 'coordinators', 'inbox']);
+  assert.deepEqual(SECTIONS.slice(0, 4), ['starred', 'coordinators', 'backlog', 'inbox']);
   const a = row({ coordinatorProjectId: 'p_a', waitState: 'hibernating', snoozedUntilRestart: true });
   const b = row({ coordinatorProjectId: 'p_b', waitState: 'card', needsYou: true, starredAt: '2026-11-01T00:00:00Z' });
   const gone = row({ coordinatorProjectId: 'p_c', archivedAt: '2026-11-01T00:00:00Z' });

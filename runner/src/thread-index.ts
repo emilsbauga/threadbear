@@ -112,7 +112,7 @@ export function boxReachable(state: unknown): boolean {
 const WATCH_CHECK_MS = 15_000;
 const UNWATCH_AFTER_MS = 2 * 60_000;
 
-export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = true, withAsked = true, withKeywords = true, withMode = true, withBacklog = true, withBacklogged = true, withRecap = true, withWaitState = true, withPool = true, withCoordinator = true): IndexRow {
+export function toIndexRow(t: ThreadSummary, withStartedBy = true, withStars = true, withAsked = true, withKeywords = true, withMode = true, withWaitState = true, withPool = true, withCoordinator = true, withBacklog = true, withBacklogged = true, withRecap = true): IndexRow {
   const row: IndexRow = {
     threadId: t.id,
     title: t.title,
@@ -556,7 +556,7 @@ export class ThreadIndex {
   }
 
   private mark(t: ThreadSummary): void {
-    const row = toIndexRow(t, this.deps.takesStartedBy?.() ?? true, this.deps.takesStars?.() ?? true, this.deps.takesAsked?.() ?? true, this.deps.takesKeywords?.() ?? true, this.deps.takesMode?.() ?? true, this.deps.takesBacklog?.() ?? true, this.deps.takesBacklogged?.() ?? true, this.deps.takesRecap?.() ?? true, this.deps.takesWaitState?.() ?? true, this.deps.takesPool?.() ?? true, this.deps.takesCoordinator?.() ?? true);
+    const row = toIndexRow(t, this.deps.takesStartedBy?.() ?? true, this.deps.takesStars?.() ?? true, this.deps.takesAsked?.() ?? true, this.deps.takesKeywords?.() ?? true, this.deps.takesMode?.() ?? true, this.deps.takesWaitState?.() ?? true, this.deps.takesPool?.() ?? true, this.deps.takesCoordinator?.() ?? true, this.deps.takesBacklog?.() ?? true, this.deps.takesBacklogged?.() ?? true, this.deps.takesRecap?.() ?? true);
     if (this.sent.get(t.id) === writeKey(row)) {
       this.dirty.delete(t.id);
       return;

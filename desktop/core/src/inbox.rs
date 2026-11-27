@@ -923,8 +923,15 @@ fn sections_with<'a, T: Borrow<ThreadSummary> + Clone + 'a>(
     wakes: &HashMap<String, Wake>,
     nesting: Option<&crate::nested::Nesting>,
 ) -> Vec<Section<T>> {
-    let (mut coordinators, mut starred, mut backlog, mut inbox, mut running, mut hibernating, mut archived) =
-        (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let (
+        mut coordinators,
+        mut starred,
+        mut backlog,
+        mut inbox,
+        mut running,
+        mut hibernating,
+        mut archived,
+    ) = (vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
     for row in threads {
         let t = summary(row);
         if nesting.is_some_and(|n| n.is_nested(&t.id)) {

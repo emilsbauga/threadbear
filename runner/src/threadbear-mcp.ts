@@ -26,7 +26,7 @@ import { checkCardProblem, checkDigest, type CheckCard } from './patch-trust.ts'
 import { applyNoteEdits, type Projects } from './projects.ts';
 import type { Coordinators } from './coordinators.ts';
 import { workTaskEditShape } from './coordinator-task-edits.ts';
-import { COORDINATOR_THREADBEAR_TOOLS, COORDINATOR_WORKER_PROMPT, HELPER_THREADBEAR_TOOLS } from './coordinator-policy.ts';
+import { COORDINATOR_THREADBEAR_TOOLS, HELPER_THREADBEAR_TOOLS } from './coordinator-policy.ts';
 import { parseWhen, relativeFuture, relativeTime } from './when.ts';
 import { SAID_MAX } from './wake-when.ts';
 
